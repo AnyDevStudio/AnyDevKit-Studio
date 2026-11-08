@@ -7,19 +7,46 @@ AnyDevKit is a command line SDK. It compiles C++ and GLSL and packages the resul
 Studio puts a visual workspace on top of it, so people can open a project, build it and
 eventually create a whole game without living in a terminal.
 
-> **Status: early development.** Nothing is ready to download yet. This repository is public from
-> day one so the work can happen in the open.
+![A project open in Studio after a finished PS5 build](docs/screenshots/project.png)
 
-## What it will do
+> **Status: early development.** You can open a project and build its PS5 package. There is no
+> download yet, so build it from source. The full flow has been tested on Apple Silicon macOS.
+> Packages have not been run on a real PS5 by this project.
+
+## What it does
 
 | Stage | Goal | State |
 |---|---|---|
-| Project workspace | Open an `adk init` project and see its files and PS5 metadata | In progress |
-| One button build | Configure, compile and create a PS5 package with a live log | In progress |
+| Project workspace | Open an `adk init` project and see its files and PS5 metadata | Working |
+| One button build | Configure, compile and create a PS5 package with a live log | Working |
 | Preview | Run the project on the developer's computer without a console | Planned |
 | Scene editor | Place sprites, text and sounds on a 16:9 stage | Planned |
 | Game runtime | A small C++ engine on top of AGC, the PS5 graphics API, starting with 2D | Planned |
 | Scripting | Game logic in Lua | Planned |
+
+## Build from source
+
+You need CMake 3.22 or newer, a C++20 compiler and Qt 6.8 or newer with Qt Declarative.
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+```
+
+On macOS with Homebrew: `brew install cmake ninja qtbase qtdeclarative qtsvg`.
+
+Studio also needs what AnyDevKit needs to build a project: the
+[AnyDevKit SDK](https://github.com/boykopovar/AnyDevKit/releases/latest), its dependencies from
+`adk setup`, Ninja, LLD and Clang 18+ or GCC 14+. Create a project with `adk init` and open its
+folder in Studio.
+
+### Apple Silicon
+
+AnyDevKit does not publish macOS builds yet. Building it on a Mac currently needs the fixes in
+[AnyDevKit #2](https://github.com/boykopovar/AnyDevKit/pull/2) and
+[#3](https://github.com/boykopovar/AnyDevKit/pull/3). Use Homebrew LLVM (`brew install llvm lld`)
+because Apple Clang is rejected by the C++ runtime's compiler check. Studio finds Homebrew's LLVM
+on its own.
 
 ## How it is built
 
@@ -28,18 +55,19 @@ eventually create a whole game without living in a terminal.
   Vulkan on Linux.
 - **A UI-free core library** holds projects and builds, and has its own tests.
 - **`adk` stays a separate program.** Studio launches it rather than linking it, which keeps the
-  two projects and their licenses independent. A crash in a build or a game cannot take the editor
-  down with it.
+  two projects and their licenses independent. A crash in a build cannot take the editor down
+  with it.
 
 ## Contributing
 
-Fork it, build on it and send pull requests. Ideas and bug reports are welcome in the issues.
-Build instructions will land here together with the first working version.
+Fork it, build on it and send pull requests. See [CONTRIBUTING.md](CONTRIBUTING.md). Ideas and bug
+reports are welcome in the issues.
 
 ## Legal
 
-Licensed under the [MIT License](LICENSE). AnyDevKit is a separate project under GPL-2.0, and
-Studio only runs it as an external tool.
+Licensed under the [MIT License](LICENSE). The bundled Archivo Black and IBM Plex fonts are under
+the SIL Open Font License, included next to them in `src/app/assets/fonts`. AnyDevKit is a
+separate project under GPL-2.0, and Studio only runs it as an external tool.
 
 This is an independent project, not affiliated with or endorsed by Sony Interactive Entertainment.
 PlayStation and PS5 are trademarks of their respective owner. Packages made with AnyDevKit are
