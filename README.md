@@ -7,11 +7,12 @@ AnyDevKit is a command line SDK. It compiles C++ and GLSL and packages the resul
 Studio puts a visual workspace on top of it, so people can open a project, build it and
 eventually create a whole game without living in a terminal.
 
-![A project open in Studio after a finished PS5 build](docs/screenshots/project.png)
+![Studio's drag and drop stage with a shape and pixel text](docs/screenshots/scene.png)
 
-> **Status: early development.** You can open a project and build its PS5 package. There is no
-> download yet, so build it from source. The full flow has been tested on Apple Silicon macOS.
-> Packages have not been run on a real PS5 by this project.
+> **Status: early development.** You can drag shapes and text onto a stage and build a PS5 package
+> with one button. There is no download yet, so build it from source. The full flow has been tested
+> on Apple Silicon macOS, and the app builds and starts on Windows and Linux in CI. The scene runtime
+> compiles and packages for PS5 but has not yet been run on a console.
 
 ## What it does
 
@@ -20,10 +21,12 @@ eventually create a whole game without living in a terminal.
 | Project workspace | Open an `adk init` project and see its files and PS5 metadata | Working |
 | One button build | Configure, compile and create a PS5 package with a live log | Working |
 | Your code editor | Open code in VS Code, Visual Studio, Cursor, Xcode, CLion, Sublime Text, Zed or Qt Creator | Working |
+| Drag and drop scene | Place shapes and text on a 16:9 stage, resize, undo, autosave | Working |
+| Game runtime | Draws the scene on AGC, the PS5 graphics API, with controller movement | Compiles, not yet run on a console |
+| Images and sound | Add your own pictures and audio to a scene | Planned |
+| Behaviours | Ready-made actions, then game logic in Lua | Planned |
+| Guided setup | Install AnyDevKit and its tools from inside Studio | Planned |
 | Preview | Run the project on the developer's computer without a console | Planned |
-| Scene editor | Place sprites, text and sounds on a 16:9 stage | Planned |
-| Game runtime | A small C++ engine on top of AGC, the PS5 graphics API, starting with 2D | Planned |
-| Scripting | Game logic in Lua | Planned |
 
 ## Build from source
 
