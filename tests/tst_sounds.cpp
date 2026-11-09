@@ -7,6 +7,7 @@
 #include <QTest>
 
 #include <cmath>
+#include <cstring>
 #include <limits>
 
 // No sound is ever played here: these functions only read and write bytes.
