@@ -5,6 +5,8 @@ add_library(studio_core STATIC
     BuildRunner.h
     CodeEditors.cpp
     CodeEditors.h
+    NewGame.cpp
+    NewGame.h
     Scene.cpp
     Scene.h
     SceneDocument.cpp

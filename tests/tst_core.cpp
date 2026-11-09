@@ -1,5 +1,6 @@
 #include "BuildRunner.h"
 #include "CodeEditors.h"
+#include "NewGame.h"
 #include "Project.h"
 
 #include <QDir>
@@ -10,6 +11,10 @@
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QtTest>
+
+#ifdef Q_OS_UNIX
+#include <unistd.h>
+#endif
 
 using namespace Studio;
 
@@ -63,6 +68,32 @@ void writeProject(const QString& root, const QString& output = "dist/ps5/Demo.ff
 BuildStep cmakeStep(const QString& id, const QStringList& arguments) {
     return BuildStep{id, id, QStringLiteral(STUDIO_TEST_CMAKE), arguments, {}};
 }
+
+// The parts of an SDK and of an `adk setup` folder that a new game relies on.
+void writeSdk(const QString& root) {
+    writeText(adkExecutable(root));
+    QVERIFY(QFile::setPermissions(adkExecutable(root), QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
+    QVERIFY(QDir().mkpath(root + "/lib/cmake/AnyDevKit"));
+}
+
+void writeDependencies(const QString& root) {
+    QVERIFY(QDir().mkpath(root + "/ps5/sysroot"));
+}
+
+struct NewGameFolders {
+    QTemporaryDir base;
+    NewGameRequest request;
+
+    NewGameFolders() {
+        request.name = "Demo";
+        request.parentDirectory = base.path() + "/games";
+        request.sdkRoot = base.path() + "/sdk";
+        request.dependencyRoot = base.path() + "/deps";
+        QDir().mkpath(request.parentDirectory);
+        writeSdk(request.sdkRoot);
+        writeDependencies(request.dependencyRoot);
+    }
+};
 
 }
 
@@ -311,6 +342,193 @@ private slots:
         QVERIFY(finished.wait(10000));
         QCOMPARE(finished.at(0).at(0).toBool(), false);
         QVERIFY(finished.at(0).at(1).toString().contains("Cancelled"));
+    }
+
+    void gameNameFollowsAdkInit_data() {
+        QTest::addColumn<QString>("name");
+        QTest::addColumn<QString>("mention");
+
+        // Accepted by the real `adk init`, including near misses of the reserved names.
+        for (const auto* name : {"MyGame", "a", "_x", "__x", "Ab_9", "test", "package", "class", "main", "ALL", "Install", "Clean", "Help", "all_", "install2"}) {
+            QTest::newRow(name) << QString(name) << QString();
+        }
+        QTest::newRow("exactly 64 characters") << QString(64, 'a') << QString();
+
+        QTest::newRow("empty") << QString() << "name";
+        QTest::newRow("65 characters") << QString(65, 'a') << "64";
+        QTest::newRow("starts with a digit") << "9Lives" << "digit";
+        QTest::newRow("space") << "My Game" << "letters";
+        QTest::newRow("hyphen") << "My-Game" << "letters";
+        QTest::newRow("dot") << "Game.v2" << "letters";
+        QTest::newRow("slash") << "../Game" << "letters";
+        QTest::newRow("turkish letter") << QString::fromUtf8("Oyun\xC4\x9F") << "letters";
+        QTest::newRow("accented first letter") << QString::fromUtf8("\xC3\x9Cnal") << "letters";
+
+        for (const auto* name : {"all", "ALL_BUILD", "help", "install", "INSTALL", "preinstall", "clean", "edit_cache", "rebuild_cache", "ZERO_CHECK"}) {
+            QTest::newRow(name) << QString(name) << "CMake";
+        }
+    }
+
+    void gameNameFollowsAdkInit() {
+        QFETCH(QString, name);
+        QFETCH(QString, mention);
+        const auto problem = validateGameName(name);
+        if (mention.isEmpty()) {
+            QVERIFY2(problem.isEmpty(), qPrintable(problem));
+        } else {
+            QVERIFY2(problem.contains(mention, Qt::CaseInsensitive), qPrintable(QString("Expected '%1' in: %2").arg(mention, problem)));
+        }
+    }
+
+    void adkInitStepMatchesTheCommandLine() {
+        const NewGameRequest request{"Demo", "/games/my stuff", "/sdk", "/home/.adk"};
+        const auto step = adkInitStep(request);
+        QCOMPARE(step.program, adkExecutable(QString("/sdk")));
+        QCOMPARE(step.arguments, QStringList({"init", "Demo", "--deps", "/home/.adk", "--directory", "/games/my stuff/Demo"}));
+        QVERIFY(!step.title.isEmpty());
+        QVERIFY2(step.removeFirst.isEmpty(), "Creating a game must never delete anything.");
+    }
+
+    void newGameDirectoryIsCleaned() {
+        QCOMPARE(newGameDirectory({"Demo", "/games/", "/sdk", "/deps"}), QString("/games/Demo"));
+        QCOMPARE(newGameDirectory({"Demo", "/games/./a/../", "/sdk", "/deps"}), QString("/games/Demo"));
+        QCOMPARE(adkInitStep({"Demo", "/games/", "/sdk/", "/deps/"}).arguments.last(), QString("/games/Demo"));
+        QCOMPARE(adkInitStep({"Demo", "/games", "/sdk/", "/deps/"}).program, adkExecutable(QString("/sdk")));
+        QCOMPARE(adkInitStep({"Demo", "/games", "/sdk/", "/deps/"}).arguments.at(3), QString("/deps"));
+    }
+
+    void sdkRootMustHoldAdk() {
+        QTemporaryDir base;
+        QVERIFY(validateSdkRoot("").contains("SDK"));
+
+        const auto missing = validateSdkRoot(base.path() + "/nowhere");
+        QVERIFY2(missing.contains(base.path() + "/nowhere") && missing.contains("exist"), qPrintable(missing));
+
+        const auto empty = validateSdkRoot(base.path());
+        QVERIFY2(empty.contains("bin/adk"), qPrintable(empty));
+
+        writeSdk(base.path() + "/good");
+        const auto good = validateSdkRoot(base.path() + "/good");
+        QVERIFY2(good.isEmpty(), qPrintable(good));
+
+#ifndef Q_OS_WIN
+        writeSdk(base.path() + "/noexec");
+        QVERIFY(QFile::setPermissions(adkExecutable(base.path() + "/noexec"), QFile::ReadOwner | QFile::WriteOwner));
+        const auto notRunnable = validateSdkRoot(base.path() + "/noexec");
+        QVERIFY2(notRunnable.contains("run", Qt::CaseInsensitive), qPrintable(notRunnable));
+#endif
+
+        writeText(adkExecutable(base.path() + "/partial"));
+        QVERIFY(QFile::setPermissions(adkExecutable(base.path() + "/partial"), QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
+        const auto partial = validateSdkRoot(base.path() + "/partial");
+        QVERIFY2(partial.contains("lib/cmake/AnyDevKit"), qPrintable(partial));
+    }
+
+    void dependencyRootMustHoldThePs5Sysroot() {
+        QTemporaryDir base;
+        QVERIFY(validateDependencyRoot("").contains("dependency", Qt::CaseInsensitive));
+
+        const auto missing = validateDependencyRoot(base.path() + "/nowhere");
+        QVERIFY2(missing.contains("exist"), qPrintable(missing));
+
+        const auto empty = validateDependencyRoot(base.path());
+        QVERIFY2(empty.contains("adk setup"), qPrintable(empty));
+
+        writeDependencies(base.path() + "/good");
+        const auto good = validateDependencyRoot(base.path() + "/good");
+        QVERIFY2(good.isEmpty(), qPrintable(good));
+
+        // A likely mistake: picking the ps5 folder inside it.
+        const auto inner = validateDependencyRoot(base.path() + "/good/ps5");
+        QVERIFY2(inner.contains("parent", Qt::CaseInsensitive), qPrintable(inner));
+    }
+
+    void parentDirectoryMustBeAWritableFolder() {
+        QTemporaryDir base;
+        QVERIFY(!validateParentDirectory("").isEmpty());
+
+        const auto relative = validateParentDirectory("games/mine");
+        QVERIFY2(relative.contains("full path"), qPrintable(relative));
+
+        const auto missing = validateParentDirectory(base.path() + "/nowhere");
+        QVERIFY2(missing.contains("exist"), qPrintable(missing));
+
+        writeText(base.path() + "/file");
+        const auto file = validateParentDirectory(base.path() + "/file");
+        QVERIFY2(file.contains("not a folder"), qPrintable(file));
+
+        const auto good = validateParentDirectory(base.path());
+        QVERIFY2(good.isEmpty(), qPrintable(good));
+
+#ifndef Q_OS_WIN
+        QVERIFY(QDir().mkpath(base.path() + "/locked"));
+        QVERIFY(QFile::setPermissions(base.path() + "/locked", QFile::ReadOwner | QFile::ExeOwner));
+        const auto locked = validateParentDirectory(base.path() + "/locked");
+        QFile::setPermissions(base.path() + "/locked", QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
+        if (::geteuid() != 0) QVERIFY2(locked.contains("write", Qt::CaseInsensitive), qPrintable(locked));
+#endif
+    }
+
+    void newGameIsAcceptedWhenEverythingIsReady() {
+        NewGameFolders folders;
+        const auto problem = validateNewGame(folders.request);
+        QVERIFY2(problem.isEmpty(), qPrintable(problem));
+    }
+
+    void newGameReportsEachBadInput() {
+        {
+            NewGameFolders folders;
+            folders.request.name = "all";
+            QVERIFY(validateNewGame(folders.request).contains("CMake"));
+        }
+        {
+            NewGameFolders folders;
+            folders.request.parentDirectory = folders.base.path() + "/nowhere";
+            QVERIFY(validateNewGame(folders.request).contains("exist"));
+        }
+        {
+            NewGameFolders folders;
+            folders.request.sdkRoot = folders.base.path();
+            QVERIFY(validateNewGame(folders.request).contains("bin/adk"));
+        }
+        {
+            NewGameFolders folders;
+            folders.request.dependencyRoot = folders.base.path();
+            QVERIFY(validateNewGame(folders.request).contains("adk setup"));
+        }
+    }
+
+    void newGameRefusesAnExistingDestination() {
+        NewGameFolders folders;
+        QVERIFY(QDir().mkpath(newGameDirectory(folders.request)));
+        const auto folder = validateNewGame(folders.request);
+        QVERIFY2(folder.contains("already exists") && folder.contains("Demo"), qPrintable(folder));
+
+        NewGameFolders fileFolders;
+        writeText(newGameDirectory(fileFolders.request));
+        QVERIFY(validateNewGame(fileFolders.request).contains("already exists"));
+
+#ifndef Q_OS_WIN
+        NewGameFolders linkFolders;
+        QVERIFY(QFile::link(linkFolders.base.path() + "/gone", newGameDirectory(linkFolders.request)));
+        QVERIFY2(validateNewGame(linkFolders.request).contains("already exists"), "A dangling link still blocks adk init.");
+#endif
+    }
+
+    void adkInitFailureSaysWhatHappenedAndWhatToDo() {
+        const auto reported = describeAdkInitFailure({"note", "adk: Output parent does not exist: /x", ""}, "Create game failed with exit code 1. The log has the details.");
+        QVERIFY2(reported.contains("Output parent does not exist: /x"), qPrintable(reported));
+        QVERIFY2(!reported.contains("adk: "), qPrintable(reported));
+        QVERIFY2(!reported.contains("log"), "The welcome screen has no log to point at.");
+        QVERIFY2(reported.contains("try again"), qPrintable(reported));
+
+        const auto silent = describeAdkInitFailure({}, "Create game failed with exit code 3. The log has the details.");
+        QVERIFY2(silent.contains("exit code 3"), qPrintable(silent));
+        QVERIFY2(!silent.contains("log"), qPrintable(silent));
+        QVERIFY2(silent.contains("try again"), qPrintable(silent));
+
+        const auto notStarted = describeAdkInitFailure({"   "}, "Create game could not be started: permission denied");
+        QVERIFY2(notStarted.contains("permission denied"), qPrintable(notStarted));
     }
 };
 

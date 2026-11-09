@@ -43,6 +43,7 @@ struct FileEntry {
 
 ProjectLoadResult loadProject(const QString& directory);
 QString adkExecutable(const Project& project);
+QString adkExecutable(const QString& sdkRoot);
 QList<BuildStep> ps5BuildSteps(const Project& project);
 QList<FileEntry> listProjectFiles(const QString& root);
 bool isInsideDirectory(const QString& path, const QString& directory);

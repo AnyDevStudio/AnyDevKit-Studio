@@ -90,10 +90,14 @@ ProjectLoadResult loadProject(const QString& directory) {
 }
 
 QString adkExecutable(const Project& project) {
+    return adkExecutable(project.sdkRoot);
+}
+
+QString adkExecutable(const QString& sdkRoot) {
 #ifdef Q_OS_WIN
-    return project.sdkRoot + "/bin/adk.exe";
+    return sdkRoot + "/bin/adk.exe";
 #else
-    return project.sdkRoot + "/bin/adk";
+    return sdkRoot + "/bin/adk";
 #endif
 }
 
