@@ -1,6 +1,7 @@
 #pragma once
 
 #include "BuildRunner.h"
+#include "CodeEditors.h"
 #include "Project.h"
 
 #include <QObject>
@@ -31,6 +32,10 @@ class StudioController : public QObject {
     Q_PROPERTY(QString outputName READ outputName NOTIFY buildChanged)
     Q_PROPERTY(QString outputSize READ outputSize NOTIFY buildChanged)
     Q_PROPERTY(QStringListModel* log READ log CONSTANT)
+    Q_PROPERTY(QVariantList editors READ editors CONSTANT)
+    Q_PROPERTY(QString selectedEditor READ selectedEditor WRITE setSelectedEditor NOTIFY editorChanged)
+    Q_PROPERTY(QString selectedEditorName READ selectedEditorName NOTIFY editorChanged)
+    Q_PROPERTY(QString editorError READ editorError NOTIFY editorChanged)
 
 public:
     explicit StudioController(QObject* parent = nullptr);
@@ -49,13 +54,19 @@ public:
     QString outputName() const;
     QString outputSize() const;
     QStringListModel* log();
+    QVariantList editors() const;
+    QString selectedEditor() const;
+    QString selectedEditorName() const;
+    QString editorError() const;
+    void setSelectedEditor(const QString& id);
 
+    Q_INVOKABLE void openProjectInEditor();
     Q_INVOKABLE bool openFolder(const QUrl& folder);
     Q_INVOKABLE void closeProject();
     Q_INVOKABLE void build();
     Q_INVOKABLE void cancelBuild();
     Q_INVOKABLE void revealOutput() const;
-    Q_INVOKABLE void openFile(const QString& relativePath) const;
+    Q_INVOKABLE void openFile(const QString& relativePath);
     Q_INVOKABLE void copyLog() const;
 
     bool openPath(const QString& path);
@@ -65,8 +76,11 @@ signals:
     void openErrorChanged();
     void buildChanged();
     void buildFinished(bool success);
+    void editorChanged();
 
 private:
+    const CodeEditor* currentEditor() const;
+    void launchEditor(const CodeEditor& editor, const QString& file);
     void resetBuild();
     void setStageState(int index, const QString& state);
     void appendLog(const QStringList& lines);
@@ -80,6 +94,9 @@ private:
     QString state = "idle";
     QString message;
     QString size;
+    QList<CodeEditor> detectedEditors;
+    QString editorId = "system";
+    QString lastEditorError;
 };
 
 }

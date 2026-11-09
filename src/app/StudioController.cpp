@@ -6,7 +6,11 @@
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QLocale>
+#include <QProcess>
 #include <QProcessEnvironment>
+#include <QSettings>
+
+#include <algorithm>
 
 namespace Studio {
 
@@ -17,6 +21,10 @@ constexpr int MaximumLogLines = 20000;
 }
 
 StudioController::StudioController(QObject* parent) : QObject(parent) {
+    detectedEditors = detectCodeEditors(hostEditorLocations());
+    const auto saved = QSettings().value("codeEditor", "system").toString();
+    if (std::ranges::any_of(detectedEditors, [&](const CodeEditor& editor) { return editor.id == saved; })) editorId = saved;
+
     connect(&runner, &BuildRunner::stepStarted, this, [this](int index) {
         setStageState(index, "running");
         const auto step = ps5BuildSteps(*project).at(index);
@@ -120,10 +128,46 @@ void StudioController::revealOutput() const {
     if (project) QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(project->outputPath).absolutePath()));
 }
 
-void StudioController::openFile(const QString& relativePath) const {
+void StudioController::openFile(const QString& relativePath) {
     if (!project) return;
     const auto path = QDir::cleanPath(project->root + '/' + relativePath);
-    if (isInsideDirectory(path, project->root)) QDesktopServices::openUrl(QUrl::fromLocalFile(path));
+    if (!isInsideDirectory(path, project->root)) return;
+    if (const auto* editor = currentEditor()) launchEditor(*editor, path);
+    else QDesktopServices::openUrl(QUrl::fromLocalFile(path));
+}
+
+void StudioController::openProjectInEditor() {
+    const auto* editor = currentEditor();
+    if (project && editor) launchEditor(*editor, {});
+}
+
+const CodeEditor* StudioController::currentEditor() const {
+    const auto found = std::ranges::find(detectedEditors, editorId, &CodeEditor::id);
+    return found == detectedEditors.end() ? nullptr : &*found;
+}
+
+void StudioController::launchEditor(const CodeEditor& editor, const QString& file) {
+    const auto launch = editorLaunch(editor, project->root, file);
+    lastEditorError = QProcess::startDetached(launch.program, launch.arguments, project->root) ? QString() : QString("%1 could not be opened. Choose another editor.").arg(editor.name);
+    emit editorChanged();
+}
+
+QVariantList StudioController::editors() const {
+    QVariantList entries{QVariantMap{{"id", "system"}, {"name", "System default"}}};
+    for (const auto& editor : detectedEditors) entries.append(QVariantMap{{"id", editor.id}, {"name", editor.name}});
+    return entries;
+}
+
+QString StudioController::selectedEditor() const { return editorId; }
+QString StudioController::selectedEditorName() const { return currentEditor() ? currentEditor()->name : QString(); }
+QString StudioController::editorError() const { return lastEditorError; }
+
+void StudioController::setSelectedEditor(const QString& id) {
+    if (id == editorId) return;
+    editorId = id;
+    lastEditorError.clear();
+    QSettings().setValue("codeEditor", id);
+    emit editorChanged();
 }
 
 void StudioController::copyLog() const {

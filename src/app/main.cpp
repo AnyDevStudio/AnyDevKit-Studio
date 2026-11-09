@@ -11,6 +11,7 @@
 
 int main(int argc, char** argv) {
     QGuiApplication application(argc, argv);
+    QGuiApplication::setOrganizationName("AnyDevStudio");
     QGuiApplication::setApplicationName("AnyDevKit Studio");
     QGuiApplication::setApplicationVersion(QStringLiteral(PROJECT_VERSION_TEXT));
     QQuickStyle::setStyle("Basic");

@@ -19,6 +19,7 @@ qt_add_qml_module(AnyDevKitStudio
         qml/StageLane.qml
         qml/FileList.qml
         qml/LogPanel.qml
+        qml/EditorPicker.qml
     SOURCES
         StudioController.cpp
         StudioController.h

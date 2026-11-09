@@ -37,6 +37,38 @@ Item {
                     Layout.fillHeight: true
                 }
 
+                Text {
+                    text: "Open code with"
+                    color: Theme.muted
+                    font.family: Theme.body
+                    font.pixelSize: 14
+                    Layout.leftMargin: 10
+                    Layout.topMargin: 4
+                }
+
+                EditorPicker {
+                    studio: view.studio
+                    Layout.fillWidth: true
+                }
+
+                PillButton {
+                    visible: view.studio.selectedEditorName.length > 0
+                    text: "Open project in " + view.studio.selectedEditorName
+                    Layout.fillWidth: true
+                    onClicked: view.studio.openProjectInEditor()
+                }
+
+                Text {
+                    visible: view.studio.editorError.length > 0
+                    text: view.studio.editorError
+                    color: Theme.bad
+                    wrapMode: Text.WordWrap
+                    font.family: Theme.body
+                    font.pixelSize: 14
+                    Layout.fillWidth: true
+                    Layout.leftMargin: 10
+                }
+
                 PillButton {
                     text: "Open another project"
                     enabled: !view.studio.building

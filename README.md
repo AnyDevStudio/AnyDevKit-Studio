@@ -19,6 +19,7 @@ eventually create a whole game without living in a terminal.
 |---|---|---|
 | Project workspace | Open an `adk init` project and see its files and PS5 metadata | Working |
 | One button build | Configure, compile and create a PS5 package with a live log | Working |
+| Your code editor | Open code in VS Code, Visual Studio, Cursor, Xcode, CLion, Sublime Text, Zed or Qt Creator | Working |
 | Preview | Run the project on the developer's computer without a console | Planned |
 | Scene editor | Place sprites, text and sounds on a 16:9 stage | Planned |
 | Game runtime | A small C++ engine on top of AGC, the PS5 graphics API, starting with 2D | Planned |
