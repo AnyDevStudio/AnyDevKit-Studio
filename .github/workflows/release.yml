@@ -76,7 +76,9 @@ jobs:
       - name: Build
         run: cmake --build build --config Release --parallel
       - name: Copy Qt next to the program
-        run: cmake --install build --config Release --prefix stage/AnyDevKitStudio
+        # Qt's deploy script refuses a relative prefix when it writes qt.conf.
+        # pwd -W gives D:/a/... rather than Git Bash's /d/a/..., which CMake can't read.
+        run: cmake --install build --config Release --prefix "$(pwd -W)/stage/AnyDevKitStudio"
       - name: Create the zip
         working-directory: stage
         run: 7z a -tzip "../$PACKAGE" AnyDevKitStudio
