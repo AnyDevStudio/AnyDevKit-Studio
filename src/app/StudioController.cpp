@@ -176,7 +176,7 @@ bool StudioController::openFolder(const QUrl& folder) {
     return openPath(folder.toLocalFile());
 }
 
-bool StudioController::openPath(const QString& path) {
+bool StudioController::openPath(const QString& path, const QString& tab) {
     if (runner.isRunning() || gameCreator.isRunning()) return false;
     const auto result = loadProject(path);
     lastOpenError = result.error;
@@ -184,6 +184,7 @@ bool StudioController::openPath(const QString& path) {
     if (!result.project) return false;
 
     project = result.project;
+    currentOpeningTab = tab;
     refreshFiles();
     sceneDocument.open(project->root + "/scene.json");
     openLogic();
@@ -300,8 +301,24 @@ QString StudioController::sdkRoot() const { return savedSdkRoot; }
 QString StudioController::dependencyRoot() const { return savedDependencyRoot; }
 bool StudioController::creatingGame() const { return gameCreator.isRunning(); }
 QString StudioController::newGameError() const { return lastNewGameError; }
-QString StudioController::gameNameProblem(const QString& name) const { return validateGameName(name); }
-QString StudioController::parentFolderProblem(const QString& path) const { return validateParentDirectory(path); }
+QString StudioController::openingTab() const { return currentOpeningTab; }
+
+QVariantList StudioController::projectTypes() const {
+    QVariantList entries;
+    for (const auto& type : Studio::projectTypes()) {
+        entries.append(QVariantMap{{"id", type.id}, {"title", type.title}, {"description", type.description}, {"noun", type.noun}, {"available", type.available}, {"note", type.note}});
+    }
+    return entries;
+}
+
+QString StudioController::defaultProjectType() const {
+    const auto types = Studio::projectTypes();
+    const auto found = std::ranges::find(types, Studio::defaultProjectType(), &ProjectTypeInfo::type);
+    return found == types.end() ? QString() : found->id;
+}
+
+QString StudioController::gameNameProblem(const QString& name, const QString& noun) const { return validateGameName(name, noun); }
+QString StudioController::parentFolderProblem(const QString& path, const QString& noun) const { return validateParentDirectory(path, noun); }
 QString StudioController::sdkFolderProblem(const QString& path) const { return validateSdkRoot(path); }
 QString StudioController::dependencyFolderProblem(const QString& path) const { return validateDependencyRoot(path); }
 QString StudioController::localPath(const QUrl& folder) const { return folder.toLocalFile(); }
@@ -330,9 +347,14 @@ void StudioController::clearNewGameError() {
     setNewGameError({});
 }
 
-void StudioController::createGame(const QString& name, const QString& parentFolder, const QString& sdkFolder, const QString& dependencyFolder) {
+void StudioController::createGame(const QString& name, const QString& parentFolder, const QString& sdkFolder, const QString& dependencyFolder, const QString& typeId) {
     if (runner.isRunning() || gameCreator.isRunning()) return;
-    const NewGameRequest request{name, parentFolder, sdkFolder, dependencyFolder};
+    const auto type = projectTypeFromId(typeId);
+    if (!type) {
+        setNewGameError("Studio does not know that project type. Go back and choose one from the list.");
+        return;
+    }
+    const NewGameRequest request{name, parentFolder, sdkFolder, dependencyFolder, *type};
     // Remembered before the checks below: folders that are right stay right even if the name is not.
     rememberSdkRoot(sdkFolder);
     rememberDependencyRoot(dependencyFolder);
@@ -348,18 +370,21 @@ void StudioController::createGame(const QString& name, const QString& parentFold
 
 void StudioController::finishCreatingGame(bool success, const QString& runnerMessage) {
     emit creatingGameChanged();
+    const auto noun = projectTypeNoun(pendingGame.type);
     if (!success) {
-        setNewGameError(describeAdkInitFailure(gameCreatorOutput, runnerMessage));
+        setNewGameError(describeAdkInitFailure(gameCreatorOutput, runnerMessage, noun));
         return;
     }
 
     const auto directory = newGameDirectory(pendingGame);
-    QString error;
-    if (!installSceneRuntime(":/runtime/SceneGame", directory, pendingGame.name, error)) {
-        setNewGameError(QString("The game was created in %1, but its scene editor could not be added. %2 Open that folder and choose Add the scene editor to try again.").arg(directory, error));
-        return;
+    if (newGameSteps(pendingGame.type).contains(NewGameStep::AddSceneRuntime)) {
+        QString error;
+        if (!installSceneRuntime(":/runtime/SceneGame", directory, pendingGame.name, error, *starterSceneFor(pendingGame.type))) {
+            setNewGameError(QString("The %1 was created in %2, but its scene editor could not be added. %3 Open that folder and choose Add the scene editor to try again.").arg(noun, directory, error));
+            return;
+        }
     }
-    if (!openPath(directory)) setNewGameError(QString("The game was created in %1, but it could not be opened. %2").arg(directory, lastOpenError));
+    if (!openPath(directory, Studio::openingTab(pendingGame.type))) setNewGameError(QString("The %1 was created in %2, but it could not be opened. %3").arg(noun, directory, lastOpenError));
 }
 
 }

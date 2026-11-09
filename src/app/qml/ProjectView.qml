@@ -9,6 +9,7 @@ Item {
 
     property string mode: "scene"
 
+    Component.onCompleted: mode = studio.openingTab
     onModeChanged: if (mode === "logic") logicView.focusCanvas()
 
     // The hidden scene editor keeps its own undo shortcut, so on this tab undo is claimed here first.

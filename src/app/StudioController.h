@@ -68,6 +68,9 @@ class StudioController : public QObject {
     Q_PROPERTY(QString dependencyRoot READ dependencyRoot NOTIFY toolFoldersChanged)
     Q_PROPERTY(bool creatingGame READ creatingGame NOTIFY creatingGameChanged)
     Q_PROPERTY(QString newGameError READ newGameError NOTIFY newGameErrorChanged)
+    Q_PROPERTY(QVariantList projectTypes READ projectTypes CONSTANT)
+    Q_PROPERTY(QString defaultProjectType READ defaultProjectType CONSTANT)
+    Q_PROPERTY(QString openingTab READ openingTab NOTIFY projectChanged)
 
 public:
     explicit StudioController(QObject* parent = nullptr);
@@ -98,6 +101,9 @@ public:
     QString dependencyRoot() const;
     bool creatingGame() const;
     QString newGameError() const;
+    QVariantList projectTypes() const;
+    QString defaultProjectType() const;
+    QString openingTab() const;
 
     Q_INVOKABLE void addSceneEditor();
     Q_INVOKABLE void addSceneImage(const QUrl& file, double centerX, double centerY);
@@ -110,17 +116,18 @@ public:
     Q_INVOKABLE void revealOutput() const;
     Q_INVOKABLE void openFile(const QString& relativePath);
     Q_INVOKABLE void copyLog() const;
-    Q_INVOKABLE QString gameNameProblem(const QString& name) const;
-    Q_INVOKABLE QString parentFolderProblem(const QString& path) const;
+    Q_INVOKABLE QString gameNameProblem(const QString& name, const QString& noun = "game") const;
+    Q_INVOKABLE QString parentFolderProblem(const QString& path, const QString& noun = "game") const;
     Q_INVOKABLE QString sdkFolderProblem(const QString& path) const;
     Q_INVOKABLE QString dependencyFolderProblem(const QString& path) const;
     Q_INVOKABLE QString localPath(const QUrl& folder) const;
     Q_INVOKABLE void rememberSdkRoot(const QString& path);
     Q_INVOKABLE void rememberDependencyRoot(const QString& path);
     Q_INVOKABLE void clearNewGameError();
-    Q_INVOKABLE void createGame(const QString& name, const QString& parentFolder, const QString& sdkFolder, const QString& dependencyFolder);
+    Q_INVOKABLE void createGame(const QString& name, const QString& parentFolder, const QString& sdkFolder, const QString& dependencyFolder, const QString& typeId);
 
-    bool openPath(const QString& path);
+    // `tab` is the ProjectView mode the project opens on.
+    bool openPath(const QString& path, const QString& tab = "scene");
 
 signals:
     void projectChanged();
@@ -166,6 +173,7 @@ private:
     QString lastNewGameError;
     QString savedSdkRoot;
     QString savedDependencyRoot;
+    QString currentOpeningTab = "scene";
 };
 
 }

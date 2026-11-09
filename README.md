@@ -23,7 +23,7 @@ Drag shapes and text onto the stage, press one button, and the same scene runs a
 
 | Stage | Goal | State |
 |---|---|---|
-| Project workspace | Start a new game or open an `adk init` project | Working |
+| Project workspace | Start a 2D game, an app or a code-only project, or open an `adk init` project | Working |
 | One button build | Configure, compile and create a PS5 package with a live log | Working |
 | Your code editor | Open code in VS Code, Visual Studio, Cursor, Xcode, CLion, Sublime Text, Zed or Qt Creator | Working |
 | Game page | Set the name, icon and home screen background | Working |

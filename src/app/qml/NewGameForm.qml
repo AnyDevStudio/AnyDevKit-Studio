@@ -11,30 +11,72 @@ Item {
 
     property bool attempted: false
     property bool editingTools: false
+    property bool choosingType: true
+    property string selectedType: studio.defaultProjectType
 
     readonly property string gameName: nameField.text
-    readonly property string nameProblem: attempted || gameName.length > 0 ? studio.gameNameProblem(gameName) : ""
-    readonly property string parentProblem: attempted || parentField.text.length > 0 ? studio.parentFolderProblem(parentField.text) : ""
+    readonly property var selectedInfo: studio.projectTypes.find((type) => type.id === selectedType) ?? ({})
+    readonly property string noun: selectedInfo.noun ?? "game"
+    readonly property string nameProblem: attempted || gameName.length > 0 ? studio.gameNameProblem(gameName, noun) : ""
+    readonly property string parentProblem: attempted || parentField.text.length > 0 ? studio.parentFolderProblem(parentField.text, noun) : ""
     readonly property string sdkProblem: attempted || sdkField.text.length > 0 ? studio.sdkFolderProblem(sdkField.text) : ""
     readonly property string dependencyProblem: attempted || dependencyField.text.length > 0 ? studio.dependencyFolderProblem(dependencyField.text) : ""
     readonly property bool toolsReady: studio.sdkRoot.length > 0 && studio.dependencyRoot.length > 0 && studio.sdkFolderProblem(studio.sdkRoot).length === 0 && studio.dependencyFolderProblem(studio.dependencyRoot).length === 0
-    readonly property bool showTools: !toolsReady || editingTools
+    readonly property bool showTools: !choosingType && (!toolsReady || editingTools)
+    readonly property bool showDetails: !choosingType && !showTools
+    readonly property string page: choosingType ? "type" : showTools ? "tools" : "details"
+    readonly property real cardHeight: Math.max(78, Math.min(96, form.height * 0.15))
     readonly property string destination: nameProblem.length === 0 && gameName.length > 0 && parentProblem.length === 0 && parentField.text.length > 0 ? parentField.text.replace(/\/+$/, "") + "/" + gameName : ""
+
+    onPageChanged: {
+        scroller.contentY = 0
+        pageEntrance.restart()
+    }
 
     function prepare() {
         attempted = false
         editingTools = false
+        choosingType = true
+        selectedType = studio.defaultProjectType
         nameField.setText("")
         parentField.setText("")
         sdkField.setText(studio.sdkRoot)
         dependencyField.setText(studio.dependencyRoot)
         studio.clearNewGameError()
+        focusChosenCard()
+    }
+
+    // The chosen card takes focus without its ring, because no key has been pressed yet.
+    function focusChosenCard() {
+        for (let index = 0; index < typeCards.count; ++index) {
+            const card = typeCards.itemAt(index)
+            if (card.modelData.id === selectedType) card.forceActiveFocus()
+        }
+    }
+
+    // Arrow keys move through the types that can be chosen and choose as they go, like radio buttons.
+    function moveChoice(delta) {
+        const cards = []
+        for (let index = 0; index < typeCards.count; ++index) {
+            if (typeCards.itemAt(index).enabled) cards.push(typeCards.itemAt(index))
+        }
+        if (cards.length === 0) return
+        const here = cards.findIndex((card) => card.activeFocus)
+        const start = here >= 0 ? here : cards.findIndex((card) => card.modelData.id === selectedType)
+        const next = cards[(start + delta + cards.length) % cards.length]
+        selectedType = next.modelData.id
+        next.forceActiveFocus(Qt.TabFocusReason)
+    }
+
+    function continueFromType() {
+        choosingType = false
         if (showTools) sdkField.focusInput()
         else nameField.focusInput()
     }
 
     function submit() {
-        if (showTools) submitTools()
+        if (choosingType) continueFromType()
+        else if (showTools) submitTools()
         else submitGame()
     }
 
@@ -54,18 +96,25 @@ Item {
         attempted = true
         if (nameProblem.length > 0) { nameField.focusInput(); return }
         if (parentProblem.length > 0) { parentField.focusInput(); return }
-        studio.createGame(gameName, parentField.text, studio.sdkRoot, studio.dependencyRoot)
+        studio.createGame(gameName, parentField.text, studio.sdkRoot, studio.dependencyRoot, selectedType)
     }
 
     function goBack() {
-        if (showTools && toolsReady) {
+        if (studio.creatingGame) return
+        if (choosingType) {
+            closeRequested()
+        } else if (showTools && toolsReady) {
             attempted = false
             editingTools = false
             sdkField.setText(studio.sdkRoot)
             dependencyField.setText(studio.dependencyRoot)
             nameField.focusInput()
         } else {
-            closeRequested()
+            attempted = false
+            editingTools = false
+            studio.clearNewGameError()
+            choosingType = true
+            focusChosenCard()
         }
     }
 
@@ -95,7 +144,16 @@ Item {
         }
     }
 
+    ParallelAnimation {
+        id: pageEntrance
+
+        NumberAnimation { target: column; property: "opacity"; from: 0; to: 1; duration: Theme.ms(200); easing.type: Easing.OutCubic }
+        NumberAnimation { target: columnShift; property: "x"; from: 14; to: 0; duration: Theme.ms(240); easing.type: Easing.OutCubic }
+    }
+
     Flickable {
+        id: scroller
+
         // Wider than the form so the clip does not cut off the keyboard focus rings at its edges.
         anchors.fill: parent
         anchors.leftMargin: -6
@@ -113,16 +171,21 @@ Item {
             y: Math.max(0, (parent.height - implicitHeight) / 2)
             width: parent.width - 12
             spacing: 18
+            transform: Translate { id: columnShift }
 
             Text {
                 readonly property bool roomy: form.height > 620
 
                 Layout.fillWidth: true
                 Layout.bottomMargin: 4
-                text: form.showTools ? (roomy ? "First, find\nyour tools." : "First, find your tools.") : (roomy ? "Name your\ngame." : "Name your game.")
+                text: form.choosingType ? (roomy ? "What are\nyou making?" : "What are you making?")
+                    : form.showTools ? (roomy ? "First, find\nyour tools." : "First, find your tools.")
+                    : (roomy ? "Name your\n" + form.noun + "." : "Name your " + form.noun + ".")
                 color: Theme.paper
                 font.family: Theme.display
                 font.pixelSize: roomy ? Math.min(72, form.width * 0.095, form.height * 0.1) : Math.min(44, form.width * 0.085)
+                fontSizeMode: Text.HorizontalFit
+                minimumPixelSize: 24
                 lineHeight: 0.94
             }
 
@@ -136,11 +199,42 @@ Item {
                 font.pixelSize: 16
             }
 
+            ColumnLayout {
+                Layout.fillWidth: true
+                visible: form.choosingType
+                spacing: 10
+
+                Repeater {
+                    id: typeCards
+
+                    model: form.studio.projectTypes
+
+                    ProjectTypeCard {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: form.cardHeight
+                        chosen: form.selectedType === modelData.id
+                        onClicked: form.selectedType = modelData.id
+                        Keys.onUpPressed: form.moveChoice(-1)
+                        Keys.onLeftPressed: form.moveChoice(-1)
+                        Keys.onDownPressed: form.moveChoice(1)
+                        Keys.onRightPressed: form.moveChoice(1)
+                        Keys.onReturnPressed: {
+                            form.selectedType = modelData.id
+                            form.submit()
+                        }
+                        Keys.onEnterPressed: {
+                            form.selectedType = modelData.id
+                            form.submit()
+                        }
+                    }
+                }
+            }
+
             Field {
                 id: nameField
 
                 Layout.fillWidth: true
-                visible: !form.showTools
+                visible: form.showDetails
                 label: "Name"
                 hint: "English letters, digits and underscores. It becomes the folder and title."
                 problem: form.nameProblem
@@ -150,7 +244,7 @@ Item {
 
             RowLayout {
                 Layout.fillWidth: true
-                visible: !form.showTools
+                visible: form.showDetails
                 spacing: 10
 
                 Field {
@@ -159,7 +253,7 @@ Item {
                     Layout.fillWidth: true
                     label: "Create in"
                     maximumLength: 4096
-                    hint: form.destination.length > 0 ? "Creates " + form.destination : "The game gets its own folder inside this one."
+                    hint: form.destination.length > 0 ? "Creates " + form.destination : "The " + form.noun + " gets its own folder inside this one."
                     problem: form.parentProblem
                     onAccepted: form.submit()
                     onTextChanged: form.studio.clearNewGameError()
@@ -169,13 +263,13 @@ Item {
                     Layout.alignment: Qt.AlignTop
                     Layout.topMargin: 24
                     text: "Choose"
-                    onClicked: form.chooseFolder(parentField, "Choose where to create the game")
+                    onClicked: form.chooseFolder(parentField, "Choose where to create the " + form.noun)
                 }
             }
 
             RowLayout {
                 Layout.fillWidth: true
-                visible: !form.showTools
+                visible: form.showDetails
                 spacing: 10
 
                 ColumnLayout {
@@ -262,7 +356,7 @@ Item {
 
             Text {
                 Layout.fillWidth: true
-                visible: !form.showTools && form.studio.newGameError.length > 0
+                visible: form.showDetails && form.studio.newGameError.length > 0
                 text: form.studio.newGameError
                 color: Theme.bad
                 wrapMode: Text.WordWrap
@@ -277,7 +371,7 @@ Item {
                 PillButton {
                     primary: true
                     enabled: !form.studio.creatingGame
-                    text: form.showTools ? "Continue" : form.studio.creatingGame ? "Creating..." : "Create game"
+                    text: !form.showDetails ? "Continue" : form.studio.creatingGame ? "Creating..." : "Create " + form.noun
                     onClicked: form.submit()
                 }
 
