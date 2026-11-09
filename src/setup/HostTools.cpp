@@ -241,7 +241,9 @@ std::optional<double> parseAdkSetupProgress(const QString& line) {
 
 QString describeAdkSetupFailure(const QStringList& output, const QString& runnerMessage) {
     const auto all = output.join('\n');
-    for (const auto* needle : {"URLError", "HTTPError", "HTTP Error", "timed out", "Temporary failure", "Network is unreachable", "No address associated", "nodename nor servname", "ConnectionError", "SSLError", "CERTIFICATE_VERIFY_FAILED"}) {
+    // The server answered but could not deliver, so the person's connection is not the problem.
+    if (QRegularExpression(R"(HTTP Error 5\d\d)").match(all).hasMatch()) return "The server with the PS5 libraries is having trouble right now. Finished downloads are kept. Wait a minute, then choose Retry.";
+    for (const auto* needle : {"URLError", "HTTPError", "timed out", "Temporary failure", "Network is unreachable", "No address associated", "nodename nor servname", "ConnectionError", "SSLError", "CERTIFICATE_VERIFY_FAILED"}) {
         if (all.contains(QLatin1String(needle))) return "Studio could not download the PS5 libraries. Check your internet connection, then choose Retry.";
     }
     // adk ends with "setup.py exited with code 1"; the Python error before that says what went wrong.

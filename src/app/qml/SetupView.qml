@@ -104,29 +104,33 @@ Item {
                             spacing: 8
 
                             Repeater {
-                                model: view.flow.steps
+                                // A count rather than the list itself, so a progress update keeps
+                                // these rows in place instead of rebuilding them mid-animation.
+                                model: view.flow.steps.length
 
                                 ColumnLayout {
-                                    required property var modelData
+                                    id: stepEntry
+
                                     required property int index
+                                    readonly property var modelData: view.flow.steps[index]
 
                                     Layout.fillWidth: true
                                     spacing: 8
 
                                     SetupStepRow {
                                         Layout.fillWidth: true
-                                        number: parent.index + 1
-                                        title: parent.modelData.title
-                                        state_: parent.modelData.state
-                                        detail: parent.modelData.id === "tools" && parent.modelData.state === "done" && view.toolSummary.length > 0 ? view.toolSummary : parent.modelData.detail
-                                        progress: parent.modelData.progress
+                                        number: stepEntry.index + 1
+                                        title: stepEntry.modelData.title
+                                        state_: stepEntry.modelData.state
+                                        detail: stepEntry.modelData.id === "tools" && stepEntry.modelData.state === "done" && view.toolSummary.length > 0 ? view.toolSummary : stepEntry.modelData.detail
+                                        progress: stepEntry.modelData.progress
                                     }
 
                                     // What to install, shown right under the step that needs it.
                                     ColumnLayout {
                                         Layout.fillWidth: true
                                         Layout.leftMargin: 44
-                                        visible: parent.modelData.id === "tools" && view.missingTools.length > 0
+                                        visible: stepEntry.modelData.id === "tools" && view.missingTools.length > 0
                                         spacing: 10
 
                                         Text {

@@ -363,11 +363,11 @@ void SetupFlow::startDownload() {
 
 void SetupFlow::writeDownloadData() {
     if (!transfer || downloadWriteFailed || downloadTooLarge) return;
+    const auto data = transfer->takeData();
     const auto status = transfer->status();
-    if (status >= 300) {
-        transfer->takeData();
-        return;
-    }
+    // Nothing to write yet, or an error page rather than the file. An empty read must not
+    // touch the partial file: a dropped connection also lands here with no data at all.
+    if (data.isEmpty() || status == 0 || status >= 300) return;
     if (!downloadStarted) {
         downloadStarted = true;
         // A server that ignores the range sends the whole file again, so the old part is thrown away.
@@ -376,14 +376,13 @@ void SetupFlow::writeDownloadData() {
             partFile.remove();
             resumedBytes = 0;
             if (!partFile.open(QIODevice::WriteOnly | QIODevice::Append)) {
+                downloadWriteFailed = true;
                 transfer->abort();
                 return;
             }
         }
     }
-    const auto data = transfer->takeData();
     if (partFile.write(data) != data.size()) {
-        cancelRequested = true;
         downloadWriteFailed = true;
         transfer->abort();
         return;

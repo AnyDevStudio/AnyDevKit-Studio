@@ -460,7 +460,10 @@ private slots:
     void describesAdkSetupFailures() {
         const auto network = describeAdkSetupFailure({"Using AnyPS5", "urllib.error.URLError: <urlopen error [Errno 8] nodename nor servname provided>"}, "Install PS5 libraries failed with exit code 1. The log has the details.");
         QVERIFY(network.contains("internet"));
-        QVERIFY(describeAdkSetupFailure({"urllib.error.HTTPError: HTTP Error 504: Gateway Time-out", "adk: setup.py exited with code 1"}, "x").contains("internet"));
+        const auto serverTrouble = describeAdkSetupFailure({"urllib.error.HTTPError: HTTP Error 504: Gateway Time-out", "adk: setup.py exited with code 1"}, "x");
+        QVERIFY2(serverTrouble.contains("server") && serverTrouble.contains("Retry"), qPrintable(serverTrouble));
+        QVERIFY(!serverTrouble.contains("internet"));
+        QVERIFY(describeAdkSetupFailure({"urllib.error.HTTPError: HTTP Error 403: Forbidden"}, "x").contains("internet"));
         QVERIFY(describeAdkSetupFailure({"ValueError: Cached download does not match SHA-256", "adk: setup.py exited with code 1"}, "x").contains("Cached download does not match"));
         const auto other = describeAdkSetupFailure({"ValueError: Unpatched release is missing libc.prx"}, "x failed with exit code 1. The log has the details.");
         QVERIFY(other.contains("Unpatched release is missing libc.prx"));
@@ -1063,6 +1066,36 @@ private slots:
         QCOMPARE(fixture.http.requests.last().second, firstPart.size());
 #else
         QTRY_COMPARE_WITH_TIMEOUT(fixture.http.requests.last().second, firstPart.size(), 5000);
+#endif
+    }
+
+    void flowKeepsThePartialFileWhenARetryFails() {
+        FlowFixture fixture;
+        const auto archive = fakeSdkArchive();
+        fixture.http.replies[LatestReleaseUrl] = {FakeReply{200, json(releaseJson("v0.1.7", {assetJson(LinuxAssetName, sha256Hex(archive), LinuxAssetUrl, archive.size())}))}};
+        const auto firstPart = archive.left(archive.size() / 2);
+        fixture.http.replies[LinuxAssetUrl] = {
+            FakeReply{200, firstPart, {}, 0, true},
+            FakeReply{0, {}, "Network unreachable"},
+            FakeReply{206, archive.mid(firstPart.size()), {}, firstPart.size()},
+        };
+        SetupFlow flow(fixture.config());
+        flow.checkTools();
+        QTRY_COMPARE(flow.phase(), QString("ready"));
+        flow.start();
+        QTRY_VERIFY_WITH_TIMEOUT(!fixture.http.heldTransfer.isNull(), 5000);
+        flow.cancel();
+        QTRY_COMPARE(flow.phase(), QString("cancelled"));
+        flow.start();
+        QTRY_COMPARE(flow.phase(), QString("failed"));
+        QVERIFY2(flow.problem().contains("internet"), qPrintable(flow.problem()));
+        const auto partFile = fixture.dataDirectory + "/downloads/" + LinuxAssetName + ".part";
+        QCOMPARE(QFileInfo(partFile).size(), firstPart.size());
+#ifdef Q_OS_UNIX
+        QSignalSpy finished(&flow, &SetupFlow::finished);
+        flow.start();
+        QTRY_VERIFY_WITH_TIMEOUT(finished.count() == 1, 15000);
+        QCOMPARE(fixture.http.requests.last().second, firstPart.size());
 #endif
     }
 
