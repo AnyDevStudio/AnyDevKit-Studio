@@ -32,11 +32,12 @@ private:
     void readOutput();
     void flushOutput();
     void finish(bool success, const QString& message);
-    bool removeStaleOutputs(const BuildStep& step, QString& error);
+    bool prepareStep(const BuildStep& step, QString& error);
 
     QList<BuildStep> steps;
     QString workingDirectory;
     QProcessEnvironment environment;
+    QStringList secrets;
     std::unique_ptr<QProcess> process;
     QByteArray pending;
     int current = -1;

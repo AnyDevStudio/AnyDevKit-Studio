@@ -1,5 +1,7 @@
 #include "BuildRunner.h"
 
+#include "ExportFormat.h"
+
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -54,6 +56,8 @@ void BuildRunner::start(const QList<BuildStep>& newSteps, const QString& directo
     steps = newSteps;
     workingDirectory = directory;
     environment = newEnvironment;
+    secrets.clear();
+    for (const auto& step : steps) secrets << step.secrets;
     pending.clear();
     current = -1;
     cancelled = false;
@@ -75,7 +79,11 @@ bool BuildRunner::isRunning() const {
     return running;
 }
 
-bool BuildRunner::removeStaleOutputs(const BuildStep& step, QString& error) {
+bool BuildRunner::prepareStep(const BuildStep& step, QString& error) {
+    if (!step.workingDirectory.isEmpty() && !isInsideDirectory(step.workingDirectory, workingDirectory)) {
+        error = QString("Refusing to run in %1 because it is outside the project folder.").arg(step.workingDirectory);
+        return false;
+    }
     for (const auto& path : step.removeFirst) {
         if (!isInsideDirectory(path, workingDirectory)) {
             error = QString("Refusing to remove %1 because it is outside the project folder.").arg(path);
@@ -86,6 +94,16 @@ bool BuildRunner::removeStaleOutputs(const BuildStep& step, QString& error) {
         const auto removed = info.isDir() && !info.isSymLink() ? QDir(path).removeRecursively() : QFile::remove(path);
         if (!removed) {
             error = QString("Could not remove the previous output at %1.").arg(path);
+            return false;
+        }
+    }
+    for (const auto& path : step.createFirst) {
+        if (!isInsideDirectory(path, workingDirectory)) {
+            error = QString("Refusing to create %1 because it is outside the project folder.").arg(path);
+            return false;
+        }
+        if (!QDir().mkpath(path)) {
+            error = QString("Could not create the folder %1.").arg(path);
             return false;
         }
     }
@@ -107,7 +125,7 @@ void BuildRunner::runNext() {
     emit stepStarted(current);
 
     QString error;
-    if (!removeStaleOutputs(step, error)) {
+    if (!prepareStep(step, error)) {
         emit stepFinished(current, false);
         finish(false, error);
         return;
@@ -123,7 +141,7 @@ void BuildRunner::runNext() {
     if (process) process.release()->deleteLater();
     process = std::make_unique<QProcess>();
     process->setProcessChannelMode(QProcess::MergedChannels);
-    process->setWorkingDirectory(workingDirectory);
+    process->setWorkingDirectory(step.workingDirectory.isEmpty() ? workingDirectory : step.workingDirectory);
     process->setProcessEnvironment(environment);
 #ifdef Q_OS_UNIX
     process->setChildProcessModifier([] { ::setpgid(0, 0); });
@@ -154,20 +172,20 @@ void BuildRunner::readOutput() {
         auto line = pending.first(newline);
         pending.remove(0, newline + 1);
         if (line.endsWith('\r')) line.chop(1);
-        emit outputLine(QString::fromUtf8(line));
+        emit outputLine(redactSecrets(QString::fromUtf8(line), secrets));
     }
 }
 
 void BuildRunner::flushOutput() {
     if (pending.isEmpty()) return;
-    emit outputLine(QString::fromUtf8(pending));
+    emit outputLine(redactSecrets(QString::fromUtf8(pending), secrets));
     pending.clear();
 }
 
 void BuildRunner::finish(bool success, const QString& message) {
     if (!running) return;
     running = false;
-    emit finished(success, message);
+    emit finished(success, redactSecrets(message, secrets));
 }
 
 }

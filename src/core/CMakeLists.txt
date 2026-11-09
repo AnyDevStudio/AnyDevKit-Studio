@@ -5,6 +5,8 @@ add_library(studio_core STATIC
     LogicDocument.h
     LogicLayout.cpp
     LogicLayout.h
+    ExportFormat.cpp
+    ExportFormat.h
     Project.cpp
     Project.h
     BuildRunner.cpp

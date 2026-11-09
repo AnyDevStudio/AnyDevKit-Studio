@@ -34,6 +34,12 @@ struct BuildStep {
     QString program;
     QStringList arguments;
     QStringList removeFirst;
+    // Folder to run in, when not the project root. Must be inside the project.
+    QString workingDirectory;
+    // Folders to create before the step runs. Must be inside the project.
+    QStringList createFirst;
+    // Values that must never reach the log, such as package keys passed on the command line.
+    QStringList secrets;
 };
 
 struct FileEntry {

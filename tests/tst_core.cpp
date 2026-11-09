@@ -1,5 +1,6 @@
 #include "BuildRunner.h"
 #include "CodeEditors.h"
+#include "ExportFormat.h"
 #include "NewGame.h"
 #include "Project.h"
 #include "Scene.h"
@@ -9,6 +10,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QProcess>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QtTest>
@@ -68,6 +70,13 @@ void writeProject(const QString& root, const QString& output = "dist/ps5/Demo.ff
 
 BuildStep cmakeStep(const QString& id, const QStringList& arguments) {
     return BuildStep{id, id, QStringLiteral(STUDIO_TEST_CMAKE), arguments, {}};
+}
+
+// A complete, throwaway key set. Random bytes of the sizes adk validates: never usable on a console.
+PkgKeys writeKeyFiles(const QString& folder) {
+    writeText(folder + "/moduli.bin", QByteArray(7 * 384, 'a'));
+    writeText(folder + "/mount.bin", QByteArray(384, 'b'));
+    return {folder + "/moduli.bin", folder + "/mount.bin", "00112233445566778899aabbccddeeff", "ffeeddccbbaa99887766554433221100"};
 }
 
 // The parts of an SDK and of an `adk setup` folder that a new game relies on.
@@ -662,6 +671,255 @@ private slots:
 
         const auto notStarted = describeAdkInitFailure({"   "}, "Create game could not be started: permission denied");
         QVERIFY2(notStarted.contains("permission denied"), qPrintable(notStarted));
+    }
+
+    void exportFormatIdsRoundTrip() {
+        QCOMPARE(exportFormats().size(), 3);
+        QVERIFY(exportFormats().first().format == ExportFormat::Ffpfsc);
+        for (const auto& info : exportFormats()) QVERIFY(exportFormatFromId(info.id) == info.format);
+        QVERIFY(!exportFormatFromId("rar"));
+        QCOMPARE(exportFormatInfo(ExportFormat::Ffpfsc).buildLabel, QString("Build PS5 package"));
+        QCOMPARE(exportFormatInfo(ExportFormat::Zip).buildLabel, QString("Export ZIP"));
+        QCOMPARE(exportFormatInfo(ExportFormat::Pkg).buildLabel, QString("Build PKG"));
+    }
+
+    void ffpfscExportIsTodaysBuild() {
+        QTemporaryDir directory;
+        writeProject(directory.path());
+        const auto project = *loadProject(directory.path()).project;
+        const auto steps = exportBuildSteps(project, ExportFormat::Ffpfsc);
+        const auto today = ps5BuildSteps(project);
+        QCOMPARE(steps.size(), today.size());
+        for (qsizetype index = 0; index < steps.size(); ++index) {
+            QCOMPARE(steps[index].id, today[index].id);
+            QCOMPARE(steps[index].program, today[index].program);
+            QCOMPARE(steps[index].arguments, today[index].arguments);
+            QCOMPARE(steps[index].removeFirst, today[index].removeFirst);
+            QVERIFY(steps[index].workingDirectory.isEmpty());
+            QVERIFY(steps[index].secrets.isEmpty());
+        }
+        QVERIFY(exportOutputPath(project, ExportFormat::Ffpfsc).endsWith("/dist/ps5/Demo.ffpfsc"));
+    }
+
+    void zipExportPacksThePreparedApp0() {
+        QTemporaryDir directory;
+        writeProject(directory.path());
+        const auto project = *loadProject(directory.path()).project;
+        const auto zip = exportOutputPath(project, ExportFormat::Zip);
+        QVERIFY(zip.endsWith("/dist/ps5/Demo.zip"));
+        const auto steps = exportBuildSteps(project, ExportFormat::Zip);
+        QCOMPARE(steps.size(), 4);
+        QCOMPARE(steps[2].id, QString("package"));
+        QCOMPARE(steps[2].program, adkExecutable(project));
+
+        // The by-product archive stays out of dist so the export folder only holds what was chosen.
+        const auto intermediateIndex = steps[2].arguments.indexOf("--output") + 1;
+        QCOMPARE(intermediateIndex, 4);
+        const auto intermediate = steps[2].arguments[intermediateIndex];
+        QVERIFY(isInsideDirectory(intermediate, directory.path() + "/build"));
+        QVERIFY(!intermediate.contains("/dist/"));
+        QCOMPARE(steps[2].removeFirst, QStringList({zip, intermediate, project.workspacePath}));
+
+        QCOMPARE(steps[3].id, QString("zip"));
+        QCOMPARE(steps[3].program, QString("cmake"));
+        QCOMPARE(steps[3].arguments, QStringList({"-E", "tar", "cf", zip, "--format=zip", "."}));
+        QCOMPARE(steps[3].workingDirectory, project.workspacePath + "/app0");
+        QCOMPARE(steps[3].createFirst, QStringList({QFileInfo(zip).absolutePath()}));
+        QVERIFY(steps[3].secrets.isEmpty());
+    }
+
+    void zipStepPutsPreparedFilesAtTheZipRoot() {
+        QTemporaryDir directory;
+        writeProject(directory.path());
+        const auto project = *loadProject(directory.path()).project;
+        writeText(project.workspacePath + "/app0/eboot.bin", "eboot");
+        writeText(project.workspacePath + "/app0/sce_sys/param.json", "{}");
+        const auto zipSteps = exportBuildSteps(project, ExportFormat::Zip);
+        QVERIFY(!zipSteps.isEmpty());
+        auto step = zipSteps.last();
+        step.program = QStringLiteral(STUDIO_TEST_CMAKE);
+        BuildRunner runner;
+        QSignalSpy finished(&runner, &BuildRunner::finished);
+        runner.start({step}, directory.path(), QProcessEnvironment::systemEnvironment());
+        QVERIFY(finished.wait(20000));
+        QVERIFY2(finished.at(0).at(0).toBool(), qPrintable(finished.at(0).at(1).toString()));
+
+        QProcess list;
+        list.start(QStringLiteral(STUDIO_TEST_CMAKE), {"-E", "tar", "tf", exportOutputPath(project, ExportFormat::Zip)});
+        QVERIFY(list.waitForFinished(20000));
+        const auto entries = QString::fromUtf8(list.readAll()).split('\n', Qt::SkipEmptyParts);
+        QVERIFY2(entries.contains("eboot.bin"), qPrintable(entries.join(' ')));
+        QVERIFY2(entries.contains("sce_sys/param.json"), qPrintable(entries.join(' ')));
+        QVERIFY2(!entries.join('\n').contains("app0"), qPrintable(entries.join(' ')));
+    }
+
+    void pkgExportPassesTheProvidedKeys() {
+        QTemporaryDir directory;
+        writeProject(directory.path());
+        const auto project = *loadProject(directory.path()).project;
+        const auto keys = writeKeyFiles(directory.path());
+        const auto output = exportOutputPath(project, ExportFormat::Pkg);
+        QVERIFY(output.endsWith("/dist/ps5/Demo.pkg"));
+        const auto steps = exportBuildSteps(project, ExportFormat::Pkg, keys);
+        QCOMPARE(steps.size(), 3);
+        QCOMPARE(steps[2].program, adkExecutable(project));
+        QCOMPARE(steps[2].arguments, QStringList({"package", "--target", "ps5", "--format", "pkg", "--output", output, "--passcode-moduli", keys.passcodeModuliPath, "--mount-modulus", keys.mountModulusPath, "--passcode", keys.passcode, "--image-seed", keys.imageSeed}));
+        QCOMPARE(steps[2].removeFirst, QStringList({output, project.workspacePath}));
+        QCOMPARE(steps[2].secrets, QStringList({keys.passcode, keys.imageSeed}));
+    }
+
+    void describedStepsNeverShowSecrets() {
+        QTemporaryDir directory;
+        writeProject(directory.path());
+        const auto project = *loadProject(directory.path()).project;
+        const auto keys = writeKeyFiles(directory.path());
+        const auto pkgSteps = exportBuildSteps(project, ExportFormat::Pkg, keys);
+        const auto ffpfscSteps = exportBuildSteps(project, ExportFormat::Ffpfsc);
+        QVERIFY(!pkgSteps.isEmpty());
+        QVERIFY(!ffpfscSteps.isEmpty());
+        const auto shown = describeBuildStep(pkgSteps.last());
+        QVERIFY2(shown.startsWith("adk package --target ps5 --format pkg"), qPrintable(shown));
+        QVERIFY2(!shown.contains(keys.passcode), qPrintable(shown));
+        QVERIFY2(!shown.contains(keys.imageSeed), qPrintable(shown));
+        QVERIFY2(shown.contains("--passcode <hidden>"), qPrintable(shown));
+        QVERIFY2(shown.contains("--image-seed <hidden>"), qPrintable(shown));
+        QVERIFY2(shown.contains(keys.passcodeModuliPath), "Key file paths are not secret and help when a build fails.");
+        QVERIFY2(describeBuildStep(ffpfscSteps.last()).endsWith("adk package --target ps5"), "A step without secrets is shown as it runs.");
+    }
+
+    void redactsSecretsWhereverTheyAppear() {
+        const QString secret = "00112233445566778899aabbccddeeff";
+        QCOMPARE(redactSecrets("a 00112233445566778899aabbccddeeff b", {secret}), QString("a <hidden> b"));
+        QCOMPARE(redactSecrets("x 00112233445566778899AABBCCDDEEFF y", {secret}), QString("x <hidden> y"));
+        QCOMPARE(redactSecrets("twice 00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff", {secret}), QString("twice <hidden><hidden>"));
+        QCOMPARE(redactSecrets("nothing here", {}), QString("nothing here"));
+        QCOMPARE(redactSecrets("nothing here", {QString()}), QString("nothing here"));
+    }
+
+    void runnerHidesSecretsInToolOutput() {
+        QTemporaryDir directory;
+        const QString secret = "00112233445566778899aabbccddeeff";
+        auto step = cmakeStep("echo", {"-E", "echo", "passcode=" + secret});
+        step.secrets = {secret};
+        BuildRunner runner;
+        QSignalSpy output(&runner, &BuildRunner::outputLine);
+        QSignalSpy finished(&runner, &BuildRunner::finished);
+        runner.start({step}, directory.path(), QProcessEnvironment::systemEnvironment());
+        QVERIFY(finished.wait(20000));
+        QVERIFY(!output.isEmpty());
+        for (const auto& line : output) QVERIFY2(!line.at(0).toString().contains(secret), qPrintable(line.at(0).toString()));
+        QVERIFY2(output.at(0).at(0).toString().contains("<hidden>"), qPrintable(output.at(0).at(0).toString()));
+    }
+
+    void runsStepsInTheirWorkingDirectoryAndCreatesFolders() {
+        QTemporaryDir directory;
+        writeText(directory.path() + "/sub/here.txt");
+        auto step = cmakeStep("touch", {"-E", "touch", "made-here.txt"});
+        step.workingDirectory = directory.path() + "/sub";
+        step.createFirst = {directory.path() + "/dist/ps5"};
+        BuildRunner runner;
+        QSignalSpy finished(&runner, &BuildRunner::finished);
+        runner.start({step}, directory.path(), QProcessEnvironment::systemEnvironment());
+        QVERIFY(finished.wait(20000));
+        QVERIFY2(finished.at(0).at(0).toBool(), qPrintable(finished.at(0).at(1).toString()));
+        QVERIFY(QFile::exists(directory.path() + "/sub/made-here.txt"));
+        QVERIFY(QFileInfo(directory.path() + "/dist/ps5").isDir());
+    }
+
+    void refusesToRunOrCreateOutsideProject() {
+        QTemporaryDir project;
+        QTemporaryDir other;
+        for (const auto usesCreate : {false, true}) {
+            auto step = cmakeStep("touch", {"-E", "touch", "made.txt"});
+            if (usesCreate) step.createFirst = {other.path() + "/made-folder"};
+            else step.workingDirectory = other.path();
+            BuildRunner runner;
+            QSignalSpy finished(&runner, &BuildRunner::finished);
+            runner.start({step}, project.path(), QProcessEnvironment::systemEnvironment());
+            QVERIFY(finished.wait(20000));
+            QVERIFY2(!finished.at(0).at(0).toBool(), "A step must not run or create folders outside the project.");
+        }
+        QVERIFY(!QFile::exists(other.path() + "/made.txt"));
+        QVERIFY(!QFile::exists(other.path() + "/made-folder"));
+    }
+
+    void exportPathsStayInsideTheProject() {
+        QTemporaryDir directory;
+        writeProject(directory.path());
+        auto project = *loadProject(directory.path()).project;
+        QVERIFY2(checkExportPaths(project, ExportFormat::Zip).isEmpty(), qPrintable(checkExportPaths(project, ExportFormat::Zip)));
+        QVERIFY2(checkExportPaths(project, ExportFormat::Pkg).isEmpty(), qPrintable(checkExportPaths(project, ExportFormat::Pkg)));
+
+        for (const auto name : {"../../escaped", "nested/name", "dir\\name", "..", ""}) {
+            project.name = QString::fromLatin1(name);
+            const auto problem = checkExportPaths(project, ExportFormat::Zip);
+            QVERIFY2(!problem.isEmpty(), name);
+            QVERIFY2(problem.contains("name"), qPrintable(problem));
+        }
+    }
+
+    void exportPathsRefuseLinksOutOfTheProject() {
+#ifdef Q_OS_UNIX
+        QTemporaryDir directory;
+        QTemporaryDir other;
+        writeProject(directory.path());
+        const auto project = *loadProject(directory.path()).project;
+        QVERIFY(QFile::link(other.path(), directory.path() + "/dist"));
+        const auto zipProblem = checkExportPaths(project, ExportFormat::Zip);
+        QVERIFY2(zipProblem.contains("dist"), qPrintable(zipProblem));
+        QVERIFY2(zipProblem.contains("link"), qPrintable(zipProblem));
+        QVERIFY2(checkExportPaths(project, ExportFormat::Ffpfsc).isEmpty(), "FFPFSC keeps today's checks.");
+
+        QVERIFY(QFile::remove(directory.path() + "/dist"));
+        QVERIFY(QFile::link(other.path(), directory.path() + "/build"));
+        const auto workspaceProblem = checkExportPaths(project, ExportFormat::Pkg);
+        QVERIFY2(workspaceProblem.contains("build"), qPrintable(workspaceProblem));
+#else
+        QSKIP("Links need a Unix file system in this test.");
+#endif
+    }
+
+    void pkgKeyProblemsNameEverythingMissing() {
+        const auto problems = pkgKeyProblems({});
+        QCOMPARE(problems.size(), 4);
+        const auto text = problems.join(' ');
+        QVERIFY2(text.contains("passcode moduli"), qPrintable(text));
+        QVERIFY2(text.contains("mount modulus"), qPrintable(text));
+        QVERIFY2(text.contains("passcode"), qPrintable(text));
+        QVERIFY2(text.contains("image seed"), qPrintable(text));
+        const auto message = describePkgKeyProblems(problems);
+        QVERIFY2(message.contains("PKG"), qPrintable(message));
+        QVERIFY2(message.contains("does not include"), qPrintable(message));
+        QVERIFY2(message.contains("Code and build"), "The message must say where to add the keys.");
+        QVERIFY(describePkgKeyProblems({}).isEmpty());
+    }
+
+    void pkgKeyProblemsCheckFileSizesAndValues() {
+        QTemporaryDir directory;
+        const auto keys = writeKeyFiles(directory.path());
+        QVERIFY2(pkgKeyProblems(keys).isEmpty(), qPrintable(pkgKeyProblems(keys).join(' ')));
+
+        auto wrongSize = keys;
+        writeText(directory.path() + "/short.bin", QByteArray(383, 'c'));
+        wrongSize.passcodeModuliPath = directory.path() + "/short.bin";
+        wrongSize.mountModulusPath = directory.path() + "/short.bin";
+        const auto sizeProblems = pkgKeyProblems(wrongSize);
+        QCOMPARE(sizeProblems.size(), 2);
+        QVERIFY2(sizeProblems[0].contains("2688"), qPrintable(sizeProblems[0]));
+        QVERIFY2(sizeProblems[1].contains("384"), qPrintable(sizeProblems[1]));
+
+        auto missingFile = keys;
+        missingFile.mountModulusPath = directory.path() + "/gone.bin";
+        QVERIFY2(pkgKeyProblems(missingFile).join(' ').contains("not found"), "A missing key file should be named as missing.");
+
+        auto badValues = keys;
+        badValues.passcode = "zz112233445566778899aabbccddeeff";
+        badValues.imageSeed = "00112233";
+        const auto valueProblems = pkgKeyProblems(badValues);
+        QCOMPARE(valueProblems.size(), 2);
+        QVERIFY2(valueProblems[0].contains("32 hexadecimal"), qPrintable(valueProblems[0]));
+        QVERIFY2(!valueProblems.join(' ').contains(badValues.passcode), "Problem text must not repeat the secret.");
+        QVERIFY2(!valueProblems.join(' ').contains(badValues.imageSeed), "Problem text must not repeat the secret.");
     }
 };
 
