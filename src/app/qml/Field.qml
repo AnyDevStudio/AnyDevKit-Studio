@@ -41,6 +41,9 @@ ColumnLayout {
     T.TextField {
         id: input
 
+        // Lets the Build button save what is typed here, since a click on it does not take the focus.
+        property var commitEdit: function () { field.commit() }
+
         Layout.fillWidth: true
         implicitHeight: 38
         leftPadding: 12

@@ -119,9 +119,24 @@ QString adkExecutable(const QString& sdkRoot) {
 #endif
 }
 
+// CMake refuses a build folder whose cache names another source folder, which is what a project that was
+// moved or copied brings along. The cache is only build output, so the configure step starts over.
+static bool buildCacheFromAnotherFolder(const Project& project) {
+    QFile cache(project.root + "/build/ps5/CMakeCache.txt");
+    if (!cache.open(QIODevice::ReadOnly | QIODevice::Text)) return false;
+    static const QByteArray key = "CMAKE_HOME_DIRECTORY:INTERNAL=";
+    while (!cache.atEnd()) {
+        const auto line = cache.readLine().trimmed();
+        if (!line.startsWith(key)) continue;
+        const auto cached = QFileInfo(QString::fromUtf8(line.mid(key.size()))).canonicalFilePath();
+        return cached.isEmpty() || cached != QFileInfo(project.root).canonicalFilePath();
+    }
+    return false;
+}
+
 QList<BuildStep> ps5BuildSteps(const Project& project) {
     return {
-        {"configure", "Configure", "cmake", {"--preset", "ps5"}, {}},
+        {"configure", "Configure", "cmake", {"--preset", "ps5"}, buildCacheFromAnotherFolder(project) ? QStringList{project.root + "/build/ps5"} : QStringList{}},
         {"compile", "Compile", "cmake", {"--build", "--preset", "ps5"}, {}},
         {"package", "Package", adkExecutable(project), {"package", "--target", "ps5"}, {project.outputPath, project.workspacePath}},
     };

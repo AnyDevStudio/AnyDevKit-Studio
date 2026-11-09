@@ -70,8 +70,10 @@ void BuildRunner::cancel() {
     cancelled = true;
     if (!process || process->state() == QProcess::NotRunning) return;
     stopProcessTree(*process);
-    QTimer::singleShot(KillDelayMilliseconds, this, [this] {
-        if (process && process->state() != QProcess::NotRunning) process->kill();
+    // Bound to this process, so a build started during the delay does not get killed in its place.
+    auto* target = process.get();
+    QTimer::singleShot(KillDelayMilliseconds, target, [target] {
+        if (target->state() != QProcess::NotRunning) target->kill();
     });
 }
 

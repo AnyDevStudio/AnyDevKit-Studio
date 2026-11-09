@@ -253,7 +253,7 @@ QString SceneDocument::imageWarning() const {
     if (imageProblems.size() == 1) return imageProblems.cbegin().value();
     auto sources = imageProblems.keys();
     sources.sort();
-    return QString("%1 images cannot be shown: %2. Put the files back in the project's assets folder, or select each image and choose Replace image.").arg(sources.size()).arg(sources.join(", "));
+    return QString("%1 images cannot be shown: %2. Put the files back in the project's assets folder, or select each image and choose Replace image. A tileset can only be put back.").arg(sources.size()).arg(sources.join(", "));
 }
 
 QString SceneDocument::roomProblem() const {

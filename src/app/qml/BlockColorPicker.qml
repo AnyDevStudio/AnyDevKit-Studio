@@ -35,6 +35,8 @@ T.Button {
 
         y: picker.height + 8
         width: 240
+        // A template popup does not size itself, and a height of 0 leaves the swatches floating with no card.
+        implicitHeight: implicitContentHeight + topPadding + bottomPadding
         padding: 14
         focus: true
         closePolicy: T.Popup.CloseOnEscape | T.Popup.CloseOnPressOutside

@@ -1,6 +1,6 @@
 Packages for macOS, Windows and Linux. Qt is included, so there is nothing else to install to open
-Studio. To build PS5 packages you still need the
-[AnyDevKit SDK](https://github.com/boykopovar/AnyDevKit/releases/latest) and its tools.
+Studio. To build PS5 packages you also need the AnyDevKit SDK and its tools: the Set up PS5 tools
+screen downloads AnyDevKit and the PS5 libraries for you and tells you which build tools to install.
 
 | System | Download |
 |---|---|

@@ -251,6 +251,7 @@ ColumnLayout {
         parent: T.Overlay.overlay
         anchors.centerIn: parent
         width: Math.min(parent ? parent.width - 96 : 520, 520)
+        implicitHeight: implicitContentHeight + topPadding + bottomPadding
         modal: true
         focus: true
         padding: 30

@@ -165,6 +165,19 @@ private slots:
         QCOMPARE(steps[2].removeFirst, QStringList({project.outputPath, project.workspacePath}));
     }
 
+    void configureStartsOverWhenTheProjectWasMoved() {
+        QTemporaryDir directory;
+        writeProject(directory.path());
+        const auto project = *loadProject(directory.path()).project;
+        QCOMPARE(ps5BuildSteps(project)[0].removeFirst, QStringList());
+
+        // A cache made here stays; one made in the project's old folder is thrown away, because CMake refuses it.
+        writeText(directory.path() + "/build/ps5/CMakeCache.txt", QString("CMAKE_HOME_DIRECTORY:INTERNAL=%1\n").arg(project.root).toUtf8());
+        QCOMPARE(ps5BuildSteps(project)[0].removeFirst, QStringList());
+        writeText(directory.path() + "/build/ps5/CMakeCache.txt", "CMAKE_HOME_DIRECTORY:INTERNAL=/somewhere/else/Demo\n");
+        QCOMPARE(ps5BuildSteps(project)[0].removeFirst, QStringList({project.root + "/build/ps5"}));
+    }
+
     void listsSourcesAndSkipsBuildOutput() {
         QTemporaryDir directory;
         writeText(directory.path() + "/src/Main.cpp");
@@ -381,6 +394,22 @@ private slots:
         QVERIFY(finished.wait(10000));
         QCOMPARE(finished.at(0).at(0).toBool(), false);
         QVERIFY(finished.at(0).at(1).toString().contains("Cancelled"));
+    }
+
+    void aCancelledBuildLeavesTheNextBuildAlone() {
+        QTemporaryDir directory;
+        BuildRunner runner;
+        QSignalSpy finished(&runner, &BuildRunner::finished);
+        runner.start({cmakeStep("sleep", {"-E", "sleep", "30"})}, directory.path(), QProcessEnvironment::systemEnvironment());
+        QTest::qWait(200);
+        runner.cancel();
+        QVERIFY(finished.wait(10000));
+
+        // Started straight after the cancel, inside the delay before a stuck program is killed.
+        runner.start({cmakeStep("sleep again", {"-E", "sleep", "3"})}, directory.path(), QProcessEnvironment::systemEnvironment());
+        QVERIFY(finished.wait(10000));
+        QCOMPARE(finished.count(), 2);
+        QVERIFY2(finished.at(1).at(0).toBool(), qPrintable(finished.at(1).at(1).toString()));
     }
 
     void gameNameFollowsAdkInit_data() {
