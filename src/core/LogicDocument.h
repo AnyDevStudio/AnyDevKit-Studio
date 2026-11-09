@@ -28,6 +28,7 @@ class LogicDocument : public QAbstractListModel {
     Q_PROPERTY(QVariantList palette READ palette CONSTANT)
     Q_PROPERTY(QVariantList buttons READ buttons CONSTANT)
     Q_PROPERTY(QVariantList comparisons READ comparisons CONSTANT)
+    Q_PROPERTY(QVariantList variables READ variables NOTIFY programChanged)
     Q_PROPERTY(QVariantList sceneItems READ sceneItems NOTIFY sceneItemsChanged)
     Q_PROPERTY(double canvasWidth READ canvasWidth WRITE setCanvasWidth NOTIFY layoutChanged)
     Q_PROPERTY(double contentWidth READ contentWidth NOTIFY layoutChanged)
@@ -68,6 +69,7 @@ public:
         DraggedRole,
         EmptyCavityRole,
         ProblemHeightRole,
+        VariableRole,
     };
 
     explicit LogicDocument(QObject* parent = nullptr);
@@ -97,6 +99,7 @@ public:
     QVariantList palette() const;
     QVariantList buttons() const;
     QVariantList comparisons() const;
+    QVariantList variables() const; // [{name, initial, id}], id repeating the name for pickers
     QVariantList sceneItems() const;
     double canvasWidth() const;
     void setCanvasWidth(double width);
@@ -115,6 +118,15 @@ public:
     Q_INVOKABLE void removeBlock(const QString& id);
     Q_INVOKABLE bool setField(const QString& id, const QString& key, const QVariant& value);
     Q_INVOKABLE void undo();
+
+    // The Variables area. Each refuses a bad name or value with a message in error.
+    Q_INVOKABLE bool addVariable(const QString& name);
+    Q_INVOKABLE bool renameVariable(const QString& name, const QString& newName); // updates every block
+    Q_INVOKABLE bool setVariableInitial(const QString& name, const QVariant& value);
+    // Blocks using it become problems to fix, so this is for after the person has been told.
+    Q_INVOKABLE void removeVariable(const QString& name);
+    // Everything that shows or changes the variable: [{kind: block|text, title, where}].
+    Q_INVOKABLE QVariantList variableUses(const QString& name) const;
 
     // The block after and before this one in reading order, for moving with the keyboard.
     Q_INVOKABLE QString nextBlockId(const QString& id) const;
@@ -140,6 +152,8 @@ signals:
     void sceneItemsChanged();
     void layoutChanged();
     void dragChanged();
+    // A variable's name changed, also by undoing; text in the scene follows it.
+    void variableRenamed(const QString& name, const QString& newName);
 
 private:
     struct DragState {
@@ -164,6 +178,7 @@ private:
     LogicLayout computeLayout(const LogicProgram& program) const;
     void setError(const QString& text);
     void finishDrag(bool restoreLayout);
+    QString variableNameProblem(const QString& name, const QString& ignoring = {}) const;
 
     QString path;
     LogicProgram document;

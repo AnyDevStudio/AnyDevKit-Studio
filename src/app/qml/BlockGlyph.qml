@@ -18,7 +18,7 @@ Shape {
             return "M 3 17 L 15 5 M 7 4.5 L 16 4 L 15.5 13"
         case "looks":
             return "M 2 10 C 5 4.5 15 4.5 18 10 C 15 15.5 5 15.5 2 10 Z M 10 12.2 A 2.2 2.2 0 1 0 10 7.8 A 2.2 2.2 0 1 0 10 12.2 Z"
-        case "score":
+        case "variables":
             return "M 4 3.5 L 4 16.5 M 16 3.5 L 16 16.5 M 4 10 L 16 10 M 8.5 3 L 8.5 17"
         default:
             return "M 6 3 L 15.5 10 L 6 17 Z"

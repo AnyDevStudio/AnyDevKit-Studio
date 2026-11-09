@@ -22,6 +22,7 @@ class SceneDocument : public QAbstractListModel {
     Q_PROPERTY(QString notice READ notice NOTIFY noticeChanged)
     Q_PROPERTY(bool noticeIsProblem READ noticeIsProblem NOTIFY noticeChanged)
     Q_PROPERTY(QString imageWarning READ imageWarning NOTIFY imagesChanged)
+    Q_PROPERTY(QStringList variableNames READ variableNames NOTIFY variablesChanged)
 
 public:
     enum Role {
@@ -67,6 +68,12 @@ public:
     QString imageWarning() const;
     QString roomProblem() const;
     void setNotice(const QString& text, bool problem);
+    QStringList variableNames() const;
+
+    // What the logic's variables are and start at, for text that shows them on the stage.
+    void setVariables(const QList<LogicVariable>& variables);
+    // Rewrites {name} in every text, including the undo history, so undo cannot bring the old name back.
+    void renameVariable(const QString& name, const QString& newName);
 
     // `source` is a file already inside the project; StudioController imports it first because
     // decoding needs Qt Gui, which this library stays free of.
@@ -110,9 +117,11 @@ signals:
     void errorChanged();
     void noticeChanged();
     void imagesChanged();
+    void variablesChanged();
 
 private:
     bool isValidIndex(int index) const;
+    double drawnWidth(const SceneItem& item) const;
     void pushUndo();
     bool commit(const Scene& candidate);
     void notifyItem(int index);
@@ -134,6 +143,7 @@ private:
     bool noticeProblem = false;
     QHash<QString, QString> imageProblems; // by source, only images that cannot be used
     QSet<QString> hiddenItems; // by id, so it follows an item through reorders and undo
+    QList<LogicVariable> variables;
 };
 
 }

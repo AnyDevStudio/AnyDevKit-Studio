@@ -2,14 +2,16 @@
 #define @NAME@_Scene_SceneState_hpp
 #include "GeneratedLogic.hpp"
 #include "GeneratedScene.hpp"
+#include "GeneratedVariables.hpp"
 #include "Scene/Particles.hpp"
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <span>
+#include <string_view>
 
-// Current state of every item in GeneratedScene::Items, indexed the same way, and the game's score.
+// Current state of every item in GeneratedScene::Items, indexed the same way, and the game's variables.
 // The block logic in GeneratedLogic.hpp changes it through the Logic section below.
 class SceneState final {
 public:
@@ -30,9 +32,9 @@ public:
     void SetPosition(std::size_t item, float x, float y);
     void SetVisible(std::size_t item, bool visible);
     void SetColor(std::size_t item, float red, float green, float blue);
-    void AddScore(std::int32_t amount); // stops at the largest or smallest score instead of overflowing
-    void SetScore(std::int32_t value);
-    std::int32_t Score() const;
+    void SetVariable(std::size_t variable, std::int32_t value);
+    void ChangeVariable(std::size_t variable, std::int32_t amount); // stops at the largest or smallest value instead of overflowing
+    std::int32_t Variable(std::size_t variable) const;
     bool Touching(std::size_t first, std::size_t second) const; // hidden items touch nothing
     bool Held(std::uint32_t button) const;
     // Plays a particles item once, at its current position.
@@ -43,9 +45,14 @@ public:
     // Rectangles to draw for a particles item this frame, and none for any other item.
     std::span<const Particles::Quad> ParticleQuads(std::size_t item) const;
 
+    // What a text item shows this frame. Text with no variables is its scene text, untouched.
+    std::string_view CurrentText(std::size_t item) const;
+
 private:
-    void clampToStage(const GeneratedScene::Item& item, Position& position) const;
+    void clampToStage(std::size_t item, Position& position) const;
     void limitPosition(std::size_t item, Position& position) const;
+    float drawnWidth(std::size_t item) const; // follows the current text of an item that shows variables
+    void rebuildText();
     // Allocated once in the constructor, so the frame loop never touches the heap. A scene with no
     // particles allocates nothing.
     struct ParticleWorld {
@@ -61,7 +68,16 @@ private:
     Visibility visible{};
     GeneratedLogic::Memory logicMemory{};
     std::uint32_t heldButtons = 0;
-    std::int32_t score = 0;
+    std::array<std::int32_t, GeneratedVariables::VariableCount> variables = GeneratedVariables::InitialValues;
+    // One buffer holding the characters of every text that shows variables, each at a fixed offset and
+    // sized for its widest number before the first frame, so rebuilding them never touches the heap.
+    static constexpr std::size_t BoundCharacters = [] {
+        std::size_t total = 0;
+        for (const auto& text : GeneratedVariables::BoundTexts) total += text.quads;
+        return total;
+    }();
+    std::array<char, BoundCharacters> boundCharacters{};
+    std::array<std::size_t, GeneratedVariables::BoundTexts.size()> boundLengths{};
     float stageWidth;
     float stageHeight;
 };

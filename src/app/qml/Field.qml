@@ -19,6 +19,12 @@ ColumnLayout {
     // Saves what is typed without waiting for the field to lose focus.
     function commit() { if (input.text !== value) committed(input.text) }
     function focusInput() { input.forceActiveFocus() }
+    // Puts text where the cursor is and saves at once, as when a variable is picked for this field.
+    function insertAtCursor(text) {
+        input.insert(input.cursorPosition, text)
+        input.forceActiveFocus()
+        commit()
+    }
     function setText(newText) { value = newText; input.text = newText }
 
     spacing: 6

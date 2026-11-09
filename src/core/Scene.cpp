@@ -24,12 +24,13 @@ namespace Studio {
 
 namespace {
 
-// The version saved today. Older files still load: version 1 cannot hold images, and neither 1 nor 2
-// can hold particles.
-constexpr int CurrentSchema = 3;
+// The version saved today. Older files still load: version 1 cannot hold images, neither 1 nor 2 can
+// hold particles, and before 4 a brace in a text was only a brace.
+constexpr int CurrentSchema = 4;
 constexpr int OldestLoadableSchema = 1;
 constexpr int ImageSchema = 2;
 constexpr int ParticleSchema = 3;
+constexpr int VariableTextSchema = 4;
 constexpr int MaximumItems = 256;
 constexpr int MaximumTextLength = 64;
 constexpr int MaximumScale = 40;
@@ -84,11 +85,26 @@ bool isColor(const QString& color) {
 }
 
 bool isDisplayableText(const QString& text) {
-    if (text.isEmpty() || text.size() > MaximumTextLength) return false;
+    if (text.isEmpty()) return false;
     for (const auto character : text) {
         if (character.unicode() < 0x20 || character.unicode() > 0x7E) return false;
     }
     return true;
+}
+
+// {{ and }} count as the one character they show, and {name} as what is typed for it.
+qsizetype textLength(const TextTemplate& parsed) {
+    qsizetype length = 0;
+    for (const auto& part : parsed.parts) length += part.variable.isEmpty() ? part.text.size() : part.variable.size() + 2;
+    return length;
+}
+
+// The text a text item holds in the generated header: the plain text, with each variable widened to
+// the number that takes the most characters so that its length is the quads the game must reserve.
+QString widestText(const QString& text) {
+    QString widest;
+    for (const auto& part : parseTextTemplate(text).parts) widest += part.variable.isEmpty() ? part.text : QString(MaximumVariableCharacters, '0');
+    return widest;
 }
 
 // Path rules checked without touching the disk; imageFileProblem looks at the actual files.
@@ -145,6 +161,9 @@ QString validateItem(const SceneItem& item, qsizetype index, QSet<QString>& used
     if (isParticles) return validateParticles(item, index);
     if (item.type == TextType) {
         if (!isDisplayableText(item.text)) return itemError(item, index, "text must be 1 to 64 printable characters.");
+        const auto parsed = parseTextTemplate(item.text);
+        if (!parsed.problem.isEmpty()) return itemError(item, index, parsed.problem);
+        if (textLength(parsed) > MaximumTextLength) return itemError(item, index, "text must be 1 to 64 printable characters.");
         if (item.scale < 1 || item.scale > MaximumScale) return itemError(item, index, "scale must be a whole number from 1 to 40.");
     }
     return {};
@@ -246,30 +265,20 @@ QByteArray colorLiterals(const QString& color) {
     return channels.join(", ");
 }
 
-QByteArray escapedText(const QString& text) {
-    QByteArray escaped;
-    auto previous = '\0';
-    for (const char character : text.toLatin1()) {
-        // A second '?' is escaped because "??=" and friends are trigraphs, which the game's -Werror rejects.
-        if (character == '"' || character == '\\' || (character == '?' && previous == '?')) escaped += '\\';
-        escaped += character;
-        previous = character;
-    }
-    return escaped;
-}
 
 QByteArray itemLine(const SceneItem& item, const QStringList& imageSources, int particleIndex) {
     const auto isText = item.type == TextType;
     const auto isImage = item.type == ImageType;
     const auto isParticles = item.type == ParticlesType;
-    const auto width = isText ? double((item.text.size() * 6 - 1) * item.scale) : item.width;
+    const auto shown = isText ? widestText(item.text) : QString();
+    const auto width = isText ? double((shown.size() * 6 - 1) * item.scale) : item.width;
     const auto height = isText ? double(7 * item.scale) : item.height;
     QByteArray line = "    {Kind::";
     line += isText ? "Text" : isImage ? "Image" : isParticles ? "Particles" : "Rectangle";
     for (const auto value : {item.x, item.y, width, height}) line += ", " + floatLiteral(value);
     line += ", " + (isImage ? QByteArray("0.0f, 0.0f, 0.0f") : colorLiterals(item.color));
     line += ", " + floatLiteral(isText ? item.scale : 0);
-    line += ", \"" + (isText ? escapedText(item.text) : QByteArray()) + "\", ";
+    line += ", \"" + (isText ? textLiteral(shown) : QByteArray()) + "\", ";
     line += item.controllable ? "true" : "false";
     if (isImage) line += ", " + QByteArray::number(imageSources.indexOf(item.source));
     if (isParticles) line += ", -1, " + QByteArray::number(particleIndex);
@@ -344,10 +353,110 @@ QString validateScene(const Scene& scene) {
     return {};
 }
 
+bool isVariableName(const QString& name) {
+    if (name.isEmpty() || name.size() > MaximumVariableNameLength) return false;
+    for (qsizetype index = 0; index < name.size(); ++index) {
+        const auto code = name[index].unicode();
+        const auto isLetter = (code >= 'a' && code <= 'z') || (code >= 'A' && code <= 'Z');
+        const auto isDigit = code >= '0' && code <= '9';
+        if (!isLetter && code != '_' && (!isDigit || index == 0)) return false;
+    }
+    return true;
+}
+
+TextTemplate parseTextTemplate(const QString& text) {
+    TextTemplate result;
+    QString literal;
+    const auto flush = [&] {
+        if (literal.isEmpty()) return;
+        result.parts.append({literal, {}});
+        literal.clear();
+    };
+    for (qsizetype index = 0; index < text.size();) {
+        const auto character = text[index];
+        const auto doubled = index + 1 < text.size() && text[index + 1] == character;
+        if (character == '{' && doubled) {
+            literal += '{';
+            index += 2;
+        } else if (character == '}' && doubled) {
+            literal += '}';
+            index += 2;
+        } else if (character == '{') {
+            const auto end = text.indexOf('}', index + 1);
+            if (end < 0) {
+                result.problem = "text has a { with no matching }. To show a brace, type it twice: {{.";
+                return result;
+            }
+            const auto name = text.mid(index + 1, end - index - 1);
+            if (name.isEmpty()) {
+                result.problem = "text has {} with no variable name in it. To show braces, type each one twice: {{ and }}.";
+                return result;
+            }
+            if (!isVariableName(name)) {
+                result.problem = QString("text uses {%1}, but a variable name is letters, digits and _, starting with a letter or _. To show a brace, type it twice: {{.").arg(name);
+                return result;
+            }
+            flush();
+            result.parts.append({{}, name});
+            index = end + 1;
+        } else if (character == '}') {
+            result.problem = "text has a } with no matching {. To show a brace, type it twice: }}.";
+            return result;
+        } else {
+            literal += character;
+            ++index;
+        }
+    }
+    flush();
+    return result;
+}
+
+bool textUsesVariables(const QString& text) {
+    return !textVariables(text).isEmpty();
+}
+
+QStringList textVariables(const QString& text) {
+    QStringList names;
+    for (const auto& part : parseTextTemplate(text).parts) {
+        if (!part.variable.isEmpty() && !names.contains(part.variable)) names << part.variable;
+    }
+    return names;
+}
+
+QString displayedText(const QString& text, const QList<LogicVariable>& variables) {
+    const auto parsed = parseTextTemplate(text);
+    if (!parsed.problem.isEmpty()) return text;
+    QString shown;
+    for (const auto& part : parsed.parts) {
+        if (part.variable.isEmpty()) {
+            shown += part.text;
+            continue;
+        }
+        const auto known = std::ranges::find(variables, part.variable, &LogicVariable::name);
+        shown += known == variables.end() ? '{' + part.variable + '}' : QString::number(known->initial);
+    }
+    return shown;
+}
+
+QString renameVariableInText(const QString& text, const QString& name, const QString& newName) {
+    const auto parsed = parseTextTemplate(text);
+    if (!parsed.problem.isEmpty()) return text;
+    QString renamed;
+    for (const auto& part : parsed.parts) {
+        if (part.variable.isEmpty()) {
+            auto plain = part.text;
+            renamed += plain.replace('{', "{{").replace('}', "}}");
+        } else {
+            renamed += '{' + (part.variable == name ? newName : part.variable) + '}';
+        }
+    }
+    return renamed;
+}
+
 int sceneQuadCount(const Scene& scene) {
     qint64 total = 1; // the background
     for (const auto& item : scene.items) {
-        if (item.type == TextType) total += item.text.size();
+        if (item.type == TextType) total += widestText(item.text).size();
         else if (item.type == ParticlesType) total += item.amount;
         else total += 1;
     }
@@ -414,6 +523,7 @@ SceneLoadResult loadScene(const QString& path) {
         if (!problem.isEmpty()) return failure(problem);
         if (version < ImageSchema && item.type == ImageType) return failure(QString("%1 uses an image item, which needs schemaVersion %2. Change schemaVersion to %2 and try again.").arg(fileName).arg(ImageSchema));
         if (version < ParticleSchema && item.type == ParticlesType) return failure(QString("%1 uses a particles item, which needs schemaVersion %2. Change schemaVersion to %2 and try again.").arg(fileName).arg(ParticleSchema));
+        if (version < VariableTextSchema && item.type == TextType) item.text.replace('{', "{{").replace('}', "}}");
         scene.items.append(item);
     }
 
@@ -437,6 +547,18 @@ bool saveScene(const QString& path, const Scene& scene, QString& error) {
         return false;
     }
     return true;
+}
+
+QByteArray textLiteral(const QString& text) {
+    QByteArray escaped;
+    auto previous = '\0';
+    for (const char character : text.toLatin1()) {
+        // A second '?' is escaped because "??=" and friends are trigraphs, which the game's -Werror rejects.
+        if (character == '"' || character == '\\' || (character == '?' && previous == '?')) escaped += '\\';
+        escaped += character;
+        previous = character;
+    }
+    return escaped;
 }
 
 QStringList sceneImageSources(const Scene& scene) {
@@ -711,6 +833,12 @@ Scene appStarterScene() {
         scene.items << textItem(QString("item-%1").arg(4 + index * 2), button.name + " label", x + (ButtonWidth - labelWidth) / 2, y + (ButtonHeight - labelHeight) / 2, LabelScale, button.name, button.ink);
     }
     return scene;
+}
+
+bool sceneRuntimeNeedsUpdate(const QString& projectRoot) {
+    QFile file(QDir::cleanPath(QDir(projectRoot).absolutePath()) + "/include/Scene/SceneState.hpp");
+    if (!file.open(QIODevice::ReadOnly)) return false;
+    return !file.readAll().contains("GeneratedVariables.hpp");
 }
 
 bool installSceneRuntime(const QString& runtimeDirectory, const QString& projectRoot, const QString& projectName, QString& error, const Scene& starter) {

@@ -2,11 +2,47 @@
 #include <algorithm>
 #include <cstdint>
 #include <limits>
+#include <span>
 
 namespace {
 
 constexpr double UnitsPerSecond = 600.0;
 constexpr float LogicWorldLimit = 1000000.0f;
+
+// For each item, its place in GeneratedVariables::BoundTexts, or -1 for an item that shows no variables.
+constexpr auto BindingOfItem = [] {
+    std::array<std::int32_t, GeneratedScene::Items.size()> bindings{};
+    bindings.fill(-1);
+    std::int32_t next = 0;
+    for (const auto& text : GeneratedVariables::BoundTexts) bindings[text.item] = next++;
+    return bindings;
+}();
+
+// For each bound text, where its characters start in the shared buffer.
+constexpr auto BoundOffsets = [] {
+    std::array<std::size_t, GeneratedVariables::BoundTexts.size()> offsets{};
+    std::size_t index = 0;
+    std::size_t next = 0;
+    for (const auto& text : GeneratedVariables::BoundTexts) {
+        offsets[index++] = next;
+        next += text.quads;
+    }
+    return offsets;
+}();
+
+// Writes the number's digits at `out` and returns the position after them.
+char* writeNumber(char* out, std::int32_t value) {
+    auto magnitude = static_cast<std::uint32_t>(value < 0 ? -static_cast<std::int64_t>(value) : static_cast<std::int64_t>(value));
+    if (value < 0) *out++ = '-';
+    std::array<char, 10> digits{};
+    std::size_t count = 0;
+    do {
+        digits[count++] = static_cast<char>('0' + magnitude % 10);
+        magnitude /= 10;
+    } while (magnitude != 0);
+    while (count > 0) *out++ = digits[--count];
+    return out;
+}
 
 // An item larger than the stage cannot fit, so it may only slide while still covering the stage.
 float clampAxis(float value, float stage, float size) {
@@ -17,17 +53,21 @@ float clampAxis(float value, float stage, float size) {
 }
 
 SceneState::SceneState(int width, int height) : stageWidth(static_cast<float>(width)), stageHeight(static_cast<float>(height)) {
+    rebuildText(); // so a controllable text is kept on the stage at its starting width
     auto position = positions.begin();
     auto color = colors.begin();
+    std::size_t index = 0;
     for (const auto& item : GeneratedScene::Items) {
         *position = {item.x, item.y};
         *color++ = {item.red, item.green, item.blue};
-        if (item.controllable) clampToStage(item, *position);
+        if (item.controllable) clampToStage(index, *position);
         ++position;
+        ++index;
     }
     visible.fill(true);
     startParticles();
     GeneratedLogic::OnStart(*this);
+    rebuildText();
 }
 
 void SceneState::startParticles() {
@@ -58,16 +98,19 @@ Particles::Emitter* SceneState::emitterFor(std::size_t item) {
 void SceneState::Update(double seconds, Position direction, std::uint32_t buttons) {
     const auto distance = static_cast<float>(UnitsPerSecond * seconds);
     auto position = positions.begin();
+    std::size_t index = 0;
     for (const auto& item : GeneratedScene::Items) {
         if (item.controllable) {
             (*position)[0] += direction[0] * distance;
             (*position)[1] += direction[1] * distance;
-            clampToStage(item, *position);
+            clampToStage(index, *position);
         }
         ++position;
+        ++index;
     }
     heldButtons = buttons;
     GeneratedLogic::OnFrame(*this, logicMemory);
+    rebuildText();
     for (std::size_t item = 0; item < GeneratedScene::Items.size(); ++item) {
         if (auto* emitter = emitterFor(item)) {
             emitter->SetPosition(positions[item][0], positions[item][1]);
@@ -120,16 +163,43 @@ std::span<const Particles::Quad> SceneState::ParticleQuads(std::size_t item) con
     return {};
 }
 
-void SceneState::AddScore(std::int32_t amount) {
-    const auto total = static_cast<std::int64_t>(score) + amount;
+void SceneState::SetVariable(std::size_t variable, std::int32_t value) { variables[variable] = value; }
+
+void SceneState::ChangeVariable(std::size_t variable, std::int32_t amount) {
+    const auto total = static_cast<std::int64_t>(variables[variable]) + amount;
     const auto lowest = static_cast<std::int64_t>(std::numeric_limits<std::int32_t>::min());
     const auto highest = static_cast<std::int64_t>(std::numeric_limits<std::int32_t>::max());
-    score = static_cast<std::int32_t>(std::clamp(total, lowest, highest));
+    variables[variable] = static_cast<std::int32_t>(std::clamp(total, lowest, highest));
 }
 
-void SceneState::SetScore(std::int32_t value) { score = value; }
+std::int32_t SceneState::Variable(std::size_t variable) const { return variables[variable]; }
 
-std::int32_t SceneState::Score() const { return score; }
+void SceneState::rebuildText() {
+    std::size_t binding = 0;
+    for (const auto& text : GeneratedVariables::BoundTexts) {
+        char* const first = boundCharacters.data() + BoundOffsets[binding];
+        char* cursor = first;
+        for (const auto& part : std::span(GeneratedVariables::Parts).subspan(text.firstPart, text.partCount)) {
+            if (part.variable < 0) cursor = std::copy(part.text.begin(), part.text.end(), cursor);
+            else cursor = writeNumber(cursor, variables[static_cast<std::size_t>(part.variable)]);
+        }
+        boundLengths[binding] = static_cast<std::size_t>(cursor - first);
+        ++binding;
+    }
+}
+
+std::string_view SceneState::CurrentText(std::size_t item) const {
+    const auto binding = BindingOfItem[item];
+    if (binding < 0) return GeneratedScene::Items[item].text;
+    const auto index = static_cast<std::size_t>(binding);
+    return {boundCharacters.data() + BoundOffsets[index], boundLengths[index]};
+}
+
+float SceneState::drawnWidth(std::size_t item) const {
+    const auto& scene = GeneratedScene::Items[item];
+    if (BindingOfItem[item] < 0) return scene.width;
+    return static_cast<float>(CurrentText(item).size() * 6 - 1) * scene.textScale;
+}
 
 bool SceneState::Touching(std::size_t first, std::size_t second) const {
     if (!visible[first] || !visible[second]) return false;
@@ -137,19 +207,19 @@ bool SceneState::Touching(std::size_t first, std::size_t second) const {
     const auto& b = GeneratedScene::Items[second];
     const auto [ax, ay] = positions[first];
     const auto [bx, by] = positions[second];
-    return ax < bx + b.width && bx < ax + a.width && ay < by + b.height && by < ay + a.height;
+    return ax < bx + drawnWidth(second) && bx < ax + drawnWidth(first) && ay < by + b.height && by < ay + a.height;
 }
 
 bool SceneState::Held(std::uint32_t button) const { return (heldButtons & button) != 0; }
 
-void SceneState::clampToStage(const GeneratedScene::Item& item, Position& position) const {
-    position[0] = clampAxis(position[0], stageWidth, item.width);
-    position[1] = clampAxis(position[1], stageHeight, item.height);
+void SceneState::clampToStage(std::size_t item, Position& position) const {
+    position[0] = clampAxis(position[0], stageWidth, drawnWidth(item));
+    position[1] = clampAxis(position[1], stageHeight, GeneratedScene::Items[item].height);
 }
 
 void SceneState::limitPosition(std::size_t item, Position& position) const {
     if (GeneratedScene::Items[item].controllable) {
-        clampToStage(GeneratedScene::Items[item], position);
+        clampToStage(item, position);
         return;
     }
     position[0] = std::clamp(position[0], -LogicWorldLimit, LogicWorldLimit);

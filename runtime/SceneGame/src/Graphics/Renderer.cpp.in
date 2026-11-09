@@ -283,8 +283,9 @@ void Renderer::Draw(Display& display, const SceneState& scene) {
     auto tint = scene.CurrentColors().begin();
     auto shown = scene.CurrentVisibility().begin();
 
-    std::size_t itemIndex = 0;
+    std::size_t nextItem = 0;
     for (const auto& item : GeneratedScene::Items) {
+        const std::size_t itemIndex = nextItem++;
         const auto [x, y] = *position++;
         const auto [red, green, blue] = *tint++;
         const std::array color{red, green, blue, 1.0f};
@@ -303,19 +304,27 @@ void Renderer::Draw(Display& display, const SceneState& scene) {
                     frames[next].rectangle = HiddenRectangle;
                 }
             }
-            ++itemIndex;
             continue;
         }
-        ++itemIndex;
         if (item.kind != GeneratedScene::Kind::Text) {
             frames[next].color = color;
             frames[next++].rectangle = visible ? std::array{x, y, item.width, item.height} : HiddenRectangle;
             continue;
         }
 
+        // item.text reserves a quad for every character the item can ever show. A text that shows
+        // variables is usually shorter than that, and each frame its glyphs follow its current value.
+        const auto text = scene.CurrentText(itemIndex);
+        const bool changes = text.data() != item.text.data();
         for (std::size_t index = 0; index < item.text.size(); ++index) {
             frames[next].color = color;
-            frames[next++].rectangle = visible ? std::array{x + static_cast<float>(index) * 6 * item.textScale, y, 5 * item.textScale, 7 * item.textScale} : HiddenRectangle;
+            if (visible && index < text.size()) {
+                frames[next].rectangle = {x + static_cast<float>(index) * 6 * item.textScale, y, 5 * item.textScale, 7 * item.textScale};
+                if (changes) frames[next].glyph = EncodeGlyph(text[index]);
+            } else {
+                frames[next].rectangle = HiddenRectangle;
+            }
+            ++next;
         }
     }
 

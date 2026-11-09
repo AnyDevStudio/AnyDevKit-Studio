@@ -36,6 +36,7 @@ T.Control {
     required property string blockColor
     required property int value
     required property string comparison
+    required property string variable
     required property string problem
     required property bool dragged
     required property bool emptyCavity
@@ -56,6 +57,7 @@ T.Control {
         switch (key) {
         case "item": return item
         case "otherItem": return otherItem
+        case "variable": return variable
         case "button": return button
         case "comparison": return comparison
         case "x": return String(pointX)
@@ -69,6 +71,7 @@ T.Control {
     function fieldName(key) {
         if (key === "item") return itemName
         if (key === "otherItem") return otherItemName
+        if (key === "variable") return variable.length === 0 ? "" : doc.variables.some((choice) => choice.name === variable) ? variable : "Missing variable"
         const list = key === "button" ? doc.buttons : doc.comparisons
         const found = list.find((choice) => choice.id === fieldValue(key))
         return found ? found.name : ""
@@ -76,12 +79,14 @@ T.Control {
 
     function choices(key) {
         if (key === "item" || key === "otherItem") return doc.sceneItems
+        if (key === "variable") return doc.variables
         return key === "button" ? doc.buttons : doc.comparisons
     }
 
     function placeholder(key) {
         if (key === "button") return "Choose a button"
         if (key === "comparison") return "Choose a comparison"
+        if (key === "variable") return "Choose a variable"
         return "Choose item"
     }
 
@@ -198,7 +203,8 @@ T.Control {
                 current: block.fieldValue(editor.key)
                 shown: block.fieldName(editor.key)
                 placeholder: block.placeholder(editor.key)
-                invalid: editor.kind === "item" && (shown === "Missing item" || shown === "")
+                invalid: (editor.kind === "item" || editor.kind === "variable") && (shown === "Missing item" || shown === "Missing variable" || shown === "")
+                emptyText: editor.kind === "variable" ? "Add a variable in the Variables area first." : "Add an item in the Scene tab first."
                 onChosen: (id) => block.doc.setField(block.blockId, editor.key, id)
                 Accessible.description: block.title
             }
