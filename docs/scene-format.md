@@ -1,7 +1,8 @@
 # Scene format
 
 Studio's drag and drop editor saves one scene per project in `scene.json`, at the project root.
-Before each build Studio turns it into `src/GeneratedScene.hpp`, which the game runtime compiles in.
+Before each build Studio turns it into `src/GeneratedScene.hpp` and `src/GeneratedImages.cpp`, which
+the game runtime compiles in.
 
 The stage is always 1920x1080. The origin is the top left corner and `y` grows downwards.
 
@@ -9,7 +10,7 @@ The stage is always 1920x1080. The origin is the top left corner and `y` grows d
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "background": "#151C3A",
   "items": [
     {
@@ -33,6 +34,17 @@ The stage is always 1920x1080. The origin is the top left corner and `y` grows d
       "text": "Hello PS5",
       "color": "#F3F1E2",
       "controllable": false
+    },
+    {
+      "id": "item-3",
+      "type": "image",
+      "name": "Logo",
+      "x": 900,
+      "y": 500,
+      "width": 256,
+      "height": 128,
+      "source": "assets/logo.png",
+      "controllable": false
     }
   ]
 }
@@ -40,13 +52,20 @@ The stage is always 1920x1080. The origin is the top left corner and `y` grows d
 
 Rules:
 
-- `schemaVersion` is `1`. A scene holds at most 256 items, drawn in list order, later items on top.
+- `schemaVersion` is `2`, the version Studio saves. Scenes saved with `1` still load; they cannot hold
+  image items. A scene holds at most 256 items, drawn in list order, later items on top.
 - `id` values are unique, non-empty strings. `name` is only for the editor.
-- Colors are `#RRGGBB`.
-- Positions and sizes are numbers. `rectangle` needs `width` and `height` above 0.
+- Colors are `#RRGGBB`. `image` items have no color.
+- Positions and sizes are numbers. `rectangle` and `image` need `width` and `height` above 0.
 - `text` holds 1 to 64 printable ASCII characters (U+0020 to U+007E). Its `scale` is a whole number
   from 1 to 40. Each character is a 5x7 pixel cell advancing 6 cells, so the drawn width is
   `(length * 6 - 1) * scale` and the height is `7 * scale`.
+- `image` draws the PNG file `source` stretched to `width` by `height`, respecting its transparency.
+  `source` is a project-relative path that starts with `assets/` and ends in `.png`, with `/`
+  separators and no `.` or `..` parts. The file must exist inside the project when the scene is built,
+  and neither it nor a folder on the way to it may be a link. Items that name the same file share one
+  texture. An image can be at most 4096 pixels on each side, and all of a scene's different images
+  together at most 256 MB once decoded (4 bytes per pixel).
 - A `controllable` item moves with the controller's left stick or D-pad at 600 units per second and
   stays inside the stage.
 
@@ -57,12 +76,13 @@ Rules:
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <string_view>
 
 namespace GeneratedScene {
 
-enum class Kind : std::uint8_t { Rectangle, Text };
+enum class Kind : std::uint8_t { Rectangle, Text, Image };
 
 struct Item {
     Kind kind;
@@ -71,12 +91,22 @@ struct Item {
     float textScale;
     std::string_view text;
     bool controllable;
+    std::int32_t image = -1; // index into Images for an image item
+};
+
+// Row by row, top row first, 4 bytes per pixel: red, green, blue, alpha, with alpha already applied.
+struct Image {
+    const std::uint8_t* pixels;
+    std::uint32_t width, height;
 };
 
 inline constexpr std::array<float, 3> Background{0.082353f, 0.109804f, 0.227451f};
-inline constexpr std::array<Item, 2> Items{{
+inline constexpr std::size_t ImageCount = 1;
+extern const std::array<Image, ImageCount> Images; // defined in src/GeneratedImages.cpp
+inline constexpr std::array<Item, 3> Items{{
     {Kind::Rectangle, 120.0f, 300.0f, 160.0f, 160.0f, 1.0f, 0.823529f, 0.247059f, 0.0f, "", true},
     {Kind::Text, 400.0f, 96.0f, 636.0f, 84.0f, 0.952941f, 0.945098f, 0.886275f, 12.0f, "Hello PS5", false},
+    {Kind::Image, 900.0f, 500.0f, 256.0f, 128.0f, 0.0f, 0.0f, 0.0f, 0.0f, "", false, 0},
 }};
 
 }
@@ -84,3 +114,17 @@ inline constexpr std::array<Item, 2> Items{{
 
 Color channels are the `#RRGGBB` bytes divided by 255. For text items `width` and `height` hold the
 drawn size from the rule above. An empty scene is `inline constexpr std::array<Item, 0> Items{};`.
+
+## src/GeneratedImages
+
+Each distinct image becomes one raw file, `src/GeneratedImages/image-N.rgba`, numbered in the order
+the scene first uses it. It holds `width * height * 4` bytes of RGBA8, top row first and with no
+padding. Color channels are already multiplied by alpha, because filtering straight-alpha pixels
+leaks the color of transparent pixels into soft edges.
+
+`src/GeneratedImages.cpp` pulls those files into the program with the assembler's `.incbin` directive
+and defines the `Images` table. Pixels are embedded this way, rather than as a C array in generated
+code, to keep compile time flat: a 1024x1024 image is 4 MB of pixels but would be about 16 MB of
+source for the compiler to parse into a giant initializer, while `.incbin` costs only the link.
+Studio leaves a generated file untouched when its contents have not changed, so an unchanged scene
+does not recompile. A scene with no images still gets the file, with an empty table.

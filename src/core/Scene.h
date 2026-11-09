@@ -3,6 +3,7 @@
 #include <QByteArray>
 #include <QList>
 #include <QString>
+#include <QStringList>
 
 #include <optional>
 
@@ -10,18 +11,28 @@ namespace Studio {
 
 struct SceneItem {
     QString id;
-    QString type; // "rectangle" or "text"
+    QString type; // "rectangle", "text" or "image"
     QString name;
     double x = 0, y = 0, width = 0, height = 0;
     QString color = "#FFD23F";
     int scale = 8;
     QString text;
+    QString source; // image items: project-relative path under assets/
     bool controllable = false;
 };
 
 struct Scene {
     QString background = "#151C3A";
     QList<SceneItem> items;
+};
+
+// One decoded image for the generated code. Row by row, top row first, no padding, 4 bytes per
+// pixel: red, green, blue, alpha, with the color already multiplied by alpha.
+struct SceneImageData {
+    QString source;
+    int width = 0;
+    int height = 0;
+    QByteArray pixels;
 };
 
 struct SceneLoadResult {
@@ -32,7 +43,13 @@ struct SceneLoadResult {
 SceneLoadResult loadScene(const QString& path);
 bool saveScene(const QString& path, const Scene& scene, QString& error);
 QString validateScene(const Scene& scene); // empty string when valid
-QByteArray generateSceneHeader(const Scene& scene); // empty when the scene is invalid
+QStringList sceneImageSources(const Scene& scene); // each image's source once, in the order first used
+// Empty when the scene is invalid or `images` does not hold exactly the scene's sources, in that order.
+QByteArray generateSceneHeader(const Scene& scene, const QList<SceneImageData>& images = {});
+QByteArray generateImageSource(const QList<SceneImageData>& images); // src/GeneratedImages.cpp
+QString imageSizeProblem(int width, int height, qint64 bytesSoFar); // empty when the image fits the limits
+QString imageFileProblem(const QString& projectRoot, const QString& source); // empty when it is a regular file we may read
+bool writeGeneratedScene(const QString& projectRoot, const Scene& scene, const QList<SceneImageData>& images, QString& error);
 bool installSceneRuntime(const QString& runtimeDirectory, const QString& projectRoot, const QString& projectName, QString& error);
 
 }
