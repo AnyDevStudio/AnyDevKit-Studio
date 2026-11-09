@@ -20,8 +20,9 @@ ctest --test-dir build --output-on-failure
   tested without a window. Behaviour changes here need a test in `tests/tst_core.cpp`.
 - `src/app`: the application and the bridge between C++ and QML.
 - `src/app/qml`: the interface. Colors, fonts and motion timings live in `Theme.qml`.
-- `runtime/SceneGame`: the PS5 game code Studio adds to a project. It compiles the header exported
-  from the scene, as described in [docs/scene-format.md](docs/scene-format.md).
+- `runtime/SceneGame`: the PS5 game code Studio adds to a project. It compiles the headers exported
+  from the scene and from the block logic, as described in [docs/scene-format.md](docs/scene-format.md)
+  and [docs/blocks-format.md](docs/blocks-format.md).
 
 ## Rules worth knowing
 

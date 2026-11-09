@@ -1,5 +1,7 @@
 #include "StudioController.h"
 
+#include "Blocks.h"
+
 #include <QClipboard>
 #include <QDesktopServices>
 #include <QDir>
@@ -83,11 +85,20 @@ bool StudioController::exportScene() {
     if (!sceneDocument.isLoaded()) return true;
     const auto header = generateSceneHeader(sceneDocument.scene());
     QSaveFile file(project->root + "/src/GeneratedScene.hpp");
-    if (!header.isEmpty() && file.open(QIODevice::WriteOnly) && file.write(header) == header.size() && file.commit()) return true;
-    state = "failed";
-    message = "The scene could not be written to src/GeneratedScene.hpp. Check the scene for problems and try again.";
-    emit buildChanged();
-    return false;
+    if (header.isEmpty() || !file.open(QIODevice::WriteOnly) || file.write(header) != header.size() || !file.commit()) {
+        state = "failed";
+        message = "The scene could not be written to src/GeneratedScene.hpp. Check the scene for problems and try again.";
+        emit buildChanged();
+        return false;
+    }
+    QString logicError;
+    if (!exportLogicHeader(project->root, sceneDocument.scene(), logicError)) {
+        state = "failed";
+        message = logicError;
+        emit buildChanged();
+        return false;
+    }
+    return true;
 }
 
 bool StudioController::openFolder(const QUrl& folder) {
