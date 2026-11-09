@@ -396,6 +396,22 @@ private slots:
         QVERIFY(finished.at(0).at(1).toString().contains("Cancelled"));
     }
 
+    void aCancelledBuildLeavesTheNextBuildAlone() {
+        QTemporaryDir directory;
+        BuildRunner runner;
+        QSignalSpy finished(&runner, &BuildRunner::finished);
+        runner.start({cmakeStep("sleep", {"-E", "sleep", "30"})}, directory.path(), QProcessEnvironment::systemEnvironment());
+        QTest::qWait(200);
+        runner.cancel();
+        QVERIFY(finished.wait(10000));
+
+        // Started straight after the cancel, inside the delay before a stuck program is killed.
+        runner.start({cmakeStep("sleep again", {"-E", "sleep", "3"})}, directory.path(), QProcessEnvironment::systemEnvironment());
+        QVERIFY(finished.wait(10000));
+        QCOMPARE(finished.count(), 2);
+        QVERIFY2(finished.at(1).at(0).toBool(), qPrintable(finished.at(1).at(1).toString()));
+    }
+
     void gameNameFollowsAdkInit_data() {
         QTest::addColumn<QString>("name");
         QTest::addColumn<QString>("mention");
