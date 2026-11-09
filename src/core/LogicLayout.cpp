@@ -16,7 +16,7 @@ constexpr double FieldGap = 10;
 
 double fieldWidth(const BlockField& field) {
     if (field.kind == "item") return field.label.isEmpty() ? 168 : 206;
-    if (field.kind == "variable") return 168;
+    if (field.kind == "variable" || field.kind == "sound") return 168;
     if (field.kind == "button") return 148;
     if (field.kind == "comparison") return 172;
     if (field.kind == "whole") return 96;
@@ -94,6 +94,7 @@ QList<BlockField> blockFields(const BlockInfo& info) {
     if (info.usesItem) fields.append({"item", "item", ""});
     if (info.usesOtherItem) fields.append({"otherItem", "item", "and"});
     if (info.usesVariable) fields.append({"variable", "variable", ""});
+    if (info.usesSound) fields.append({"sound", "sound", ""});
     if (info.usesComparison) fields.append({"comparison", "comparison", ""});
     if (info.usesValue) fields.append({"value", "whole", ""});
     if (info.usesPosition) {
@@ -108,6 +109,8 @@ QString blockCategory(const BlockInfo& info) {
     if (info.isEvent) return "events";
     if (info.usesPosition) return "movement";
     if (info.usesVariable) return "variables";
+    if (info.usesSound || info.type == BlockType::StopMusic || info.type == BlockType::SetVolume) return "sound";
+    if (info.type == BlockType::SaveVariables || info.type == BlockType::LoadVariables) return "saving";
     return "looks";
 }
 
@@ -116,6 +119,8 @@ QString blockCategoryTitle(const QString& category) {
     if (category == "movement") return "Movement";
     if (category == "looks") return "Looks";
     if (category == "variables") return "Variables";
+    if (category == "sound") return "Sound";
+    if (category == "saving") return "Saving";
     return category;
 }
 

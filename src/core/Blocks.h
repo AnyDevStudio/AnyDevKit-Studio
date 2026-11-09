@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Scene.h"
+#include "Sounds.h"
 
 #include <QByteArray>
 #include <QList>
@@ -38,6 +39,12 @@ enum class BlockType {
     ChangeVariable,
     IfVariable, // also holds actions
     BurstParticles, // the item must be a particles item
+    PlaySound,
+    PlayMusic,
+    StopMusic,
+    SetVolume,
+    SaveVariables, // keeps every variable on the console until LoadVariables
+    LoadVariables,
 };
 
 enum class ControllerButton { Cross, Circle, Square, Triangle, DpadUp, DpadDown, DpadLeft, DpadRight };
@@ -55,7 +62,8 @@ struct Block {
     double x = 0, y = 0;                               // MoveBy (distance), SetPosition (place)
     QString color = "#FFD23F";                         // SetColor
     QString variable;                                  // SetVariable, ChangeVariable, IfVariable: a variable's name
-    int value = 0;                                     // SetVariable's value, ChangeVariable's amount, IfVariable's number
+    QString sound;                                     // PlaySound, PlayMusic: a sound's name
+    int value = 0;                                     // SetVariable's value, ChangeVariable's amount, IfVariable's number, SetVolume's percent
     VariableComparison comparison = VariableComparison::Equal; // IfVariable
 
     QList<Block> children; // the actions inside an event or an IfVariable, run in order
@@ -63,6 +71,7 @@ struct Block {
 
 struct LogicProgram {
     QList<LogicVariable> variables; // in the order they are listed in the Variables area
+    QList<ProjectSound> sounds;     // in the order they are listed in the Sounds area
     QList<Block> events; // run from first to last
 };
 
@@ -81,6 +90,7 @@ struct BlockInfo {
     bool usesValue;
     bool usesComparison;
     bool usesVariable;
+    bool usesSound;
 };
 
 struct ButtonInfo {
@@ -107,6 +117,7 @@ inline constexpr int MaximumBlockIdLength = 64;
 inline constexpr double MaximumLogicCoordinate = 1000000; // both for positions and for moves
 inline constexpr int MaximumVariableValue = 1000000000; // the largest a block or an initial value can say
 inline constexpr int MaximumLogicVariables = 64;
+inline constexpr int MaximumVolumePercent = 100;
 inline constexpr qint64 MaximumLogicFileBytes = 4 * 1024 * 1024;
 
 // One thing to fix. blockId is empty when the problem is the program as a whole.
@@ -149,13 +160,14 @@ QByteArray generateLogicHeader(const LogicProgram& program, const Scene& scene);
 // The header for a project with no logic. It depends on nothing else in the project.
 QByteArray generateEmptyLogicHeader();
 
-// The contents of src/GeneratedVariables.hpp: the variables' initial values and how each text item
-// that shows variables is built. Empty when the program, the scene or a text binding is invalid.
+// The contents of src/GeneratedVariables.hpp: the variables' initial values, their name hashes for save
+// files, whether the program saves or loads, and how each text item that shows variables is built. Empty when the program, the scene or a text binding is invalid.
 QByteArray generateVariablesHeader(const LogicProgram& program, const Scene& scene);
 
-// Writes src/GeneratedLogic.hpp and src/GeneratedVariables.hpp for the project at projectRoot from
-// its logic.json, or the empty headers when there is no logic.json. Fails with a message for the
-// user when the logic or a text binding has a problem, and then keeps the previous headers.
+// Writes src/GeneratedLogic.hpp, src/GeneratedVariables.hpp and the sound files for the project at
+// projectRoot from its logic.json, or the empty headers and an empty sound table when there is no
+// logic.json. Fails with a message for the user when the logic, a text binding or a sound has a
+// problem, and then keeps the previous headers.
 bool exportLogicHeader(const QString& projectRoot, const Scene& scene, QString& error);
 
 }

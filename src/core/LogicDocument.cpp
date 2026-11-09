@@ -162,6 +162,7 @@ QVariant LogicDocument::data(const QModelIndex& index, int role) const {
     case EmptyCavityRole: return info.holdsActions && !info.isEvent && block->children.isEmpty();
     case ProblemHeightRole: return place ? place->problemHeight : 0.0;
     case VariableRole: return block->variable;
+    case SoundRole: return block->sound;
     default: return {};
     }
 }
@@ -200,6 +201,7 @@ QHash<int, QByteArray> LogicDocument::roleNames() const {
         {EmptyCavityRole, "emptyCavity"},
         {ProblemHeightRole, "problemHeight"},
         {VariableRole, "variable"},
+        {SoundRole, "sound"},
     };
 }
 
@@ -290,7 +292,7 @@ void LogicDocument::setSelectedId(const QString& id) {
 
 QVariantList LogicDocument::palette() const {
     QVariantList groups;
-    for (const auto* key : {"events", "movement", "looks", "variables"}) {
+    for (const auto* key : {"events", "movement", "looks", "variables", "sound", "saving"}) {
         const QString category(key);
         QVariantList blocks;
         for (const auto& info : blockCatalog()) {
@@ -311,6 +313,12 @@ QVariantList LogicDocument::buttons() const {
 QVariantList LogicDocument::comparisons() const {
     QVariantList list;
     for (const auto& candidate : comparisonCatalog()) list.append(QVariantMap{{"id", candidate.jsonName}, {"name", candidate.title}});
+    return list;
+}
+
+QVariantList LogicDocument::sounds() const {
+    QVariantList list;
+    for (const auto& sound : document.sounds) list.append(QVariantMap{{"name", sound.name}, {"source", sound.source}, {"id", sound.name}});
     return list;
 }
 
@@ -371,9 +379,10 @@ Block LogicDocument::makeBlock(const BlockInfo& info, const QString& id) const {
     block.type = info.type;
     if (info.usesItem && !scene.items.isEmpty()) block.item = scene.items.first().id;
     if (info.usesVariable && !document.variables.isEmpty()) block.variable = document.variables.first().name;
+    if (info.usesSound && !document.sounds.isEmpty()) block.sound = document.sounds.first().name;
     if (info.usesOtherItem && scene.items.size() > 1) block.otherItem = scene.items[1].id;
     if (info.usesPosition) block.x = 4;
-    if (info.usesValue) block.value = 1;
+    if (info.usesValue) block.value = info.type == BlockType::SetVolume ? MaximumVolumePercent : 1;
     if (info.usesComparison) block.comparison = VariableComparison::GreaterOrEqual;
     return block;
 }
@@ -431,7 +440,7 @@ void LogicDocument::afterChange() {
         emit dataChanged(index(0), index(static_cast<int>(rows.size()) - 1),
             {RunOrderRole, DepthRole, XRole, YRole, WidthRole, HeightRole, HeaderHeightRole, CavityHeightRole, FooterHeightRole, ProblemHeightRole,
              TwoRowsRole, ItemRole, OtherItemRole, ItemNameRole, OtherItemNameRole, ButtonRole, PointXRole, PointYRole, ColorRole, ValueRole,
-             ComparisonRole, ProblemRole, DraggedRole, EmptyCavityRole, VariableRole});
+             ComparisonRole, ProblemRole, DraggedRole, EmptyCavityRole, VariableRole, SoundRole});
     }
     emit programChanged();
     emit layoutChanged();
@@ -600,6 +609,8 @@ bool LogicDocument::setField(const QString& id, const QString& key, const QVaria
         block.color = value.toString();
     } else if (key == "variable") {
         block.variable = value.toString();
+    } else if (key == "sound") {
+        block.sound = value.toString();
     } else if (key == "button") {
         const auto name = value.toString();
         const auto found2 = std::ranges::find(buttonCatalog(), name, &ButtonInfo::jsonName);
@@ -616,7 +627,7 @@ bool LogicDocument::setField(const QString& id, const QString& key, const QVaria
 
     const auto unchanged = block.item == before.item && block.otherItem == before.otherItem && block.x == before.x && block.y == before.y
         && block.value == before.value && block.color == before.color && block.button == before.button && block.comparison == before.comparison
-        && block.variable == before.variable;
+        && block.variable == before.variable && block.sound == before.sound;
     if (unchanged) {
         setError({});
         return true;
@@ -747,6 +758,38 @@ QVariantList LogicDocument::variableUses(const QString& name) const {
         }
     }
     return uses;
+}
+
+bool LogicDocument::addSound(const QString& name, const QString& source) {
+    if (!loaded || drag) return false;
+    auto candidate = document;
+    candidate.sounds.append({name, source});
+    return commit(candidate);
+}
+
+void LogicDocument::removeSound(const QString& name) {
+    if (!loaded || drag) return;
+    auto candidate = document;
+    if (candidate.sounds.removeIf([&](const ProjectSound& sound) { return sound.name == name; }) == 0) return;
+    commit(candidate);
+}
+
+QVariantList LogicDocument::soundUses(const QString& name) const {
+    QVariantList uses;
+    const auto walk = [&](const auto& self, const QList<Block>& blocks, const QString& eventTitle, int depth) -> void {
+        for (const auto& block : blocks) {
+            const auto& info = blockInfo(block.type);
+            const auto where = eventTitle.isEmpty() ? info.title : eventTitle;
+            if (info.usesSound && block.sound == name) uses.append(QVariantMap{{"kind", "block"}, {"title", info.title}, {"where", QString("Inside \"%1\"").arg(where)}});
+            if (depth < MaximumLogicDepth) self(self, block.children, where, depth + 1);
+        }
+    };
+    walk(walk, document.events, {}, 1);
+    return uses;
+}
+
+void LogicDocument::reportProblem(const QString& text) {
+    setError(text);
 }
 
 void LogicDocument::startMoving(const QString& id) {

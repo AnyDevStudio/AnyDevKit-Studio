@@ -19,6 +19,8 @@ add_library(studio_core STATIC
     Scene.h
     SceneDocument.cpp
     SceneDocument.h
+    Sounds.cpp
+    Sounds.h
 )
 target_include_directories(studio_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(studio_core PUBLIC Qt6::Core)

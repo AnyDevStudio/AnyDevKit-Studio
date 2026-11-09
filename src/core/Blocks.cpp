@@ -20,10 +20,12 @@ namespace Studio {
 
 namespace {
 
-// The version saved today. Version 1 files still load: their score blocks become variable blocks.
-constexpr int CurrentSchema = 2;
+// The version saved today. Older files still load: version 1's score blocks become variable blocks
+// and a version 2 file simply has no sounds.
+constexpr int CurrentSchema = 3;
 constexpr int OldestLoadableSchema = 1;
 constexpr int VariableSchema = 2;
+constexpr int SoundSchema = 3; // sounds and the blocks that play them, set the volume, save or load
 constexpr auto ScoreVariableName = "score";
 constexpr auto LogicFileName = "logic.json";
 constexpr auto HeaderFolder = "src";
@@ -81,6 +83,7 @@ class Validator {
 public:
     Validator(const Scene* scene, const LogicProgram& program) : scene(scene) {
         for (const auto& variable : program.variables) variableNames.insert(variable.name);
+        for (const auto& sound : program.sounds) soundNames.insert(sound.name);
         if (scene) {
             for (const auto& item : scene->items) {
                 itemIds.insert(item.id);
@@ -99,6 +102,7 @@ public:
             return {{{}, QString("This program has %1 blocks, but a program can hold at most %2. Remove some blocks and try again.").arg(total).arg(MaximumLogicBlocks)}};
         }
         checkVariables(program);
+        if (const auto problem = validateSounds(program.sounds); !problem.isEmpty()) problems.append({{}, problem});
         for (const auto& block : program.events) visit(block, 1);
         return problems;
     }
@@ -147,6 +151,15 @@ private:
         }
     }
 
+    void checkSound(const Block& block) {
+        if (!scene) return;
+        if (block.sound.isEmpty()) {
+            report(block, QString("%1 has no sound chosen. Choose a sound, or import one in the Sounds area.").arg(describeBlock(block)));
+        } else if (!soundNames.contains(block.sound)) {
+            report(block, QString("%1 uses the sound \"%2\", which is not in this project. Choose another sound, or import it again in the Sounds area.").arg(describeBlock(block), block.sound));
+        }
+    }
+
     void visit(const Block& block, int depth) {
         const auto& info = blockInfo(block.type);
         const auto label = describeBlock(block);
@@ -164,6 +177,10 @@ private:
 
         if (info.usesItem) checkItem(block, block.item);
         if (info.usesVariable) checkVariable(block);
+        if (info.usesSound) checkSound(block);
+        if (block.type == BlockType::SetVolume && (block.value < 0 || block.value > MaximumVolumePercent)) {
+            report(block, QString("%1 needs a volume from 0 to %2 percent.").arg(label).arg(MaximumVolumePercent));
+        }
         if (block.type == BlockType::BurstParticles && scene && itemIds.contains(block.item) && !particleIds.contains(block.item)) {
             report(block, QString("%1 uses the item \"%2\", which is not a Particles item. Choose a Particles item to burst from.").arg(label, block.item));
         }
@@ -195,9 +212,14 @@ private:
     QSet<QString> itemIds;
     QSet<QString> particleIds;
     QSet<QString> variableNames;
+    QSet<QString> soundNames;
     QSet<QString> usedIds;
     QList<LogicProblem> problems;
 };
+
+bool needsSoundSchema(const BlockInfo& info) {
+    return info.usesSound || info.type == BlockType::StopMusic || info.type == BlockType::SetVolume || info.type == BlockType::SaveVariables || info.type == BlockType::LoadVariables;
+}
 
 double numberOrInvalid(const QJsonValue& value) {
     return value.isDouble() ? value.toDouble() : std::numeric_limits<double>::quiet_NaN();
@@ -263,6 +285,9 @@ QString parseBlock(const QJsonValue& value, qsizetype index, int depth, Parsing&
     if (info.usesVariable && parsing.schema < VariableSchema && !legacyScore) {
         return QString("%1 uses a variable, which needs schemaVersion %2. Change schemaVersion to %2 and add a \"variables\" list.").arg(label).arg(VariableSchema);
     }
+    if (needsSoundSchema(info) && parsing.schema < SoundSchema) {
+        return QString("%1 needs schemaVersion %2, the first version with sounds and saving. Change schemaVersion to %2 and add a \"sounds\" list.").arg(label).arg(SoundSchema);
+    }
 
     if (info.usesButton) {
         const auto name = object.value("button").toString();
@@ -278,6 +303,7 @@ QString parseBlock(const QJsonValue& value, qsizetype index, int depth, Parsing&
     if (info.usesItem) block.item = object.value("item").toString();
     if (info.usesOtherItem) block.otherItem = object.value("otherItem").toString();
     if (info.usesVariable) block.variable = legacyScore ? QString(ScoreVariableName) : object.value("variable").toString();
+    if (info.usesSound) block.sound = object.value("sound").toString();
     if (info.usesPosition) {
         block.x = numberOrInvalid(object.value("x"));
         block.y = numberOrInvalid(object.value("y"));
@@ -329,6 +355,21 @@ QString parseVariables(const QJsonArray& list, QList<LogicVariable>& variables) 
     return {};
 }
 
+QString parseSounds(const QJsonArray& list, QList<ProjectSound>& sounds) {
+    for (qsizetype index = 0; index < list.size(); ++index) {
+        if (!list.at(index).isObject()) return QString("Sound number %1 must be a JSON object.").arg(index + 1);
+        const auto object = list.at(index).toObject();
+        sounds.append({object.value("name").toString(), object.value("source").toString()});
+    }
+    return {};
+}
+
+QJsonArray soundsToJson(const QList<ProjectSound>& sounds) {
+    QJsonArray list;
+    for (const auto& sound : sounds) list.append(QJsonObject{{"name", sound.name}, {"source", sound.source}});
+    return list;
+}
+
 QJsonObject blockToJson(const Block& block) {
     const auto& info = blockInfo(block.type);
     QJsonObject object{{"id", block.id}, {"type", info.jsonName}};
@@ -340,6 +381,7 @@ QJsonObject blockToJson(const Block& block) {
     if (info.usesItem) object.insert("item", block.item);
     if (info.usesOtherItem) object.insert("otherItem", block.otherItem);
     if (info.usesVariable) object.insert("variable", block.variable);
+    if (info.usesSound) object.insert("sound", block.sound);
     if (info.usesPosition) {
         object.insert("x", block.x);
         object.insert("y", block.y);
@@ -415,11 +457,14 @@ public:
     Generator(const Scene& scene, const LogicProgram& program) {
         for (qsizetype index = 0; index < scene.items.size(); ++index) itemIndexes.insert(scene.items[index].id, index);
         for (qsizetype index = 0; index < program.variables.size(); ++index) variableIndexes.insert(program.variables[index].name, index);
+        for (qsizetype index = 0; index < program.sounds.size(); ++index) soundIndexes.insert(program.sounds[index].name, index);
     }
 
     QByteArray index(const QString& itemId) const { return QByteArray::number(itemIndexes.value(itemId)); }
 
     QByteArray variable(const QString& name) const { return QByteArray::number(variableIndexes.value(name)); }
+
+    QByteArray sound(const QString& name) const { return QByteArray::number(soundIndexes.value(name)); }
 
     void actions(const QList<Block>& blocks, int level, QByteArray& code) const {
         for (const auto& block : blocks) action(block, level, code);
@@ -452,6 +497,24 @@ public:
             return;
         case BlockType::BurstParticles:
             code += pad + "world.BurstParticles(" + index(block.item) + ");" + comment;
+            return;
+        case BlockType::PlaySound:
+            code += pad + "world.PlaySound(" + sound(block.sound) + ");" + comment;
+            return;
+        case BlockType::PlayMusic:
+            code += pad + "world.PlayMusic(" + sound(block.sound) + ");" + comment;
+            return;
+        case BlockType::StopMusic:
+            code += pad + "world.StopMusic();" + comment;
+            return;
+        case BlockType::SetVolume:
+            code += pad + "world.SetVolume(" + QByteArray::number(block.value) + ");" + comment;
+            return;
+        case BlockType::SaveVariables:
+            code += pad + "world.SaveVariables();" + comment;
+            return;
+        case BlockType::LoadVariables:
+            code += pad + "world.LoadVariables();" + comment;
             return;
         case BlockType::IfVariable:
             code += pad + "if (world.Variable(" + variable(block.variable) + ") " + comparisonOperator(block.comparison) + ' ' + QByteArray::number(block.value) + ") {" + comment;
@@ -490,6 +553,7 @@ public:
 private:
     QHash<QString, qsizetype> itemIndexes;
     QHash<QString, qsizetype> variableIndexes;
+    QHash<QString, qsizetype> soundIndexes;
 };
 
 void collectBurstTargets(const QList<Block>& blocks, QSet<QString>& targets) {
@@ -497,6 +561,18 @@ void collectBurstTargets(const QList<Block>& blocks, QSet<QString>& targets) {
         if (block.type == BlockType::BurstParticles) targets.insert(block.item);
         collectBurstTargets(block.children, targets);
     }
+}
+
+bool referencesSounds(const QList<Block>& blocks) {
+    return std::ranges::any_of(blocks, [](const Block& block) {
+        return blockInfo(block.type).usesSound || referencesSounds(block.children);
+    });
+}
+
+bool usesSaveData(const QList<Block>& blocks) {
+    return std::ranges::any_of(blocks, [](const Block& block) {
+        return block.type == BlockType::SaveVariables || block.type == BlockType::LoadVariables || usesSaveData(block.children);
+    });
 }
 
 bool referencesItems(const QList<Block>& blocks) {
@@ -507,15 +583,20 @@ bool referencesItems(const QList<Block>& blocks) {
     return false;
 }
 
-QByteArray assembleHeader(bool includeScene, bool includeButtons, int itemCount, int touchEvents, const QByteArray& startCode, const QByteArray& frameCode) {
+QByteArray assembleHeader(bool includeScene, bool includeSounds, bool includeButtons, int itemCount, int soundCount, int touchEvents, const QByteArray& startCode, const QByteArray& frameCode) {
     QByteArray header = "// Generated by AnyDevKit Studio from logic.json. Do not edit.\n#pragma once\n\n";
     if (includeScene) header += "#include \"GeneratedScene.hpp\"\n";
+    if (includeSounds) header += "#include \"GeneratedSounds.hpp\"\n";
     if (includeButtons) header += "#include \"Input/Buttons.hpp\"\n";
-    if (includeScene || includeButtons) header += '\n';
+    if (includeScene || includeSounds || includeButtons) header += '\n';
     header += "#include <array>\n#include <cstddef>\n\nnamespace GeneratedLogic {\n\n";
     if (includeScene) {
         header += "static_assert(GeneratedScene::Items.size() == " + QByteArray::number(itemCount)
             + ", \"GeneratedScene.hpp and GeneratedLogic.hpp do not match. Build the project again from Studio.\");\n\n";
+    }
+    if (includeSounds) {
+        header += "static_assert(GeneratedSounds::SoundCount == " + QByteArray::number(soundCount)
+            + ", \"GeneratedSounds.hpp and GeneratedLogic.hpp do not match. Build the project again from Studio.\");\n\n";
     }
     header += "inline constexpr std::size_t TouchEventCount = " + QByteArray::number(touchEvents) + ";\n\n";
     header += "struct Memory {\n    std::array<bool, TouchEventCount> touching{};\n};\n\n";
@@ -529,21 +610,27 @@ QByteArray assembleHeader(bool includeScene, bool includeButtons, int itemCount,
 
 const QList<BlockInfo>& blockCatalog() {
     // Keep in the order of BlockType: blockInfo indexes this list.
-    //                                                                              event  holds  button item   other  pos    color  value  cmp    variable
+    //                                                                              event  holds  button item   other  pos    color  value  cmp    variable sound
     static const QList<BlockInfo> catalog{
-        {BlockType::WhenGameStarts, "whenGameStarts", "When the game starts",        true,  true,  false, false, false, false, false, false, false, false},
-        {BlockType::WhileButtonHeld, "whileButtonHeld", "While a button is held",    true,  true,  true,  false, false, false, false, false, false, false},
-        {BlockType::EveryFrame, "everyFrame", "Every frame",                         true,  true,  false, false, false, false, false, false, false, false},
-        {BlockType::WhenItemsTouch, "whenItemsTouch", "When two items touch",        true,  true,  false, true,  true,  false, false, false, false, false},
-        {BlockType::MoveBy, "moveBy", "Move item",                                   false, false, false, true,  false, true,  false, false, false, false},
-        {BlockType::SetPosition, "setPosition", "Set item position",                 false, false, false, true,  false, true,  false, false, false, false},
-        {BlockType::Show, "show", "Show item",                                       false, false, false, true,  false, false, false, false, false, false},
-        {BlockType::Hide, "hide", "Hide item",                                       false, false, false, true,  false, false, false, false, false, false},
-        {BlockType::SetColor, "setColor", "Set item color",                          false, false, false, true,  false, false, true,  false, false, false},
-        {BlockType::SetVariable, "setVariable", "Set variable",                      false, false, false, false, false, false, false, true,  false, true},
-        {BlockType::ChangeVariable, "changeVariable", "Change variable",             false, false, false, false, false, false, false, true,  false, true},
-        {BlockType::IfVariable, "ifVariable", "If variable",                         false, true,  false, false, false, false, false, true,  true,  true},
-        {BlockType::BurstParticles, "burstParticles", "Burst particles from item",   false, false, false, true,  false, false, false, false, false, false},
+        {BlockType::WhenGameStarts, "whenGameStarts", "When the game starts",        true,  true,  false, false, false, false, false, false, false, false, false},
+        {BlockType::WhileButtonHeld, "whileButtonHeld", "While a button is held",    true,  true,  true,  false, false, false, false, false, false, false, false},
+        {BlockType::EveryFrame, "everyFrame", "Every frame",                         true,  true,  false, false, false, false, false, false, false, false, false},
+        {BlockType::WhenItemsTouch, "whenItemsTouch", "When two items touch",        true,  true,  false, true,  true,  false, false, false, false, false, false},
+        {BlockType::MoveBy, "moveBy", "Move item",                                   false, false, false, true,  false, true,  false, false, false, false, false},
+        {BlockType::SetPosition, "setPosition", "Set item position",                 false, false, false, true,  false, true,  false, false, false, false, false},
+        {BlockType::Show, "show", "Show item",                                       false, false, false, true,  false, false, false, false, false, false, false},
+        {BlockType::Hide, "hide", "Hide item",                                       false, false, false, true,  false, false, false, false, false, false, false},
+        {BlockType::SetColor, "setColor", "Set item color",                          false, false, false, true,  false, false, true,  false, false, false, false},
+        {BlockType::SetVariable, "setVariable", "Set variable",                      false, false, false, false, false, false, false, true,  false, true,  false},
+        {BlockType::ChangeVariable, "changeVariable", "Change variable",             false, false, false, false, false, false, false, true,  false, true,  false},
+        {BlockType::IfVariable, "ifVariable", "If variable",                         false, true,  false, false, false, false, false, true,  true,  true,  false},
+        {BlockType::BurstParticles, "burstParticles", "Burst particles from item",   false, false, false, true,  false, false, false, false, false, false, false},
+        {BlockType::PlaySound, "playSound", "Play sound",                            false, false, false, false, false, false, false, false, false, false, true},
+        {BlockType::PlayMusic, "playMusic", "Play music on loop",                    false, false, false, false, false, false, false, false, false, false, true},
+        {BlockType::StopMusic, "stopMusic", "Stop music",                            false, false, false, false, false, false, false, false, false, false, false},
+        {BlockType::SetVolume, "setVolume", "Set volume",                            false, false, false, false, false, false, false, true,  false, false, false},
+        {BlockType::SaveVariables, "saveVariables", "Save variables",                false, false, false, false, false, false, false, false, false, false, false},
+        {BlockType::LoadVariables, "loadVariables", "Load variables",                false, false, false, false, false, false, false, false, false, false, false},
     };
     return catalog;
 }
@@ -615,13 +702,18 @@ LogicLoadResult loadLogic(const QString& path) {
 
     const auto schema = root.value("schemaVersion");
     const auto version = schema.toInt(-1);
-    if (!schema.isDouble() || version < OldestLoadableSchema || version > CurrentSchema) return failure(QString("%1 needs schemaVersion %2 or %3, the versions this Studio supports.").arg(fileName).arg(OldestLoadableSchema).arg(CurrentSchema));
+    if (!schema.isDouble() || version < OldestLoadableSchema || version > CurrentSchema) return failure(QString("%1 needs a schemaVersion from %2 to %3, the versions this Studio supports.").arg(fileName).arg(OldestLoadableSchema).arg(CurrentSchema));
     if (!root.value("events").isArray()) return failure(QString("%1 has no events list. Add \"events\": [] to the file.").arg(fileName));
 
     LogicProgram program;
     if (version >= VariableSchema) {
         if (!root.value("variables").isArray()) return failure(QString("%1 has no variables list. Add \"variables\": [] to the file.").arg(fileName));
         const auto problem = parseVariables(root.value("variables").toArray(), program.variables);
+        if (!problem.isEmpty()) return failure(problem);
+    }
+    if (version >= SoundSchema) {
+        if (!root.value("sounds").isArray()) return failure(QString("%1 has no sounds list. Add \"sounds\": [] to the file.").arg(fileName));
+        const auto problem = parseSounds(root.value("sounds").toArray(), program.sounds);
         if (!problem.isEmpty()) return failure(problem);
     }
 
@@ -650,7 +742,7 @@ bool saveLogic(const QString& path, const LogicProgram& program, QString& error)
 
     QJsonArray events;
     for (const auto& block : program.events) events.append(blockToJson(block));
-    const QJsonObject root{{"schemaVersion", CurrentSchema}, {"variables", variablesToJson(program.variables)}, {"events", events}};
+    const QJsonObject root{{"schemaVersion", CurrentSchema}, {"variables", variablesToJson(program.variables)}, {"sounds", soundsToJson(program.sounds)}, {"events", events}};
     const auto contents = QJsonDocument(root).toJson();
 
     QSaveFile file(path);
@@ -678,7 +770,7 @@ QString newBlockId(const LogicProgram& program) {
 }
 
 QByteArray generateEmptyLogicHeader() {
-    return assembleHeader(false, false, 0, 0, {}, {});
+    return assembleHeader(false, false, false, 0, 0, 0, {}, {});
 }
 
 QByteArray generateLogicHeader(const LogicProgram& program, const Scene& scene) {
@@ -708,7 +800,7 @@ QByteArray generateLogicHeader(const LogicProgram& program, const Scene& scene) 
         if (block.type == BlockType::WhenItemsTouch) ++touchEvents;
         if (block.type == BlockType::WhileButtonHeld) usesButtons = true;
     }
-    return assembleHeader(referencesItems(program.events), usesButtons, static_cast<int>(scene.items.size()), touchEvents, startCode, frameCode);
+    return assembleHeader(referencesItems(program.events), referencesSounds(program.events), usesButtons, static_cast<int>(scene.items.size()), static_cast<int>(program.sounds.size()), touchEvents, startCode, frameCode);
 }
 
 QByteArray generateVariablesHeader(const LogicProgram& program, const Scene& scene) {
@@ -717,10 +809,14 @@ QByteArray generateVariablesHeader(const LogicProgram& program, const Scene& sce
     QHash<QString, qsizetype> variableIndexes;
     QByteArrayList initialValues;
     QByteArrayList names;
+    QByteArrayList hashes;
     for (qsizetype index = 0; index < program.variables.size(); ++index) {
         variableIndexes.insert(program.variables[index].name, index);
         initialValues << QByteArray::number(program.variables[index].initial);
         names << program.variables[index].name.toLatin1(); // names are letters, digits and _, safe in a comment
+        std::uint32_t hash = 2166136261u; // FNV-1a, the same as SaveData::NameHash in the runtime
+        for (const char byte : program.variables[index].name.toUtf8()) hash = (hash ^ static_cast<unsigned char>(byte)) * 16777619u;
+        hashes << QByteArray::number(hash) + "u";
     }
 
     QByteArray parts;
@@ -755,6 +851,9 @@ QByteArray generateVariablesHeader(const LogicProgram& program, const Scene& sce
     header += "inline constexpr std::size_t VariableCount = " + QByteArray::number(program.variables.size()) + ";\n";
     header += "inline constexpr std::array<std::int32_t, " + QByteArray::number(program.variables.size()) + "> InitialValues";
     header += initialValues.isEmpty() ? QByteArray("{};\n") : "{{" + initialValues.join(", ") + "}}; // " + names.join(", ") + "\n";
+    header += "inline constexpr std::array<std::uint32_t, " + QByteArray::number(program.variables.size()) + "> NameHashes";
+    header += hashes.isEmpty() ? QByteArray("{};\n") : "{{" + hashes.join(", ") + "}}; // how a saved value finds its variable\n";
+    header += QByteArray("inline constexpr bool UsesSaveData = ") + (usesSaveData(program.events) ? "true" : "false") + ";\n";
     header += R"cpp(
 // One piece of a text item that shows variables: plain text, or a variable's value when variable is not -1.
 struct Part {
@@ -816,6 +915,8 @@ bool exportLogicHeader(const QString& projectRoot, const Scene& scene, QString& 
     if (!textProblems.isEmpty()) return fail(describeProblems(textProblems));
     const auto variablesHeader = generateVariablesHeader(program, scene);
     if (variablesHeader.isEmpty()) return fail("The game logic could not be generated because the scene has a problem. Fix the scene and try again.");
+    QString soundProblem;
+    if (!exportSounds(root, program.sounds, soundProblem)) return fail(soundProblem);
 
     // A link could lead outside the project, and a build must only change files inside it.
     const auto folder = root + '/' + HeaderFolder;

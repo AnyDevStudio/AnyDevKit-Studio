@@ -228,7 +228,7 @@ QStringList messages(const QList<LogicProblem>& problems) {
 }
 
 bool sameBlock(const Block& left, const Block& right) {
-    if (left.id != right.id || left.type != right.type || left.children.size() != right.children.size()) return false;
+    if (left.id != right.id || left.type != right.type || left.children.size() != right.children.size() || left.sound != right.sound) return false;
     const auto& info = blockInfo(left.type);
     if (info.usesButton && left.button != right.button) return false;
     if (info.usesItem && left.item != right.item) return false;
@@ -319,6 +319,8 @@ namespace GeneratedVariables {
 
 inline constexpr std::size_t VariableCount = 0;
 inline constexpr std::array<std::int32_t, 0> InitialValues{};
+inline constexpr std::array<std::uint32_t, 0> NameHashes{};
+inline constexpr bool UsesSaveData = false;
 
 // One piece of a text item that shows variables: plain text, or a variable's value when variable is not -1.
 struct Part {
@@ -351,6 +353,8 @@ namespace GeneratedVariables {
 
 inline constexpr std::size_t VariableCount = 2;
 inline constexpr std::array<std::int32_t, 2> InitialValues{{0, 3}}; // score, lives
+inline constexpr std::array<std::uint32_t, 2> NameHashes{{3526332565u, 1526042452u}}; // how a saved value finds its variable
+inline constexpr bool UsesSaveData = false;
 
 // One piece of a text item that shows variables: plain text, or a variable's value when variable is not -1.
 struct Part {
@@ -473,7 +477,7 @@ bool hasPosixCompiler() {
 
 // Compiles the real runtime SceneState with the generated headers, under the game's warning flags,
 // and runs `body` against it on this computer. No console or SDK is involved.
-HarnessResult runHarness(const Scene& scene, const LogicProgram& program, const QByteArray& body) {
+HarnessResult runHarness(const Scene& scene, const LogicProgram& program, const QByteArray& body, bool sanitize = false) {
     HarnessResult result;
     const auto logicHeader = generateLogicHeader(program, scene);
     const auto variablesHeader = generateVariablesHeader(program, scene);
@@ -485,7 +489,7 @@ HarnessResult runHarness(const Scene& scene, const LogicProgram& program, const 
     const auto root = directory.path();
     const QString runtime = QString(STUDIO_TEST_SOURCE_DIR) + "/runtime/SceneGame";
 
-    for (const auto& relative : {QString("include/Scene/SceneState.hpp"), QString("include/Scene/Particles.hpp"), QString("src/Scene/SceneState.cpp"), QString("include/Input/Buttons.hpp")}) {
+    for (const auto& relative : {QString("include/Scene/SceneState.hpp"), QString("include/Scene/Particles.hpp"), QString("src/Scene/SceneState.cpp"), QString("include/Input/Buttons.hpp"), QString("include/Audio/Mixer.hpp"), QString("include/Save/SaveData.hpp")}) {
         auto contents = readBytes(runtime + '/' + relative + ".in");
         if (contents.isEmpty()) {
             result.buildOutput = "missing runtime file " + relative;
@@ -496,11 +500,13 @@ HarnessResult runHarness(const Scene& scene, const LogicProgram& program, const 
     writeBytes(root + "/src/GeneratedScene.hpp", generateSceneHeader(scene));
     writeBytes(root + "/src/GeneratedLogic.hpp", logicHeader);
     writeBytes(root + "/src/GeneratedVariables.hpp", variablesHeader);
+    writeBytes(root + "/src/GeneratedSounds.hpp", generateSoundsHeader(static_cast<int>(program.sounds.size())));
     writeBytes(root + "/src/main.cpp", HarnessPrelude + body + "\n    return 0;\n}\n");
 
     QStringList arguments{"-std=c++20", "-Wall", "-Wextra", "-Wpedantic", "-Werror", "-I" + root + "/include", "-I" + root + "/src", root + "/src/main.cpp", root + "/src/Scene/SceneState.cpp", "-o", root + "/harness"};
     const QString sysroot(STUDIO_TEST_SYSROOT);
     if (!sysroot.isEmpty()) arguments << "-isysroot" << sysroot;
+    if (sanitize) arguments << "-g" << "-fsanitize=address,undefined" << "-fno-sanitize-recover=all";
 
     QProcess compiler;
     compiler.setProcessChannelMode(QProcess::MergedChannels);
@@ -532,7 +538,7 @@ class TstBlocks : public QObject {
 
 private slots:
     void catalogDescribesEveryBlockOnce() {
-        QCOMPARE(blockCatalog().size(), 13);
+        QCOMPARE(blockCatalog().size(), 19);
         QSet<QString> names;
         QSet<QString> titles;
         for (const auto& info : blockCatalog()) {
@@ -542,8 +548,8 @@ private slots:
             titles.insert(info.title);
             QCOMPARE(blockInfo(info.type).jsonName, info.jsonName);
         }
-        QCOMPARE(names.size(), 13);
-        QCOMPARE(titles.size(), 13);
+        QCOMPARE(names.size(), 19);
+        QCOMPARE(titles.size(), 19);
         QCOMPARE(buttonCatalog().size(), 8);
         QCOMPARE(comparisonCatalog().size(), 6);
         QVERIFY(blockInfo(BlockType::EveryFrame).isEvent);
@@ -606,7 +612,7 @@ private slots:
         QString error;
         QVERIFY2(saveLogic(path, everyBlockProgram(), error), qPrintable(error));
         const auto root = QJsonDocument::fromJson(readBytes(path)).object();
-        QCOMPARE(root.value("schemaVersion").toInt(), 2);
+        QCOMPARE(root.value("schemaVersion").toInt(), 3);
         const auto savedVariables = root.value("variables").toArray();
         QCOMPARE(savedVariables.size(), qsizetype(1));
         QCOMPARE(savedVariables.at(0).toObject().value("name").toString(), QString("score"));
@@ -949,6 +955,236 @@ private slots:
             "score=116 [100.0,100.0 1 0.00,0.00,0.00] [80.0,100.0 0 1.00,0.00,0.00] [0.0,0.0 1 0.00,0.00,1.00]",
         };
         QCOMPARE(result.lines, expected);
+    }
+
+    void soundBlocksLoadAndSave() {
+        const auto result = loadBytes(R"json({"schemaVersion": 3, "variables": [], "sounds": [
+            {"name": "coin", "source": "assets/sounds/coin.wav"}, {"name": "theme", "source": "assets/sounds/theme.wav"}
+        ], "events": [{"id": "e", "type": "everyFrame", "actions": [
+            {"id": "a", "type": "playSound", "sound": "coin"},
+            {"id": "b", "type": "playMusic", "sound": "theme"},
+            {"id": "c", "type": "stopMusic"},
+            {"id": "d", "type": "setVolume", "value": 40},
+            {"id": "f", "type": "saveVariables"},
+            {"id": "g", "type": "loadVariables"}
+        ]}]})json");
+        QVERIFY2(result.program.has_value(), qPrintable(result.error));
+        const auto& actions = result.program->events.first().children;
+        QCOMPARE(result.program->sounds.size(), qsizetype(2));
+        QCOMPARE(result.program->sounds[1].source, QString("assets/sounds/theme.wav"));
+        QCOMPARE(actions[0].sound, QString("coin"));
+        QCOMPARE(actions[1].type, BlockType::PlayMusic);
+        QCOMPARE(actions[3].value, 40);
+
+        QTemporaryDir directory;
+        const auto path = directory.path() + "/logic.json";
+        QString error;
+        QVERIFY2(saveLogic(path, *result.program, error), qPrintable(error));
+        const auto again = loadLogic(path);
+        QVERIFY2(again.program.has_value(), qPrintable(again.error));
+        QCOMPARE(again.program->sounds.size(), qsizetype(2));
+        QCOMPARE(again.program->events.first().children[0].sound, QString("coin"));
+        QVERIFY(QJsonDocument::fromJson(readBytes(path)).object().value("sounds").isArray());
+    }
+
+    void soundBlocksNeedTheLatestSchema() {
+        const auto result = loadJson({{"schemaVersion", 2}, {"variables", QJsonArray{}}, {"events", QJsonArray{frameEvent({QJsonObject{{"id", "b"}, {"type", "stopMusic"}}})}}});
+        QVERIFY(!result.program.has_value());
+        QVERIFY2(result.error.contains("schemaVersion 3"), qPrintable(result.error));
+
+        const auto noList = loadJson({{"schemaVersion", 3}, {"variables", QJsonArray{}}, {"events", QJsonArray{}}});
+        QVERIFY(!noList.program.has_value());
+        QVERIFY2(noList.error.contains("sounds"), qPrintable(noList.error));
+
+        const auto badSound = loadJson({{"schemaVersion", 3}, {"variables", QJsonArray{}}, {"sounds", QJsonArray{QJsonObject{{"name", "bad name"}, {"source", "assets/sounds/a.wav"}}}}, {"events", QJsonArray{}}});
+        QVERIFY(!badSound.program.has_value());
+        QVERIFY2(badSound.error.contains("sound name"), qPrintable(badSound.error));
+    }
+
+    void aSoundBlockNeedsASoundThatExists() {
+        LogicProgram program;
+        Block play;
+        play.id = "b";
+        play.type = BlockType::PlaySound;
+        program.events = {eventBlock("e", BlockType::EveryFrame, {play})};
+        auto problems = validateLogic(program, gameScene());
+        QCOMPARE(problems.size(), qsizetype(1));
+        QVERIFY2(problems.first().message.contains("no sound"), qPrintable(problems.first().message));
+        QVERIFY(generateLogicHeader(program, gameScene()).isEmpty());
+
+        program.events.first().children.first().sound = "gone";
+        problems = validateLogic(program, gameScene());
+        QCOMPARE(problems.size(), qsizetype(1));
+        QVERIFY2(problems.first().message.contains("gone"), qPrintable(problems.first().message));
+        // A program with a missing sound can still be saved and repaired.
+        QVERIFY(validateLogicStructure(program).isEmpty());
+    }
+
+    void volumeIsZeroToAHundred() {
+        LogicProgram program;
+        Block volume;
+        volume.id = "b";
+        volume.type = BlockType::SetVolume;
+        volume.value = 101;
+        program.events = {eventBlock("e", BlockType::EveryFrame, {volume})};
+        auto problems = validateLogicStructure(program);
+        QCOMPARE(problems.size(), qsizetype(1));
+        QVERIFY2(problems.first().message.contains("0 to 100"), qPrintable(problems.first().message));
+        program.events.first().children.first().value = -1;
+        QVERIFY(!validateLogicStructure(program).isEmpty());
+        program.events.first().children.first().value = 100;
+        QVERIFY(validateLogicStructure(program).isEmpty());
+    }
+
+    void soundBlocksGenerateTheirCalls() {
+        LogicProgram program;
+        program.sounds = {{"coin", "assets/sounds/coin.wav"}, {"theme", "assets/sounds/theme.wav"}};
+        Block play;
+        play.id = "a";
+        play.type = BlockType::PlaySound;
+        play.sound = "theme"; // index 1, so it cannot be mistaken for the first sound
+        Block music = play;
+        music.id = "b";
+        music.type = BlockType::PlayMusic;
+        music.sound = "coin";
+        Block stop;
+        stop.id = "c";
+        stop.type = BlockType::StopMusic;
+        Block volume;
+        volume.id = "d";
+        volume.type = BlockType::SetVolume;
+        volume.value = 40;
+        Block save;
+        save.id = "f";
+        save.type = BlockType::SaveVariables;
+        Block load;
+        load.id = "g";
+        load.type = BlockType::LoadVariables;
+        program.events = {eventBlock("e", BlockType::EveryFrame, {play, music, stop, volume, save, load})};
+
+        const auto header = generateLogicHeader(program, gameScene());
+        QVERIFY2(header.contains("world.PlaySound(1); // a"), header.constData());
+        QVERIFY2(header.contains("world.PlayMusic(0); // b"), header.constData());
+        QVERIFY2(header.contains("world.StopMusic(); // c"), header.constData());
+        QVERIFY2(header.contains("world.SetVolume(40); // d"), header.constData());
+        QVERIFY2(header.contains("world.SaveVariables(); // f"), header.constData());
+        QVERIFY2(header.contains("world.LoadVariables(); // g"), header.constData());
+        QVERIFY2(header.contains("#include \"GeneratedSounds.hpp\""), header.constData());
+        QVERIFY2(header.contains("GeneratedSounds::SoundCount == 2"), header.constData());
+    }
+
+    void aProgramWithoutSoundsDoesNotIncludeThem() {
+        auto program = scoreProgram();
+        program.events = {eventBlock("e", BlockType::EveryFrame, {moveBy("m", "player", 1, 0)})};
+        QVERIFY(!generateLogicHeader(program, gameScene()).contains("GeneratedSounds"));
+        QVERIFY(!generateEmptyLogicHeader().contains("GeneratedSounds"));
+    }
+
+    void variablesHeaderCarriesSaveDataHashes() {
+        auto program = scoreProgram();
+        const auto plain = generateVariablesHeader(program, gameScene());
+        QVERIFY2(plain.contains("UsesSaveData = false"), plain.constData());
+        // FNV-1a of "score", the value runtime/SceneGame/include/Save/SaveData.hpp computes.
+        QVERIFY2(plain.contains("NameHashes{{3526332565u}}"), plain.constData());
+
+        LogicProgram withSave;
+        withSave.variables = program.variables;
+        Block save;
+        save.id = "s";
+        save.type = BlockType::SaveVariables;
+        withSave.events = {eventBlock("e", BlockType::EveryFrame, {save})};
+        QVERIFY(generateVariablesHeader(withSave, gameScene()).contains("UsesSaveData = true"));
+
+        const auto empty = generateVariablesHeader(LogicProgram{}, gameScene());
+        QVERIFY2(empty.contains("std::array<std::uint32_t, 0> NameHashes{};"), empty.constData());
+    }
+
+    void exportingLogicAlsoExportsSounds() {
+        QTemporaryDir project;
+        const auto wav = QByteArray::fromHex("524946462600000057415645666d7420100000000100010080bb000000770100020010006461746102000000" "0500");
+        writeBytes(project.path() + "/assets/sounds/coin.wav", wav);
+        writeBytes(project.path() + "/logic.json", R"json({"schemaVersion": 3, "variables": [], "sounds": [{"name": "coin", "source": "assets/sounds/coin.wav"}], "events": []})json");
+        QString error;
+        QVERIFY2(exportLogicHeader(project.path(), gameScene(), error), qPrintable(error));
+        QVERIFY(readBytes(project.path() + "/src/GeneratedSounds.hpp").contains("SoundCount = 1"));
+        QVERIFY(QFile::exists(project.path() + "/src/GeneratedSounds/sound-0.pcm"));
+
+        QFile::remove(project.path() + "/assets/sounds/coin.wav");
+        QVERIFY(!exportLogicHeader(project.path(), gameScene(), error));
+        QVERIFY2(error.contains("coin.wav"), qPrintable(error));
+    }
+
+    void aProjectWithNoLogicGetsAnEmptySoundTable() {
+        QTemporaryDir project;
+        QString error;
+        QVERIFY2(exportLogicHeader(project.path(), gameScene(), error), qPrintable(error));
+        QVERIFY(readBytes(project.path() + "/src/GeneratedSounds.hpp").contains("SoundCount = 0"));
+    }
+
+    void generatedSoundBlocksRunAgainstTheRealMixerUnderSanitizers() {
+        if (!hasPosixCompiler()) QSKIP("The generated logic is only compiled here with a GCC style compiler.");
+        LogicProgram program;
+        program.variables = {{"score", 7}};
+        program.sounds = {{"coin", "assets/sounds/coin.wav"}, {"theme", "assets/sounds/theme.wav"}};
+        Block music;
+        music.id = "m";
+        music.type = BlockType::PlayMusic;
+        music.sound = "theme";
+        Block volume;
+        volume.id = "v";
+        volume.type = BlockType::SetVolume;
+        volume.value = 50;
+        Block play = music;
+        play.id = "p";
+        play.type = BlockType::PlaySound;
+        play.sound = "coin";
+        Block save;
+        save.id = "s";
+        save.type = BlockType::SaveVariables;
+        auto changed = variableBlock("c", BlockType::SetVariable, "score", 99);
+        Block load;
+        load.id = "l";
+        load.type = BlockType::LoadVariables;
+        program.events = {eventBlock("st", BlockType::WhenGameStarts, {music, volume}), held("h", ControllerButton::Cross, {play, save, changed, load})};
+
+        const auto result = runHarness(gameScene(), program, R"cpp(
+    std::array<std::int16_t, 8> coin{500, 500, 500, 500, 500, 500, 500, 500};
+    std::array<std::int16_t, 8> theme{-100, -100, -100, -100, -100, -100, -100, -100};
+    std::array clips{Audio::Clip{coin.data(), 4}, Audio::Clip{theme.data(), 4}};
+    Audio::Mixer mixer(clips);
+    SceneState::SaveMailbox mailbox;
+    SceneState world(1920, 1080, &mixer, &mailbox);
+    std::array<std::int16_t, 4> output{};
+    mixer.Mix(output);
+    std::printf("after start: %d\n", output[0]);
+    world.Update(1.0 / 60.0, {0.0f, 0.0f}, Buttons::Cross);
+    mixer.Mix(output);
+    std::printf("after press: %d\n", output[0]);
+    std::array<std::int32_t, 1> saved{};
+    std::printf("saved %d %d\n", mailbox.TakeSave(saved) ? 1 : 0, saved[0]);
+    std::printf("load requested %d\n", mailbox.TakeLoadRequest() ? 1 : 0);
+    mailbox.PublishLoaded(std::array<std::int32_t, 1>{123});
+    std::printf("before update %d\n", world.Variable(0));
+    world.Update(1.0 / 60.0, {0.0f, 0.0f}, 0);
+    std::printf("after update %d\n", world.Variable(0));
+    SceneState silent(1920, 1080);
+    silent.Update(1.0 / 60.0, {0.0f, 0.0f}, Buttons::Cross); // no mixer, no mailbox: every block is a no-op
+    std::printf("silent %d\n", silent.Variable(0));
+)cpp", true);
+        QVERIFY2(result.built, qPrintable(result.buildOutput));
+        // The first line comes from the prelude's own scene, which has no mixer.
+        QVERIFY2(result.lines.size() >= 7, qPrintable(result.lines.join('|')));
+        const auto bodyLines = result.lines.mid(result.lines.size() - 7);
+        const QStringList expected{
+            "after start: -50",
+            "after press: 200",
+            "saved 1 7",
+            "load requested 1",
+            "before update 99",
+            "after update 123",
+            "silent 99",
+        };
+        QCOMPARE(bodyLines, expected);
     }
 
     void burstParticlesLoadsAndSaves() {

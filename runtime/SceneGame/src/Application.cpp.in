@@ -1,7 +1,9 @@
 #include "Application.hpp"
+#include "Audio/AudioEngine.hpp"
 #include "Graphics/Display.hpp"
 #include "Graphics/Renderer.hpp"
 #include "Input/Controller.hpp"
+#include "Save/SaveService.hpp"
 #include "Scene/SceneState.hpp"
 #include "Error.hpp"
 #include "prx/libkernel/Time/include/Time.hpp"
@@ -15,7 +17,9 @@ void Application::Run() {
     Display display(Width, Height);
     Renderer renderer(Width, Height);
     Controller controller;
-    SceneState scene(Width, Height);
+    AudioEngine audio;
+    SaveService saves;
+    SceneState scene(Width, Height, audio.Mixer(), saves.Mail());
     auto previous = sceKernelGetProcessTime();
 
     for (;;) {

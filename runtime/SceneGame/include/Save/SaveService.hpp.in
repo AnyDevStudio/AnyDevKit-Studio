@@ -1,0 +1,43 @@
+#ifndef @NAME@_Save_SaveService_hpp
+#define @NAME@_Save_SaveService_hpp
+#include "GeneratedVariables.hpp"
+#include "Save/SaveData.hpp"
+#include "SceTypes.hpp"
+#include <atomic>
+
+// Keeps the game's variables in the console's save data, on its own thread so a slow save never holds
+// up a frame. Every failure, such as a full save data storage or a signed-out user, is treated as
+// "nothing was saved" or "nothing to load": the game keeps running with the values it already has.
+class SaveService final {
+public:
+    using Mailbox = SaveData::Mailbox<GeneratedVariables::VariableCount>;
+
+    SaveService();
+    ~SaveService();
+    SaveService(const SaveService&) = delete;
+    SaveService& operator=(const SaveService&) = delete;
+
+    // The frame thread's side, or null when the program has no save or load blocks.
+    Mailbox* Mail();
+
+private:
+    using Values = std::array<std::int32_t, GeneratedVariables::VariableCount>;
+
+    static void* APS5_VABI threadEntry(void* argument);
+    void runThread();
+    bool ready();
+    bool mount(SaveDataMountResult& result);
+    void writeSave(const SaveDataMountResult& mount, const Values& values);
+    void unmount(const SaveDataMountPoint& point);
+    void save(const Values& values);
+    void load();
+
+    Mailbox mailbox;
+    Pthread thread{};
+    bool started = false;
+    bool serviceReady = false;
+    int userId = 0;
+    int resource = -1;
+    std::atomic<bool> stopRequested{false};
+};
+#endif

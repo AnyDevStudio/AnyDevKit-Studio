@@ -1,0 +1,138 @@
+#ifndef Save_SaveData_hpp
+#define Save_SaveData_hpp
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <span>
+#include <string_view>
+
+// The game's save file format, and the handoff between the frame thread and the thread that talks
+// to the console's save data service. Nothing here knows about the console, so it is also compiled
+// and tested on the developer's computer; this header must stay free of @NAME@ and platform headers.
+//
+// A save file is, little endian:
+//   'A' 'D' 'K' 'S'   magic
+//   u32               format version (1)
+//   u32               count
+//   count times:      u32 name hash, i32 value
+//   u32               FNV-1a of every byte before it
+// A variable's name hash is how a saved value finds its variable, so reordering, adding or removing
+// variables in a later version of a game does not move or lose saved values.
+namespace SaveData {
+
+inline constexpr std::array<char, 4> Magic{'A', 'D', 'K', 'S'};
+inline constexpr std::uint32_t FormatVersion = 1;
+
+// FNV-1a over the name's bytes. Studio generates the same hashes into GeneratedVariables::NameHashes.
+constexpr std::uint32_t NameHash(std::string_view name) {
+    std::uint32_t hash = 2166136261u;
+    for (const char character : name) hash = (hash ^ static_cast<unsigned char>(character)) * 16777619u;
+    return hash;
+}
+
+constexpr std::size_t FileBytes(std::size_t count) { return 12 + count * 8 + 4; }
+
+namespace detail {
+inline void writeU32(std::uint8_t* out, std::uint32_t value) {
+    for (int shift = 0; shift < 32; shift += 8) *out++ = static_cast<std::uint8_t>(value >> shift);
+}
+inline std::uint32_t readU32(const std::uint8_t* in) {
+    std::uint32_t value = 0;
+    for (int shift = 0; shift < 32; shift += 8) value |= static_cast<std::uint32_t>(*in++) << shift;
+    return value;
+}
+inline std::uint32_t checksum(const std::uint8_t* bytes, std::size_t size) {
+    std::uint32_t hash = 2166136261u;
+    for (std::size_t index = 0; index < size; ++index) hash = (hash ^ bytes[index]) * 16777619u;
+    return hash;
+}
+}
+
+// Returns the bytes written, or 0 when `out` is too small or the spans do not match.
+inline std::size_t Encode(std::span<const std::int32_t> values, std::span<const std::uint32_t> hashes, std::span<std::uint8_t> out) {
+    const auto total = FileBytes(values.size());
+    if (values.size() != hashes.size() || out.size() < total) return 0;
+    std::copy(Magic.begin(), Magic.end(), out.begin());
+    detail::writeU32(out.data() + 4, FormatVersion);
+    detail::writeU32(out.data() + 8, static_cast<std::uint32_t>(values.size()));
+    for (std::size_t index = 0; index < values.size(); ++index) {
+        detail::writeU32(out.data() + 12 + index * 8, hashes[index]);
+        detail::writeU32(out.data() + 16 + index * 8, static_cast<std::uint32_t>(values[index]));
+    }
+    detail::writeU32(out.data() + total - 4, detail::checksum(out.data(), total - 4));
+    return total;
+}
+
+// Applies a valid file to `values`. Returns false and changes nothing for a damaged or unknown file.
+// A value whose name is not in `hashes` is ignored, and a variable the file does not know is left as is.
+inline bool Decode(std::span<const std::uint8_t> file, std::span<const std::uint32_t> hashes, std::span<std::int32_t> values) {
+    if (hashes.size() != values.size() || file.size() < FileBytes(0)) return false;
+    if (!std::equal(Magic.begin(), Magic.end(), file.begin())) return false;
+    if (detail::readU32(file.data() + 4) != FormatVersion) return false;
+    const auto count = detail::readU32(file.data() + 8);
+    if (file.size() != FileBytes(count)) return false;
+    if (detail::readU32(file.data() + file.size() - 4) != detail::checksum(file.data(), file.size() - 4)) return false;
+    for (std::size_t index = 0; index < count; ++index) {
+        const auto hash = detail::readU32(file.data() + 12 + index * 8);
+        const auto value = static_cast<std::int32_t>(detail::readU32(file.data() + 16 + index * 8));
+        for (std::size_t target = 0; target < hashes.size(); ++target) {
+            if (hashes[target] == hash) values[target] = value;
+        }
+    }
+    return true;
+}
+
+// Three copies of the values, handed between one writer and one reader without either ever waiting:
+// the writer owns one, the reader owns one, and the newest finished copy waits between them. Keeping
+// only the newest means saving in every frame does at most one write at a time and never builds a queue.
+template <std::size_t Count>
+class Latest final {
+public:
+    void Publish(std::span<const std::int32_t> values) {
+        std::copy(values.begin(), values.end(), slots[writerSlot].begin());
+        const auto previous = middle.exchange(writerSlot | DirtyFlag, std::memory_order_acq_rel);
+        writerSlot = previous & SlotMask;
+    }
+    bool Take(std::span<std::int32_t> out) {
+        if ((middle.load(std::memory_order_acquire) & DirtyFlag) == 0) return false;
+        const auto previous = middle.exchange(readerSlot, std::memory_order_acq_rel);
+        readerSlot = previous & SlotMask;
+        std::copy(slots[readerSlot].begin(), slots[readerSlot].end(), out.begin());
+        return true;
+    }
+
+private:
+    static constexpr std::uint32_t DirtyFlag = 4;
+    static constexpr std::uint32_t SlotMask = 3;
+    std::array<std::array<std::int32_t, Count>, 3> slots{};
+    std::uint32_t writerSlot = 0;
+    std::uint32_t readerSlot = 1;
+    std::atomic<std::uint32_t> middle{2};
+};
+
+// One writer per direction: the frame thread publishes saves and takes loaded values; the save thread
+// takes saves and publishes loaded values. Neither call ever waits.
+template <std::size_t Count>
+class Mailbox final {
+public:
+    void PublishSave(std::span<const std::int32_t, Count> values) { saves.Publish(values); }
+    void PublishSave(const std::array<std::int32_t, Count>& values) { saves.Publish(std::span<const std::int32_t>(values)); }
+    bool TakeSave(std::span<std::int32_t> out) { return saves.Take(out); }
+
+    void RequestLoad() { loadRequested.store(true, std::memory_order_release); }
+    bool TakeLoadRequest() { return loadRequested.exchange(false, std::memory_order_acq_rel); }
+
+    void PublishLoaded(const std::array<std::int32_t, Count>& values) { loaded.Publish(std::span<const std::int32_t>(values)); }
+    bool TakeLoaded(std::span<std::int32_t> out) { return loaded.Take(out); }
+
+private:
+    Latest<Count> saves;
+    Latest<Count> loaded;
+    std::atomic<bool> loadRequested{false};
+};
+
+}
+#endif

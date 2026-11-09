@@ -37,6 +37,7 @@ T.Control {
     required property int value
     required property string comparison
     required property string variable
+    required property string sound
     required property string problem
     required property bool dragged
     required property bool emptyCavity
@@ -58,6 +59,7 @@ T.Control {
         case "item": return item
         case "otherItem": return otherItem
         case "variable": return variable
+        case "sound": return sound
         case "button": return button
         case "comparison": return comparison
         case "x": return String(pointX)
@@ -72,6 +74,7 @@ T.Control {
         if (key === "item") return itemName
         if (key === "otherItem") return otherItemName
         if (key === "variable") return variable.length === 0 ? "" : doc.variables.some((choice) => choice.name === variable) ? variable : "Missing variable"
+        if (key === "sound") return sound.length === 0 ? "" : doc.sounds.some((choice) => choice.name === sound) ? sound : "Missing sound"
         const list = key === "button" ? doc.buttons : doc.comparisons
         const found = list.find((choice) => choice.id === fieldValue(key))
         return found ? found.name : ""
@@ -80,6 +83,7 @@ T.Control {
     function choices(key) {
         if (key === "item" || key === "otherItem") return doc.sceneItems
         if (key === "variable") return doc.variables
+        if (key === "sound") return doc.sounds
         return key === "button" ? doc.buttons : doc.comparisons
     }
 
@@ -87,6 +91,7 @@ T.Control {
         if (key === "button") return "Choose a button"
         if (key === "comparison") return "Choose a comparison"
         if (key === "variable") return "Choose a variable"
+        if (key === "sound") return "Choose a sound"
         return "Choose item"
     }
 
@@ -203,8 +208,8 @@ T.Control {
                 current: block.fieldValue(editor.key)
                 shown: block.fieldName(editor.key)
                 placeholder: block.placeholder(editor.key)
-                invalid: (editor.kind === "item" || editor.kind === "variable") && (shown === "Missing item" || shown === "Missing variable" || shown === "")
-                emptyText: editor.kind === "variable" ? "Add a variable in the Variables area first." : "Add an item in the Scene tab first."
+                invalid: (editor.kind === "item" || editor.kind === "variable" || editor.kind === "sound") && (shown === "Missing item" || shown === "Missing variable" || shown === "Missing sound" || shown === "")
+                emptyText: editor.kind === "variable" ? "Add a variable in the Variables area first." : editor.kind === "sound" ? "Import a sound in the Sounds area first." : "Add an item in the Scene tab first."
                 onChosen: (id) => block.doc.setField(block.blockId, editor.key, id)
                 Accessible.description: block.title
             }

@@ -248,6 +248,8 @@ namespace GeneratedVariables {
 
 inline constexpr std::size_t VariableCount = 2;
 inline constexpr std::array<std::int32_t, 2> InitialValues{{0, 3}}; // score, lives
+inline constexpr std::array<std::uint32_t, 2> NameHashes{{3526332565u, 1526042452u}}; // how a saved value finds its variable
+inline constexpr bool UsesSaveData = false;
 
 // One piece of a text item that shows variables: plain text, or a variable's value when variable is not -1.
 struct Part {
