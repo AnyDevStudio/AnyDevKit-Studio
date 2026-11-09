@@ -707,6 +707,10 @@ ExtractResult extractArchive(const QString& archivePath, const QString& destinat
         return {};
     };
 
+    // Finder metadata that macOS tar adds beside each file. It is never part of an SDK, and adk init
+    // refuses a template folder that contains it. These entries have passed the checks above.
+    planned.removeIf([](const PlannedEntry& item) { return QFileInfo(item.entry.path).fileName().startsWith("._"); });
+
     const auto total = static_cast<int>(planned.size());
     int done = 0;
     const auto report = [&] {

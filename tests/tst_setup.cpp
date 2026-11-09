@@ -609,6 +609,21 @@ private slots:
         QCOMPARE(readBytes(workspace.filePath("out/b.txt")), QByteArray("beta"));
     }
 
+    void leavesOutMacMetadataFiles() {
+        QTemporaryDir workspace;
+        const auto result = extractTar(workspace, {{"templates/._include", "metadata"}, {"templates/include/a.h", "header"}, {"._LICENSE", "metadata"}});
+        QVERIFY2(result.ok, qPrintable(result.problem));
+        QCOMPARE(result.fileCount, 1);
+        QVERIFY(!QFileInfo::exists(workspace.filePath("out/templates/._include")));
+        QVERIFY(!QFileInfo::exists(workspace.filePath("out/._LICENSE")));
+        QCOMPARE(readBytes(workspace.filePath("out/templates/include/a.h")), QByteArray("header"));
+    }
+
+    void stillRefusesAnUnsafeMetadataPath() {
+        QTemporaryDir workspace;
+        QVERIFY(!extractTar(workspace, {{"../._evil", "x"}}).ok);
+    }
+
     void handlesLongNames() {
         const QByteArray longName = "deep/" + QByteArray(120, 'x') + "/file.txt";
         // GNU long name: an "L" entry whose body is the real path, with a terminating NUL.
