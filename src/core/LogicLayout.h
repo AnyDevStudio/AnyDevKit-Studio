@@ -26,7 +26,7 @@ inline constexpr double ProblemHeight = 52; // extra room on a block that shows 
 inline constexpr double SnapDistance = 150; // how far from a landing spot a dragged action still snaps
 }
 
-// A value edited inside a block. `kind` is one of item, variable, button, comparison, number, whole, color.
+// A value edited inside a block. `kind` is one of item, variable, sound, button, comparison, number, whole, color.
 struct BlockField {
     QString key;
     QString kind;
@@ -36,7 +36,7 @@ struct BlockField {
 // Derived from the catalog's flags, so a new block type needs no change here.
 QList<BlockField> blockFields(const BlockInfo& info);
 
-// "events", "movement", "looks" or "variables". Every catalog entry has exactly one.
+// "events", "movement", "looks", "variables", "sound" or "saving". Every catalog entry has exactly one.
 QString blockCategory(const BlockInfo& info);
 QString blockCategoryTitle(const QString& category);
 

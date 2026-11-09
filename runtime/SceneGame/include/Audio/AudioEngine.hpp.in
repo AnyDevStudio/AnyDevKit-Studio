@@ -1,0 +1,35 @@
+#ifndef @NAME@_Audio_AudioEngine_hpp
+#define @NAME@_Audio_AudioEngine_hpp
+#include "Audio/Mixer.hpp"
+#include "GeneratedSounds.hpp"
+#include <array>
+#include <atomic>
+#include <cstdint>
+#include "SceTypes.hpp"
+
+// Starts the mixer on its own thread and hands its output to libSceAudioOut. If audio cannot start,
+// Mixer() is null and the game keeps running without sound: the frame loop never waits for audio
+// and nothing here can stop a frame. A project with no sounds opens no audio port at all.
+class AudioEngine final {
+public:
+    AudioEngine();
+    ~AudioEngine();
+    AudioEngine(const AudioEngine&) = delete;
+    AudioEngine& operator=(const AudioEngine&) = delete;
+
+    Audio::Mixer* Mixer();
+
+private:
+    static void* APS5_VABI threadEntry(void* argument);
+    void runThread();
+    bool start();
+
+    std::array<Audio::Clip, GeneratedSounds::SoundCount> clips{};
+    Audio::Mixer mixer;
+    std::array<std::int16_t, Audio::BlockFrames * Audio::Channels> output{};
+    Pthread thread{};
+    int port = -1;
+    bool started = false;
+    std::atomic<bool> stopRequested{false};
+};
+#endif

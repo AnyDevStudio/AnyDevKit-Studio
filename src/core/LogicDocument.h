@@ -29,6 +29,7 @@ class LogicDocument : public QAbstractListModel {
     Q_PROPERTY(QVariantList buttons READ buttons CONSTANT)
     Q_PROPERTY(QVariantList comparisons READ comparisons CONSTANT)
     Q_PROPERTY(QVariantList variables READ variables NOTIFY programChanged)
+    Q_PROPERTY(QVariantList sounds READ sounds NOTIFY programChanged)
     Q_PROPERTY(QVariantList sceneItems READ sceneItems NOTIFY sceneItemsChanged)
     Q_PROPERTY(double canvasWidth READ canvasWidth WRITE setCanvasWidth NOTIFY layoutChanged)
     Q_PROPERTY(double contentWidth READ contentWidth NOTIFY layoutChanged)
@@ -70,6 +71,7 @@ public:
         EmptyCavityRole,
         ProblemHeightRole,
         VariableRole,
+        SoundRole,
     };
 
     explicit LogicDocument(QObject* parent = nullptr);
@@ -100,6 +102,7 @@ public:
     QVariantList buttons() const;
     QVariantList comparisons() const;
     QVariantList variables() const; // [{name, initial, id}], id repeating the name for pickers
+    QVariantList sounds() const; // [{name, source, id}], id repeating the name for pickers
     QVariantList sceneItems() const;
     double canvasWidth() const;
     void setCanvasWidth(double width);
@@ -127,6 +130,13 @@ public:
     Q_INVOKABLE void removeVariable(const QString& name);
     // Everything that shows or changes the variable: [{kind: block|text, title, where}].
     Q_INVOKABLE QVariantList variableUses(const QString& name) const;
+
+    // The Sounds area. The file itself stays in assets/sounds, so undo can bring a removed sound back.
+    bool addSound(const QString& name, const QString& source);
+    Q_INVOKABLE void removeSound(const QString& name);
+    Q_INVOKABLE QVariantList soundUses(const QString& name) const; // [{kind: block, title, where}]
+    // Shows a message from outside the document, such as a failed sound import.
+    Q_INVOKABLE void reportProblem(const QString& message);
 
     // The block after and before this one in reading order, for moving with the keyboard.
     Q_INVOKABLE QString nextBlockId(const QString& id) const;

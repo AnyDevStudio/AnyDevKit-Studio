@@ -35,6 +35,7 @@ qt_add_qml_module(AnyDevKitStudio
         qml/ImagePlaceholder.qml
         qml/LogicView.qml
         qml/VariablesPanel.qml
+        qml/SoundsPanel.qml
         qml/LogicBlock.qml
         qml/BlockOutline.qml
         qml/BlockGlyph.qml
@@ -51,6 +52,8 @@ qt_add_qml_module(AnyDevKitStudio
     SOURCES
         StudioController.cpp
         StudioController.h
+        SoundPreviewPlayer.cpp
+        SoundPreviewPlayer.h
         ReducedMotion.cpp
         ReducedMotion.h
         PixelText.cpp

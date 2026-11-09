@@ -1,0 +1,182 @@
+#ifndef Audio_Mixer_hpp
+#define Audio_Mixer_hpp
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <span>
+
+// The game's software mixer. Nothing here knows about the console, so it is also compiled and tested
+// on the developer's computer; this header must stay free of @NAME@ and of platform headers.
+//
+// The frame thread calls the Play, Stop and Set functions. The audio thread calls Mix. Those two
+// only ever touch the command queue, so neither ever waits for the other, and Mix allocates nothing.
+namespace Audio {
+
+// The format every clip and the output use. docs/blocks-format.md describes it for exporters.
+inline constexpr std::uint32_t SampleRate = 48000;
+inline constexpr std::uint32_t Channels = 2;
+inline constexpr std::uint32_t BlockFrames = 512; // 10.7 ms; the size handed to sceAudioOutOpen
+
+inline constexpr std::size_t VoiceCount = 16; // music takes voice 0; sounds share the other 15
+inline constexpr std::size_t MusicVoice = 0;
+inline constexpr std::size_t FirstSoundVoice = 1;
+inline constexpr std::size_t CommandCapacity = 256;
+
+// Interleaved stereo frames that outlive the mixer.
+struct Clip {
+    const std::int16_t* frames = nullptr;
+    std::uint32_t frameCount = 0;
+};
+
+class Mixer final {
+public:
+    explicit Mixer(std::span<const Clip> clips) : clips(clips) {}
+    Mixer(const Mixer&) = delete;
+    Mixer& operator=(const Mixer&) = delete;
+
+    // Frame thread. Each returns false when the command was not queued: an unknown or empty clip, or a
+    // full queue. A full queue means dropping a sound rather than waiting for the audio thread.
+    bool PlaySound(std::size_t clip) { return queueClip(Operation::PlaySound, clip); }
+    bool PlayMusic(std::size_t clip) { return queueClip(Operation::PlayMusic, clip); }
+    bool StopMusic() { return push({Operation::StopMusic, 0}); }
+    bool SetVolume(int percent) { return push({Operation::SetVolume, static_cast<std::uint32_t>(std::clamp(percent, 0, 100))}); }
+
+    // Audio thread. Fills output with interleaved stereo; a sound that ends mid-block is padded with silence.
+    void Mix(std::span<std::int16_t> output) {
+        drainCommands();
+        std::size_t frames = output.size() / Channels;
+        std::size_t written = 0;
+        while (frames > 0) {
+            const auto chunk = std::min<std::size_t>(frames, ChunkFrames);
+            mixChunk(chunk, output.subspan(written * Channels, chunk * Channels));
+            frames -= chunk;
+            written += chunk;
+        }
+    }
+
+    // Audio thread only (used by tests).
+    std::size_t ActiveVoices() const {
+        std::size_t active = 0;
+        for (const auto& voice : voices) active += voice.clip != nullptr ? 1u : 0u;
+        return active;
+    }
+
+private:
+    enum class Operation : std::uint8_t { PlaySound, PlayMusic, StopMusic, SetVolume };
+    struct Command {
+        Operation operation;
+        std::uint32_t value;
+    };
+    struct Voice {
+        const Clip* clip = nullptr; // null when free
+        std::uint32_t position = 0;
+        std::size_t clipIndex = 0;
+    };
+    static constexpr std::size_t ChunkFrames = BlockFrames;
+    static constexpr std::size_t QueueSize = CommandCapacity + 1; // one slot stays empty to tell full from empty
+
+    bool queueClip(Operation operation, std::size_t clip) {
+        if (clip >= clips.size() || clips[clip].frames == nullptr || clips[clip].frameCount == 0) return false;
+        return push({operation, static_cast<std::uint32_t>(clip)});
+    }
+
+    bool push(Command command) {
+        const auto tail = queueTail.load(std::memory_order_relaxed);
+        const auto next = (tail + 1) % QueueSize;
+        if (next == queueHead.load(std::memory_order_acquire)) return false;
+        queue[tail] = command;
+        queueTail.store(next, std::memory_order_release);
+        return true;
+    }
+
+    void drainCommands() {
+        auto head = queueHead.load(std::memory_order_relaxed);
+        const auto tail = queueTail.load(std::memory_order_acquire);
+        while (head != tail) {
+            apply(queue[head]);
+            head = (head + 1) % QueueSize;
+        }
+        queueHead.store(head, std::memory_order_release);
+    }
+
+    void apply(const Command& command) {
+        switch (command.operation) {
+        case Operation::PlaySound:
+            startSound(command.value);
+            break;
+        case Operation::PlayMusic:
+            startMusic(command.value);
+            break;
+        case Operation::StopMusic:
+            voices[MusicVoice].clip = nullptr;
+            break;
+        case Operation::SetVolume:
+            volume = static_cast<std::int32_t>(command.value);
+            break;
+        }
+    }
+
+    void startSound(std::uint32_t clip) {
+        auto chosen = FirstSoundVoice;
+        for (auto index = FirstSoundVoice; index < VoiceCount; ++index) {
+            if (voices[index].clip == nullptr) {
+                chosen = index;
+                break;
+            }
+            if (voices[index].position > voices[chosen].position) chosen = index;
+        }
+        voices[chosen] = {&clips[clip], 0, clip};
+    }
+
+    void startMusic(std::uint32_t clip) {
+        auto& music = voices[MusicVoice];
+        if (music.clip != nullptr && music.clipIndex == clip) return; // already playing: keep its place
+        music = {&clips[clip], 0, clip};
+    }
+
+    void addVoice(Voice& voice, bool loops, std::size_t frames) {
+        std::size_t written = 0;
+        while (written < frames && voice.clip != nullptr) {
+            const auto remaining = voice.clip->frameCount - voice.position;
+            const auto run = std::min<std::size_t>(remaining, frames - written);
+            const auto* source = voice.clip->frames + static_cast<std::size_t>(voice.position) * Channels;
+            auto* target = accumulator.data() + written * Channels;
+            for (std::size_t frame = 0; frame < run; ++frame) {
+                target[frame * 2] += source[frame * 2];
+                target[frame * 2 + 1] += source[frame * 2 + 1];
+            }
+            written += run;
+            voice.position += static_cast<std::uint32_t>(run);
+            if (voice.position == voice.clip->frameCount) {
+                if (loops) voice.position = 0;
+                else voice.clip = nullptr;
+            }
+        }
+    }
+
+    void mixChunk(std::size_t frames, std::span<std::int16_t> output) {
+        std::fill_n(accumulator.begin(), frames * Channels, 0);
+        for (std::size_t index = 0; index < VoiceCount; ++index) addVoice(voices[index], index == MusicVoice, frames);
+        const auto lowest = static_cast<std::int32_t>(std::numeric_limits<std::int16_t>::min());
+        const auto highest = static_cast<std::int32_t>(std::numeric_limits<std::int16_t>::max());
+        for (std::size_t sample = 0; sample < frames * Channels; ++sample) {
+            const auto scaled = accumulator[sample] * volume / 100;
+            output[sample] = static_cast<std::int16_t>(std::clamp(scaled, lowest, highest));
+        }
+    }
+
+    std::span<const Clip> clips;
+    std::array<Command, QueueSize> queue{};
+    std::atomic<std::size_t> queueHead{0}; // written by the audio thread
+    std::atomic<std::size_t> queueTail{0}; // written by the frame thread
+    // Everything below belongs to the audio thread.
+    std::array<Voice, VoiceCount> voices{};
+    std::array<std::int32_t, ChunkFrames * Channels> accumulator{};
+    std::int32_t volume = 100;
+};
+
+}
+#endif

@@ -1,5 +1,6 @@
 #include "SceneExport.h"
 #include "SceneImageImport.h"
+#include "SoundImport.h"
 
 #include <QColor>
 #include <QDir>
@@ -41,6 +42,31 @@ class SceneExportTests : public QObject {
     Q_OBJECT
 
 private slots:
+    void soundImportAcceptsWavAndExplainsAMissingDecoder() {
+        QTemporaryDir project;
+        QTemporaryDir outside;
+        QFile mp3(outside.path() + "/Theme.mp3");
+        QVERIFY(mp3.open(QIODevice::WriteOnly));
+        mp3.write("ID3 this is not a real mp3");
+        mp3.close();
+        ImportedSound imported;
+        QString error;
+        if (!canDecodeCompressedSound()) {
+            QVERIFY(!importSoundFile(project.path(), {}, outside.path() + "/Theme.mp3", imported, error));
+            QVERIFY2(error.contains("Qt Multimedia"), qPrintable(error));
+            QVERIFY2(error.contains("Theme.mp3"), qPrintable(error));
+            QVERIFY(!QFile::exists(project.path() + "/assets/sounds/theme.wav"));
+        }
+        const auto wav = QByteArray::fromHex("524946462600000057415645666d7420100000000100010080bb000000770100020010006461746102000000" "0500");
+        QFile good(outside.path() + "/Coin.wav");
+        QVERIFY(good.open(QIODevice::WriteOnly));
+        good.write(wav);
+        good.close();
+        QVERIFY2(importSoundFile(project.path(), {}, outside.path() + "/Coin.wav", imported, error), qPrintable(error));
+        QCOMPARE(imported.name, QString("coin"));
+        QVERIFY(QFile::exists(project.path() + "/assets/sounds/coin.wav"));
+    }
+
     void decodesToPremultipliedRgba8TopRowFirst() {
         QTemporaryDir directory;
         const auto root = directory.path();

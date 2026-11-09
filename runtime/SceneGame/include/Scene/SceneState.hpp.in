@@ -1,8 +1,10 @@
 #ifndef @NAME@_Scene_SceneState_hpp
 #define @NAME@_Scene_SceneState_hpp
+#include "Audio/Mixer.hpp"
 #include "GeneratedLogic.hpp"
 #include "GeneratedScene.hpp"
 #include "GeneratedVariables.hpp"
+#include "Save/SaveData.hpp"
 #include "Scene/Particles.hpp"
 #include <array>
 #include <cstddef>
@@ -20,7 +22,8 @@ public:
     using Color = std::array<float, 3>;
     using Colors = std::array<Color, GeneratedScene::Items.size()>;
     using Visibility = std::array<bool, GeneratedScene::Items.size()>;
-    SceneState(int width, int height); // also runs the "When the game starts" blocks
+    using SaveMailbox = SaveData::Mailbox<GeneratedVariables::VariableCount>;
+    SceneState(int width, int height, Audio::Mixer* mixer = nullptr, SaveMailbox* saves = nullptr); // also runs the "When the game starts" blocks
     void Update(double seconds, Position direction, std::uint32_t buttons);
     const Positions& Current() const;
     const Colors& CurrentColors() const;
@@ -37,6 +40,13 @@ public:
     std::int32_t Variable(std::size_t variable) const;
     bool Touching(std::size_t first, std::size_t second) const; // hidden items touch nothing
     bool Held(std::uint32_t button) const;
+    // Sound and saving: each is safe when audio or save data is unavailable, and does nothing then.
+    void PlaySound(std::size_t sound);
+    void PlayMusic(std::size_t sound); // loops; playing the music already playing keeps its place
+    void StopMusic();
+    void SetVolume(std::int32_t percent);
+    void SaveVariables(); // the save happens in the background; only the newest values are kept
+    void LoadVariables(); // loaded values replace the variables at the start of a later frame
     // Plays a particles item once, at its current position.
     void BurstParticles(std::size_t item);
     // Keeps a one-shot particles item from playing when the game starts, for a block to start it.
@@ -62,6 +72,9 @@ private:
     };
     std::unique_ptr<ParticleWorld> particleWorld;
     void startParticles();
+    void applyLoadedVariables();
+    Audio::Mixer* audioMixer = nullptr;
+    SaveMailbox* saveMailbox = nullptr;
     Particles::Emitter* emitterFor(std::size_t item);
     Positions positions{};
     Colors colors{};

@@ -80,10 +80,56 @@ class LogicDocumentTests : public QObject {
     Q_OBJECT
 
 private slots:
-    void paletteComesFromTheCatalogInFourGroups() {
+    void soundBlocksAppearInTheirOwnGroups() {
+        QCOMPARE(blockCategory(blockInfo(BlockType::PlaySound)), QString("sound"));
+        QCOMPARE(blockCategory(blockInfo(BlockType::StopMusic)), QString("sound"));
+        QCOMPARE(blockCategory(blockInfo(BlockType::SaveVariables)), QString("saving"));
+        const auto fields = blockFields(blockInfo(BlockType::PlaySound));
+        QCOMPARE(fields.size(), qsizetype(1));
+        QCOMPARE(fields.first().key, QString("sound"));
+        QCOMPARE(fields.first().kind, QString("sound"));
+        QCOMPARE(blockFields(blockInfo(BlockType::SetVolume)).first().kind, QString("whole"));
+        QVERIFY(blockFields(blockInfo(BlockType::StopMusic)).isEmpty());
+    }
+
+    void soundsAreAddedRemovedAndUndone() {
+        QTemporaryDir directory;
+        LogicDocument document;
+        openWithScene(directory, document);
+        QVERIFY(document.addSound("coin", "assets/sounds/coin.wav"));
+        QCOMPARE(document.sounds().size(), qsizetype(1));
+        QCOMPARE(document.sounds().first().toMap().value("id").toString(), QString("coin"));
+        QVERIFY(!document.addSound("coin", "assets/sounds/coin-2.wav")); // duplicate name
+        QVERIFY2(document.error().contains("coin"), qPrintable(document.error()));
+        QCOMPARE(saved(directory).sounds.size(), qsizetype(1));
+
+        const auto eventId = document.addBlock("everyFrame", {}, 0);
+        const auto playId = document.addBlock("playSound", eventId, 0);
+        QVERIFY(!playId.isEmpty());
+        QCOMPARE(saved(directory).events.first().children.first().sound, QString("coin")); // the first sound is the default
+        QCOMPARE(document.soundUses("coin").size(), qsizetype(1));
+        QCOMPARE(document.soundUses("coin").first().toMap().value("kind").toString(), QString("block"));
+
+        document.removeSound("coin");
+        QCOMPARE(document.sounds().size(), qsizetype(0));
+        QVERIFY(document.problemCount() > 0); // the block now needs a different sound
+        document.undo();
+        QCOMPARE(document.sounds().size(), qsizetype(1));
+        QVERIFY(document.problemCount() == 0);
+
+        const auto volumeId = document.addBlock("setVolume", eventId, 1);
+        QCOMPARE(saved(directory).events.first().children[1].value, 100);
+        QVERIFY(document.setField(volumeId, "value", 40));
+        QVERIFY(!document.setField(volumeId, "value", 400));
+        QVERIFY(document.error().contains("0 to 100"));
+
+        QVERIFY(document.setField(playId, "sound", "coin"));
+    }
+
+    void paletteComesFromTheCatalogInGroups() {
         LogicDocument document;
         const auto groups = document.palette();
-        QCOMPARE(groups.size(), 4);
+        QCOMPARE(groups.size(), 6);
         QStringList keys;
         QStringList seen;
         for (const auto& group : groups) {
@@ -91,7 +137,7 @@ private slots:
             keys << map.value("key").toString();
             for (const auto& block : map.value("blocks").toList()) seen << block.toMap().value("type").toString();
         }
-        QCOMPARE(keys, QStringList({"events", "movement", "looks", "variables"}));
+        QCOMPARE(keys, QStringList({"events", "movement", "looks", "variables", "sound", "saving"}));
         QStringList catalog;
         for (const auto& info : blockCatalog()) catalog << info.jsonName;
         auto sortedSeen = seen;

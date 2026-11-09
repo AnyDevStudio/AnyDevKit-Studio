@@ -32,7 +32,8 @@ Drag shapes and text onto the stage, press one button, and the same scene runs a
 | Particles | Fireworks, fountains, sparks, snow and rain | Working in Studio, builds for PS5 |
 | Game runtime | Draws the scene on AGC, the PS5 graphics API, with controller movement | Shapes and text run in AnyPS5, not yet on a console |
 | Image drawing | Textured images in the game | Builds for PS5, not yet seen running |
-| Sound | Music and effects | Planned |
+| Sound | Import WAV, MP3 or OGG, then play effects and music from blocks | Builds for PS5, not yet heard on a console |
+| Saving | Save and load variables on the console | Builds for PS5, not yet run on a console |
 | Guided setup | Install AnyDevKit and its tools from inside Studio | Planned |
 | Preview | Run the project on the developer's computer without a console | Planned |
 

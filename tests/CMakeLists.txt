@@ -29,6 +29,41 @@ add_executable(tst_particles tst_particles.cpp)
 target_include_directories(tst_particles PRIVATE "${PROJECT_SOURCE_DIR}/runtime/SceneGame/include")
 add_test(NAME tst_particles COMMAND tst_particles)
 
+# The sound mixer and the save format from the game runtime, always under sanitizers (not on MSVC,
+# which has none of these). ThreadSanitizer builds the mixer test a second time, for its two-thread test.
+function(studio_add_sanitized_test name)
+    add_executable(${name} ${ARGN})
+    target_compile_features(${name} PRIVATE cxx_std_20)
+    target_include_directories(${name} PRIVATE "${PROJECT_SOURCE_DIR}/runtime/SceneGame/include")
+    if(NOT MSVC)
+        target_compile_options(${name} PRIVATE -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer -Wall -Wextra)
+        target_link_options(${name} PRIVATE -fsanitize=address,undefined)
+    endif()
+    add_test(NAME ${name} COMMAND ${name})
+    set_target_properties(${name} PROPERTIES WIN32_EXECUTABLE FALSE)
+endfunction()
+studio_add_sanitized_test(tst_audio_mixer tst_audio_mixer.cpp)
+studio_add_sanitized_test(tst_save_format tst_save_format.cpp)
+if(NOT MSVC)
+    add_executable(tst_audio_mixer_tsan tst_audio_mixer.cpp)
+    target_compile_features(tst_audio_mixer_tsan PRIVATE cxx_std_20)
+    target_include_directories(tst_audio_mixer_tsan PRIVATE "${PROJECT_SOURCE_DIR}/runtime/SceneGame/include")
+    target_compile_options(tst_audio_mixer_tsan PRIVATE -O1 -g -fsanitize=thread -fno-omit-frame-pointer)
+    target_link_options(tst_audio_mixer_tsan PRIVATE -fsanitize=thread)
+    add_test(NAME tst_audio_mixer_tsan COMMAND tst_audio_mixer_tsan)
+    set_target_properties(tst_audio_mixer_tsan PROPERTIES WIN32_EXECUTABLE FALSE)
+endif()
+
+# WAV parsing, conversion and code generation. Sounds.cpp is compiled in here as well as in
+# studio_core so that this copy of it, which is the code under test, runs under sanitizers.
+qt_add_executable(tst_sounds tst_sounds.cpp "${PROJECT_SOURCE_DIR}/src/core/Sounds.cpp")
+target_link_libraries(tst_sounds PRIVATE studio_core Qt6::Test)
+if(NOT MSVC)
+    target_compile_options(tst_sounds PRIVATE -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer)
+    target_link_options(tst_sounds PRIVATE -fsanitize=address,undefined)
+endif()
+add_test(NAME tst_sounds COMMAND tst_sounds)
+
 qt_add_executable(tst_gamepage tst_gamepage.cpp)
 target_link_libraries(tst_gamepage PRIVATE studio_gamepage Qt6::Test)
 add_test(NAME tst_gamepage COMMAND tst_gamepage)
@@ -56,4 +91,4 @@ target_compile_definitions(tst_font_tables PRIVATE STUDIO_SOURCE_DIR="${PROJECT_
 add_test(NAME tst_font_tables COMMAND tst_font_tables)
 
 # qt_standard_project_setup makes Windows executables GUI apps, which hides test output.
-set_target_properties(tst_particles tst_core tst_scene tst_scene_document tst_gamepage tst_blocks tst_logic_document tst_scene_export tst_font_tables PROPERTIES WIN32_EXECUTABLE FALSE)
+set_target_properties(tst_particles tst_core tst_scene tst_scene_document tst_gamepage tst_blocks tst_logic_document tst_scene_export tst_font_tables tst_sounds PROPERTIES WIN32_EXECUTABLE FALSE)

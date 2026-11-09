@@ -52,7 +52,7 @@ float clampAxis(float value, float stage, float size) {
 
 }
 
-SceneState::SceneState(int width, int height) : stageWidth(static_cast<float>(width)), stageHeight(static_cast<float>(height)) {
+SceneState::SceneState(int width, int height, Audio::Mixer* mixer, SaveMailbox* saves) : audioMixer(mixer), saveMailbox(saves), stageWidth(static_cast<float>(width)), stageHeight(static_cast<float>(height)) {
     rebuildText(); // so a controllable text is kept on the stage at its starting width
     auto position = positions.begin();
     auto color = colors.begin();
@@ -96,6 +96,7 @@ Particles::Emitter* SceneState::emitterFor(std::size_t item) {
 }
 
 void SceneState::Update(double seconds, Position direction, std::uint32_t buttons) {
+    applyLoadedVariables();
     const auto distance = static_cast<float>(UnitsPerSecond * seconds);
     auto position = positions.begin();
     std::size_t index = 0;
@@ -164,6 +165,19 @@ std::span<const Particles::Quad> SceneState::ParticleQuads(std::size_t item) con
 }
 
 void SceneState::SetVariable(std::size_t variable, std::int32_t value) { variables[variable] = value; }
+
+void SceneState::PlaySound(std::size_t sound) { if (audioMixer) audioMixer->PlaySound(sound); }
+void SceneState::PlayMusic(std::size_t sound) { if (audioMixer) audioMixer->PlayMusic(sound); }
+void SceneState::StopMusic() { if (audioMixer) audioMixer->StopMusic(); }
+void SceneState::SetVolume(std::int32_t percent) { if (audioMixer) audioMixer->SetVolume(percent); }
+void SceneState::SaveVariables() { if (saveMailbox) saveMailbox->PublishSave(variables); }
+void SceneState::LoadVariables() { if (saveMailbox) saveMailbox->RequestLoad(); }
+
+void SceneState::applyLoadedVariables() {
+    if (!saveMailbox) return;
+    auto loaded = variables;
+    if (saveMailbox->TakeLoaded(loaded)) variables = loaded;
+}
 
 void SceneState::ChangeVariable(std::size_t variable, std::int32_t amount) {
     const auto total = static_cast<std::int64_t>(variables[variable]) + amount;

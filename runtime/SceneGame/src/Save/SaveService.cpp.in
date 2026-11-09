@@ -1,0 +1,188 @@
+#include "Save/SaveService.hpp"
+#include "prx/libkernel/File/include/File.hpp"
+#include "prx/libkernel/Time/include/Time.hpp"
+#include "prx/libkernel/include/Api.hpp"
+#include "prx/libSceSaveData.native/libSceSaveData.native.hpp"
+#include "prx/libSceSysmodule/libSceSysmodule.hpp"
+#include "prx/libSceUserService/libSceUserService.hpp"
+#include <array>
+#include <cstddef>
+#include <cstdio>
+#include <span>
+
+namespace {
+
+// Taken from AnyDevKit's Calculator3D example, the only save data usage on hand.
+constexpr std::uint32_t SaveDataModule = 0x8000000f;
+constexpr std::uint32_t TransactionResourceBytes = 786432;
+constexpr std::uint64_t SaveBlocks = 56;
+constexpr std::uint32_t MountCreateReadWrite = 32;
+constexpr int FileReadOnly = 0;
+constexpr int FileWriteCreateTruncate = 0x601;
+constexpr std::uint16_t FileMode = 0666;
+constexpr KernelUseconds IdleDelayMicroseconds = 20000;
+
+constexpr std::size_t MaxFileBytes = SaveData::FileBytes(GeneratedVariables::VariableCount);
+
+bool ok(int result) { return result >= 0; }
+
+bool makePath(char (&path)[64], const SaveDataMountPoint& mount, const char* filename) {
+    std::size_t length = 0;
+    while (length < sizeof(mount.data) && mount.data[length] != 0) ++length;
+    if (length == 0 || length == sizeof(mount.data)) return false;
+    const int written = std::snprintf(path, sizeof(path), "%s/%s", mount.data, filename);
+    return written > 0 && static_cast<std::size_t>(written) < sizeof(path);
+}
+
+bool writeAll(int file, std::span<const std::uint8_t> bytes) {
+    std::size_t offset = 0;
+    while (offset < bytes.size()) {
+        const auto count = sceKernelWrite(file, bytes.data() + offset, bytes.size() - offset);
+        if (count <= 0) return false;
+        offset += static_cast<std::size_t>(count);
+    }
+    return true;
+}
+
+// Reads a whole file of at most `bytes.size()` bytes. Returns the size read, or -1 on failure.
+std::ptrdiff_t readAll(int file, std::span<std::uint8_t> bytes) {
+    std::size_t offset = 0;
+    while (offset < bytes.size()) {
+        const auto count = sceKernelRead(file, bytes.data() + offset, bytes.size() - offset);
+        if (count < 0) return -1;
+        if (count == 0) break;
+        offset += static_cast<std::size_t>(count);
+    }
+    return static_cast<std::ptrdiff_t>(offset);
+}
+
+}
+
+void* APS5_VABI SaveService::threadEntry(void* argument) {
+    static_cast<SaveService*>(argument)->runThread();
+    return nullptr;
+}
+
+SaveService::SaveService() {
+    if (!GeneratedVariables::UsesSaveData) return;
+    started = scePthreadCreate(&thread, nullptr, threadEntry, this, "StudioSave") == 0;
+}
+
+SaveService::~SaveService() {
+    if (!started) return;
+    stopRequested.store(true, std::memory_order_release);
+    scePthreadJoin(thread, nullptr);
+    if (resource >= 0) sceSaveDataDeleteTransactionResource(resource);
+    if (serviceReady) sceSaveDataTerminate();
+}
+
+SaveService::Mailbox* SaveService::Mail() { return started ? &mailbox : nullptr; }
+
+// Starts the save data service the first time it is needed, and again later if it failed, so a save
+// made after the user signs in can still work.
+bool SaveService::ready() {
+    if (serviceReady) return true;
+    if (!ok(sceSysmoduleLoadModuleInternal(SaveDataModule))) return false;
+    static_cast<void>(sceUserServiceInitialize(nullptr)); // already running once the controller has started it
+    if (!ok(sceUserServiceGetInitialUser(&userId))) return false;
+    if (!ok(sceSaveDataInitialize3(nullptr))) return false;
+    resource = sceSaveDataCreateTransactionResource(TransactionResourceBytes);
+    if (!ok(resource)) {
+        sceSaveDataTerminate();
+        resource = -1;
+        return false;
+    }
+    serviceReady = true;
+    return true;
+}
+
+bool SaveService::mount(SaveDataMountResult& result) {
+    static const SceSaveDataDirName name{"StudioVariables"};
+    SaveDataMount3 request{};
+    request.user_id = userId;
+    request.dir_name = &name;
+    request.blocks = SaveBlocks;
+    request.mount_mode = MountCreateReadWrite;
+    request.resource = resource;
+    return ok(sceSaveDataMount3(&request, &result));
+}
+
+void SaveService::unmount(const SaveDataMountPoint& point) { sceSaveDataUmount2(0, &point); }
+
+void SaveService::writeSave(const SaveDataMountResult& mount, const Values& values) {
+    SaveDataPrepareParam prepare{};
+    prepare.resource = resource;
+    if (!ok(sceSaveDataPrepare(&mount.mount_point, &prepare))) return;
+    if ((mount.mount_status & 1u) != 0) {
+        SaveDataParam param{};
+        const char title[] = "AnyDevKit Studio game";
+        for (std::size_t index = 0; index < sizeof(title); ++index) param.title[index] = title[index];
+        if (!ok(sceSaveDataSetParam(&mount.mount_point, 0, &param, sizeof(param)))) return;
+    }
+
+    std::array<std::uint8_t, MaxFileBytes> bytes{};
+    const auto size = SaveData::Encode(values, GeneratedVariables::NameHashes, bytes);
+    if (size == 0) return;
+
+    char path[64];
+    char temporaryPath[64];
+    if (!makePath(path, mount.mount_point, "variables.bin") || !makePath(temporaryPath, mount.mount_point, "variables.tmp")) return;
+    const int file = sceKernelOpen(temporaryPath, FileWriteCreateTruncate, FileMode);
+    if (file < 0) return;
+    const bool written = writeAll(file, std::span<const std::uint8_t>(bytes.data(), size)) && ok(sceKernelFsync(file));
+    sceKernelClose(file);
+    if (!written || !ok(sceKernelRename(temporaryPath, path))) return;
+
+    SaveDataCommitParam commit{};
+    commit.resource = resource;
+    sceSaveDataCommit(&commit);
+}
+
+void SaveService::save(const Values& values) {
+    if (!ready()) return;
+    SaveDataMountResult mounted{};
+    if (!mount(mounted)) return;
+    writeSave(mounted, values);
+    unmount(mounted.mount_point);
+}
+
+void SaveService::load() {
+    if (!ready()) return;
+    SaveDataMountResult mounted{};
+    if (!mount(mounted)) return;
+    if ((mounted.mount_status & 1u) != 0) {
+        // Just created: there is nothing to read yet, so it starts with the game's initial values.
+        writeSave(mounted, GeneratedVariables::InitialValues);
+        unmount(mounted.mount_point);
+        return;
+    }
+    char path[64];
+    if (!makePath(path, mounted.mount_point, "variables.bin")) {
+        unmount(mounted.mount_point);
+        return;
+    }
+    std::array<std::uint8_t, MaxFileBytes + 1> bytes{}; // one spare byte, so a file that grew is noticed
+    const int file = sceKernelOpen(path, FileReadOnly, 0);
+    if (file < 0) {
+        unmount(mounted.mount_point);
+        return;
+    }
+    const auto size = readAll(file, bytes);
+    sceKernelClose(file);
+    unmount(mounted.mount_point);
+    if (size < 0) return;
+    Values values = GeneratedVariables::InitialValues;
+    if (SaveData::Decode(std::span<const std::uint8_t>(bytes.data(), static_cast<std::size_t>(size)), GeneratedVariables::NameHashes, values)) {
+        mailbox.PublishLoaded(values);
+    }
+}
+
+void SaveService::runThread() {
+    Values values{};
+    while (!stopRequested.load(std::memory_order_acquire)) {
+        const bool savePending = mailbox.TakeSave(values);
+        if (savePending) save(values);
+        if (mailbox.TakeLoadRequest()) load();
+        sceKernelUsleep_nid_postfix(IdleDelayMicroseconds);
+    }
+}
