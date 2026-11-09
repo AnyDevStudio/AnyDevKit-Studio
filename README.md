@@ -72,3 +72,12 @@ separate project under GPL-2.0, and Studio only runs it as an external tool.
 This is an independent project, not affiliated with or endorsed by Sony Interactive Entertainment.
 PlayStation and PS5 are trademarks of their respective owner. Packages made with AnyDevKit are
 homebrew and cannot be published on PlayStation Store.
+
+## Credits
+
+AnyDevKit Studio exists because of [AnyDevKit](https://github.com/boykopovar/AnyDevKit), created
+by [boykopovar](https://github.com/boykopovar). Every PS5 package Studio builds is compiled and
+packaged by AnyDevKit, which also relies on boykopovar's
+[AnyPS5](https://github.com/boykopovar/AnyPS5) and
+[llvm-cxx-ps](https://github.com/boykopovar/llvm-cxx-ps). Studio is an independent interface on
+top of that work and is not an official boykopovar project.
