@@ -477,7 +477,7 @@ bool hasPosixCompiler() {
 
 // Compiles the real runtime SceneState with the generated headers, under the game's warning flags,
 // and runs `body` against it on this computer. No console or SDK is involved.
-HarnessResult runHarness(const Scene& scene, const LogicProgram& program, const QByteArray& body, bool sanitize = false) {
+HarnessResult runHarness(const Scene& scene, const LogicProgram& program, const QByteArray& body, bool sanitize = false, const QList<SceneImageData>& images = {}) {
     HarnessResult result;
     const auto logicHeader = generateLogicHeader(program, scene);
     const auto variablesHeader = generateVariablesHeader(program, scene);
@@ -489,7 +489,7 @@ HarnessResult runHarness(const Scene& scene, const LogicProgram& program, const 
     const auto root = directory.path();
     const QString runtime = QString(STUDIO_TEST_SOURCE_DIR) + "/runtime/SceneGame";
 
-    for (const auto& relative : {QString("include/Scene/SceneState.hpp"), QString("include/Scene/Particles.hpp"), QString("src/Scene/SceneState.cpp"), QString("include/Input/Buttons.hpp"), QString("include/Audio/Mixer.hpp"), QString("include/Save/SaveData.hpp")}) {
+    for (const auto& relative : {QString("include/Scene/SceneState.hpp"), QString("include/Scene/Particles.hpp"), QString("src/Scene/SceneState.cpp"), QString("include/Input/Buttons.hpp"), QString("include/Audio/Mixer.hpp"), QString("include/Save/SaveData.hpp"), QString("include/Scene/World2D.hpp")}) {
         auto contents = readBytes(runtime + '/' + relative + ".in");
         if (contents.isEmpty()) {
             result.buildOutput = "missing runtime file " + relative;
@@ -497,7 +497,7 @@ HarnessResult runHarness(const Scene& scene, const LogicProgram& program, const 
         }
         writeBytes(root + '/' + relative, contents.replace("@NAME@", "Harness"));
     }
-    writeBytes(root + "/src/GeneratedScene.hpp", generateSceneHeader(scene));
+    writeBytes(root + "/src/GeneratedScene.hpp", generateSceneHeader(scene, images));
     writeBytes(root + "/src/GeneratedLogic.hpp", logicHeader);
     writeBytes(root + "/src/GeneratedVariables.hpp", variablesHeader);
     writeBytes(root + "/src/GeneratedSounds.hpp", generateSoundsHeader(static_cast<int>(program.sounds.size())));
@@ -533,12 +533,16 @@ HarnessResult runHarness(const Scene& scene, const LogicProgram& program, const 
 
 }
 
+HarnessResult runHarness(const Scene& scene, const LogicProgram& program, const QByteArray& body, const QList<SceneImageData>& images) {
+    return runHarness(scene, program, body, false, images);
+}
+
 class TstBlocks : public QObject {
     Q_OBJECT
 
 private slots:
     void catalogDescribesEveryBlockOnce() {
-        QCOMPARE(blockCatalog().size(), 19);
+        QCOMPARE(blockCatalog().size(), 23);
         QSet<QString> names;
         QSet<QString> titles;
         for (const auto& info : blockCatalog()) {
@@ -548,8 +552,8 @@ private slots:
             titles.insert(info.title);
             QCOMPARE(blockInfo(info.type).jsonName, info.jsonName);
         }
-        QCOMPARE(names.size(), 19);
-        QCOMPARE(titles.size(), 19);
+        QCOMPARE(names.size(), 23);
+        QCOMPARE(titles.size(), 23);
         QCOMPARE(buttonCatalog().size(), 8);
         QCOMPARE(comparisonCatalog().size(), 6);
         QVERIFY(blockInfo(BlockType::EveryFrame).isEvent);
@@ -1846,6 +1850,99 @@ private slots:
     std::printf("%d %d\n", static_cast<int>(scene.Variable(0)), static_cast<int>(scene.Variable(1)));)cpp");
         QVERIFY2(result.built, qPrintable(result.buildOutput));
         QCOMPARE(result.lines.last(), QString("0 -2147483648"));
+    }
+
+    // The world, the camera and sprite animation, through the real SceneState.
+    void theCameraFollowsAndStaysInsideTheWorld() {
+        if (!hasPosixCompiler()) QSKIP("The generated logic is only compiled here with a GCC style compiler.");
+        Scene scene;
+        scene.worldWidth = 3840;
+        scene.worldHeight = 2160;
+        auto player = rectangle("player", 120, 300, 160, 160, "#00FF00", true);
+        scene.items = {player};
+        LogicProgram program;
+        auto follow = itemBlock("f", BlockType::CameraFollow, "player");
+        program.events = {eventBlock("start", BlockType::WhenGameStarts, {follow})};
+        const auto result = runHarness(scene, program, R"cpp(
+    scene.Update(0.0, {0.0f, 0.0f}, 0);
+    std::printf("%.1f,%.1f\n", static_cast<double>(scene.Camera().x), static_cast<double>(scene.Camera().y));
+    for (int step = 0; step < 2000; ++step) scene.Update(0.016, {1.0f, 0.0f}, 0);
+    std::printf("%.1f,%.1f %.1f\n", static_cast<double>(scene.Camera().x), static_cast<double>(scene.Camera().y), static_cast<double>(scene.Current()[0][0]));)cpp");
+        QVERIFY2(result.built, qPrintable(result.buildOutput));
+        QCOMPARE(result.lines.at(1), QString("0.0,0.0")); // near the corner the camera cannot go further
+        QCOMPARE(result.lines.at(2), QString("1920.0,0.0 3680.0")); // stops at the world's edge, and the player inside it
+    }
+
+    void setCameraPositionClampsAndStopsFollowing() {
+        if (!hasPosixCompiler()) QSKIP("The generated logic is only compiled here with a GCC style compiler.");
+        Scene scene;
+        scene.worldWidth = 3840;
+        scene.worldHeight = 2160;
+        scene.items = {rectangle("item", 200, 200, 64, 64)};
+        LogicProgram program;
+        auto follow = itemBlock("f", BlockType::CameraFollow, "item");
+        Block move;
+        move.id = "m";
+        move.type = BlockType::SetCameraPosition;
+        move.x = 99999;
+        move.y = -5;
+        program.events = {eventBlock("start", BlockType::WhenGameStarts, {follow}), held("press", ControllerButton::Cross, {move})};
+        const auto result = runHarness(scene, program, R"cpp(
+    scene.Update(0.0, {0.0f, 0.0f}, Buttons::Cross);
+    std::printf("%.1f,%.1f\n", static_cast<double>(scene.Camera().x), static_cast<double>(scene.Camera().y));
+    scene.Update(0.0, {0.0f, 0.0f}, 0);
+    std::printf("%.1f\n", static_cast<double>(scene.Camera().x));)cpp");
+        QVERIFY2(result.built, qPrintable(result.buildOutput));
+        QCOMPARE(result.lines.at(1), QString("1920.0,0.0"));
+        QCOMPARE(result.lines.at(2), QString("1920.0")); // no longer following
+    }
+
+    void aSpritePlaysAndFlips() {
+        if (!hasPosixCompiler()) QSKIP("The generated logic is only compiled here with a GCC style compiler.");
+        Scene scene;
+        SceneItem hero;
+        hero.id = "hero";
+        hero.type = "image";
+        hero.source = "assets/hero.png";
+        hero.width = 64;
+        hero.height = 64;
+        hero.frameWidth = 16;
+        hero.frameHeight = 16;
+        hero.animations = {{"walk", {3, 2, 1, 0}, 10}, {"jump", {2}, 4}};
+        hero.animation = "walk";
+        scene.items = {hero};
+        LogicProgram program;
+        auto play = itemBlock("p", BlockType::PlayAnimation, "hero");
+        play.animation = "jump";
+        auto flip = itemBlock("f", BlockType::FlipItem, "hero");
+        flip.flipped = true;
+        program.events = {held("press", ControllerButton::Cross, {play, flip})};
+        const QList<SceneImageData> images{{"assets/hero.png", 64, 32, QByteArray(64 * 32 * 4, '\0')}};
+        const auto result = runHarness(scene, program, R"cpp(
+    std::printf("%u\n", scene.SpriteFrame(0));
+    scene.Update(0.1, {0.0f, 0.0f}, 0);
+    std::printf("%u\n", scene.SpriteFrame(0));
+    scene.Update(0.1, {0.0f, 0.0f}, Buttons::Cross);
+    std::printf("%u %d\n", scene.SpriteFrame(0), scene.Flipped(0) ? 1 : 0);)cpp", images);
+        QVERIFY2(result.built, qPrintable(result.buildOutput));
+        QCOMPARE(result.lines.at(1), QString("3")); // walk starts at its first frame, the number 3 on the sheet
+        QCOMPARE(result.lines.at(2), QString("2")); // a tenth of a second at 10 per second is one frame further
+        QCOMPARE(result.lines.at(3), QString("2 1")); // jump is one frame, 2, and the block flipped it
+    }
+
+    void aScreenFixedControllableItemStaysOnTheScreen() {
+        if (!hasPosixCompiler()) QSKIP("The generated logic is only compiled here with a GCC style compiler.");
+        Scene scene;
+        scene.worldWidth = 3840;
+        auto pinned = rectangle("pinned", 100, 300, 160, 160, "#00FF00", true);
+        pinned.screenFixed = true;
+        scene.items = {pinned};
+        const auto result = runHarness(scene, LogicProgram{}, R"cpp(
+    for (int step = 0; step < 2000; ++step) scene.Update(0.016, {1.0f, 0.0f}, 0);
+    show(scene);)cpp");
+        QVERIFY2(result.built, qPrintable(result.buildOutput));
+        // It stops at the screen's edge, 1920 - 160, even though the world is wider.
+        QCOMPARE(result.lines.at(1).section(' ', 1, 1).section(',', 0, 0), QString("[1760.0"));
     }
 
     void variablesHeaderDocMatchesTheGenerator() {

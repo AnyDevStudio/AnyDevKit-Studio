@@ -9,6 +9,18 @@ Item {
     required property SceneDocument scene
     required property StudioController studio
 
+    // Painting a tilemap: which tool is on and which tile from the palette it lays down. Editor only.
+    property string tilemapTool: ""
+    property int paintTileIndex: 0
+    property bool solidMode: false
+    // Which animation of the selected sprite the stage plays; empty means its starting animation.
+    property string previewAnimation: ""
+
+    Connections {
+        target: view.scene
+        function onSelectionChanged() { view.previewAnimation = "" }
+    }
+
     // The stage is limited by its width at most window sizes, so the height left over below it
     // goes to the layers. Room stays for the notice banner below the stage.
     readonly property real layerPanelHeight: {
@@ -19,6 +31,7 @@ Item {
     // An image first needs a file, so it goes through the picker instead of appearing straight away.
     function place(kind, centerX, centerY) {
         if (kind === "image") imagePicker.chooseNew(centerX, centerY)
+        else if (kind === "tilemap") imagePicker.chooseTileset()
         else scene.addItem(kind, centerX, centerY)
     }
 
@@ -62,6 +75,27 @@ Item {
             text: "Abc"
             color: Theme.signal
             visible: tile.kind === "text"
+        }
+
+        Grid {
+            anchors.centerIn: parent
+            anchors.verticalCenterOffset: -12
+            visible: tile.kind === "tilemap"
+            columns: 3
+            spacing: 2
+
+            Repeater {
+                model: 6
+
+                Rectangle {
+                    required property int index
+
+                    width: 16
+                    height: 16
+                    color: Theme.signal
+                    opacity: index === 4 ? 0.3 : 1
+                }
+            }
         }
 
         PixelBurst {
@@ -126,7 +160,7 @@ Item {
                 const stage = stageArea.stage
                 const point = mapToItem(stage, mouse.x, mouse.y)
                 if (point.x >= 0 && point.y >= 0 && point.x <= stage.width && point.y <= stage.height) {
-                    view.place(tile.kind, point.x / stage.unit, point.y / stage.unit)
+                    view.place(tile.kind, stageArea.worldX(point.x), stageArea.worldY(point.y))
                     stageArea.takeFocus()
                 }
             }
@@ -170,6 +204,7 @@ Item {
                 Tile { kind: "text"; label: "Text" }
                 Tile { kind: "particles"; label: "Particles" }
                 Tile { kind: "image"; label: "Image" }
+                Tile { kind: "tilemap"; label: "Tilemap" }
 
                 Item { Layout.fillHeight: true }
 
@@ -193,6 +228,9 @@ Item {
                 id: stageArea
 
                 scene: view.scene
+                tilemapTool: view.tilemapTool
+                paintTile: view.paintTileIndex
+                previewAnimation: view.previewAnimation
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 Layout.leftMargin: 28
@@ -218,7 +256,15 @@ Item {
                 anchors.fill: parent
                 anchors.margins: 18
                 scene: view.scene
+                tilemapTool: view.tilemapTool
+                paintTile: view.paintTileIndex
+                solidMode: view.solidMode
+                previewAnimation: view.previewAnimation
                 onReplaceImageRequested: imagePicker.chooseReplacement(view.scene.selectedIndex)
+                onTilemapToolPicked: (tool) => view.tilemapTool = tool
+                onPaintTilePicked: (tile) => view.paintTileIndex = tile
+                onSolidModeToggled: (solid) => view.solidMode = solid
+                onPreviewAnimationPicked: (name) => view.previewAnimation = name
             }
         }
     }
@@ -251,7 +297,7 @@ Item {
 
         ImageGlyph {
             anchors.fill: parent
-            visible: ghost.kind === "image"
+            visible: ghost.kind === "image" || ghost.kind === "tilemap"
         }
     }
 }

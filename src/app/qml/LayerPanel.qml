@@ -182,6 +182,20 @@ Rectangle {
                 active: chip.kind === "image"
                 sourceComponent: ImageGlyph { cutout: chip.color }
             }
+
+            // A tilemap's chip: a small grid of cells, standing in for the map.
+            Grid {
+                anchors.centerIn: parent
+                visible: chip.kind === "tilemap"
+                columns: 3
+                rows: 2
+                spacing: 1
+
+                Repeater {
+                    model: 6
+                    Rectangle { width: 5; height: 5; color: chip.tint; opacity: index % 3 === 1 ? 0.4 : 1 }
+                }
+            }
         }
 
         // Crossed through when hidden, so the state reads even at a glance down the list.

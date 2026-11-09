@@ -26,7 +26,7 @@ adk_add_shaders(@NAME@ shaders/ScreenImage.frag HEADER ScreenImageFragment COLOR
 # Studio exports image pixels as plain files that GeneratedImages.cpp pulls in with .incbin, so the
 # compiler never has to parse them. A build reruns when they change.
 target_compile_definitions(@NAME@ PRIVATE SCENE_IMAGE_DIRECTORY="${CMAKE_CURRENT_SOURCE_DIR}/src/GeneratedImages")
-file(GLOB scene_image_files CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/GeneratedImages/*.rgba")
+file(GLOB scene_image_files CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/GeneratedImages/*.rgba" "${CMAKE_CURRENT_SOURCE_DIR}/src/GeneratedImages/*.tiles")
 set_property(SOURCE src/GeneratedImages.cpp APPEND PROPERTY OBJECT_DEPENDS ${scene_image_files})
 
 # Sounds are embedded the same way, from the raw PCM files Studio exports.

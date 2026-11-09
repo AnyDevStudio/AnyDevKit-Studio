@@ -97,6 +97,10 @@ holding actions, and an `ifVariable` action can hold more actions.
 | `setVolume`   | Set volume        | `value`                 | sets the whole game's volume to `value` percent, 0 to 100 |
 | `saveVariables` | Save variables  |                         | keeps every variable's value on the console |
 | `loadVariables` | Load variables  |                         | asks for the saved values back         |
+| `playAnimation` | Play animation on item | `item`, `animation` | starts that animation of a sprite sheet, or keeps playing it if it is already on. The item must be an image with frames, and `animation` one of its names |
+| `flipItem` | Flip item | `item`, `flipped` | mirrors an image left to right (`true`) or back (`false`). The item must be an image |
+| `cameraFollow` | Camera follows item | `item` | keeps the camera centered on the item, every frame, as far as the world allows. The item must not have Stays on screen turned on |
+| `setCameraPosition` | Set camera position | `x`, `y` | puts the camera's top left corner at `x`, `y`, clamped to the world, and stops following any item |
 
 `comparison` is one of `equal`, `notEqual`, `less`, `lessOrEqual`, `greater`, `greaterOrEqual`.
 
@@ -137,14 +141,17 @@ the same as a deleted variable.
   sounds. A file saved with `1` still loads too: it has no `variables` list, and its `addScore`,
   `setScore` and `ifScore` blocks become `changeVariable`, `setVariable` and `ifVariable` on a variable named
   `score` that starts at 0. A file with no score blocks gets no variables. The block types `addScore`,
-  `setScore` and `ifScore` only exist in version 1 files. Sound and save blocks need version `3`, which also
-  needs the `sounds` list, even if it is empty.
+  `setScore` and `ifScore` only exist in version 1 files. Sound, save, `playAnimation`, `flipItem`,
+  `cameraFollow` and `setCameraPosition` blocks need version `3`, which also needs the `sounds` list, even if
+  it is empty.
 - `id` is 1 to 64 letters, digits, `-` or `_`, unique across the whole program. It stays the same
   across saves, so an editor can refer to a block.
 - Events go at the top level only. Actions go inside an event or inside `ifVariable`.
 - `item` and `otherItem` are `id` values from `scene.json`. A build fails when one is missing or not
-  in the scene, when an event's two items are the same, or when `burstParticles` names an item that is
-  not a Particles item. A file in that state can still be opened and saved, so it can be repaired.
+  in the scene, when an event's two items are the same, when `burstParticles` names an item that is
+  not a Particles item, when `playAnimation` names an item without that animation, when `flipItem` names an
+  item that is not an image, or when `cameraFollow` names an item with Stays on screen on. A file in that state
+  can still be opened and saved, so it can be repaired.
 - `variable` is the `name` of a variable in `variables`. A build fails when it is empty or names a variable
   that does not exist, and when a text item shows a variable that does not exist. Deleting a variable in
   Studio asks first and leaves the blocks and text that used it to be repaired, for the same reason.
@@ -180,7 +187,7 @@ Touching:
 
 Limits at run time:
 
-- A `controllable` item always stays inside the stage, even when a block moves it.
+- A `controllable` item always stays inside the world, or the screen if it has Stays on screen, even when a block moves it.
 - Any other item stays within -1000000 to 1000000.
 - A variable stops at the largest or smallest 32-bit whole number instead of overflowing.
 
@@ -198,6 +205,10 @@ Sound and saving never hold up a frame:
 - A game with no sounds opens no audio port, and one with no save or load blocks never starts the save service.
 - If audio cannot start or a save or load fails, for example because the user has no save data space, the block
   does nothing and the game keeps running. The game never stops because of a failed save.
+
+The camera follows its item after the blocks of a frame have run. It never leaves the world, however far
+its item goes, and its position does not change `x` or `y` of anything. Animations play for as long as the game
+runs; an animation repeats, and `playAnimation` on the one already playing changes nothing.
 
 A hidden item is not drawn but keeps its position, can still be moved and still follows the
 controller if it is `controllable`. A hidden Particles item also stops making new particles; the ones

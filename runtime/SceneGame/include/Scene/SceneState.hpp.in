@@ -6,6 +6,7 @@
 #include "GeneratedVariables.hpp"
 #include "Save/SaveData.hpp"
 #include "Scene/Particles.hpp"
+#include "Scene/World2D.hpp"
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -28,6 +29,11 @@ public:
     const Positions& Current() const;
     const Colors& CurrentColors() const;
     const Visibility& CurrentVisibility() const;
+    // Where the camera is this frame. Screen-fixed items do not move with it.
+    World2D::Point Camera() const;
+    // Which frame of its sheet a sprite shows right now, and whether it is flipped.
+    std::uint32_t SpriteFrame(std::size_t item) const;
+    bool Flipped(std::size_t item) const;
 
     // Logic: called by the generated code. No item stays outside its limits: a controllable item
     // stays inside the stage, and any other item within LogicWorldLimit of the stage's origin.
@@ -51,6 +57,12 @@ public:
     void BurstParticles(std::size_t item);
     // Keeps a one-shot particles item from playing when the game starts, for a block to start it.
     void AwaitBurst(std::size_t item);
+    // Plays animation number `animation` of a sprite, the same one keeps its place.
+    void PlayAnimation(std::size_t item, std::size_t animation);
+    void SetFlipped(std::size_t item, bool flipped);
+    // The camera keeps this item centered until SetCameraPosition, always inside the world.
+    void CameraFollow(std::size_t item);
+    void SetCameraPosition(float x, float y);
 
     // Rectangles to draw for a particles item this frame, and none for any other item.
     std::span<const Particles::Quad> ParticleQuads(std::size_t item) const;
@@ -59,7 +71,7 @@ public:
     std::string_view CurrentText(std::size_t item) const;
 
 private:
-    void clampToStage(std::size_t item, Position& position) const;
+    void clampToBounds(std::size_t item, Position& position) const; // the world, or the screen for a screen-fixed item
     void limitPosition(std::size_t item, Position& position) const;
     float drawnWidth(std::size_t item) const; // follows the current text of an item that shows variables
     void rebuildText();
@@ -76,9 +88,14 @@ private:
     Audio::Mixer* audioMixer = nullptr;
     SaveMailbox* saveMailbox = nullptr;
     Particles::Emitter* emitterFor(std::size_t item);
+    void updateCamera();
     Positions positions{};
     Colors colors{};
     Visibility visible{};
+    Visibility flipped{};
+    std::array<World2D::AnimationPlayer, GeneratedScene::SpriteCount> animations{};
+    World2D::Point camera{0.0f, 0.0f};
+    std::int32_t followedItem = -1;
     GeneratedLogic::Memory logicMemory{};
     std::uint32_t heldButtons = 0;
     std::array<std::int32_t, GeneratedVariables::VariableCount> variables = GeneratedVariables::InitialValues;

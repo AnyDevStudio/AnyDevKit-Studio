@@ -72,6 +72,8 @@ public:
         ProblemHeightRole,
         VariableRole,
         SoundRole,
+        AnimationRole,
+        FlippedRole,
     };
 
     explicit LogicDocument(QObject* parent = nullptr);

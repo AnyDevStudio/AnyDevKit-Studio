@@ -45,6 +45,10 @@ enum class BlockType {
     SetVolume,
     SaveVariables, // keeps every variable on the console until LoadVariables
     LoadVariables,
+    PlayAnimation,  // the item must be a sprite sheet
+    FlipItem,       // the item must be an image
+    CameraFollow,   // the item must not be screen-fixed
+    SetCameraPosition,
 };
 
 enum class ControllerButton { Cross, Circle, Square, Triangle, DpadUp, DpadDown, DpadLeft, DpadRight };
@@ -65,6 +69,8 @@ struct Block {
     QString sound;                                     // PlaySound, PlayMusic: a sound's name
     int value = 0;                                     // SetVariable's value, ChangeVariable's amount, IfVariable's number, SetVolume's percent
     VariableComparison comparison = VariableComparison::Equal; // IfVariable
+    QString animation;                                 // PlayAnimation: an animation's name
+    bool flipped = true;                               // FlipItem: true faces left, false faces right
 
     QList<Block> children; // the actions inside an event or an IfVariable, run in order
 };
@@ -91,6 +97,8 @@ struct BlockInfo {
     bool usesComparison;
     bool usesVariable;
     bool usesSound;
+    bool usesAnimation = false;
+    bool usesFlipped = false;
 };
 
 struct ButtonInfo {
@@ -169,5 +177,8 @@ QByteArray generateVariablesHeader(const LogicProgram& program, const Scene& sce
 // logic.json. Fails with a message for the user when the logic, a text binding or a sound has a
 // problem, and then keeps the previous headers.
 bool exportLogicHeader(const QString& projectRoot, const Scene& scene, QString& error);
+
+// True when a program uses a block that needs game code from this version of the runtime.
+bool programUsesWorldBlocks(const LogicProgram& program);
 
 }

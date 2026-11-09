@@ -38,6 +38,8 @@ T.Control {
     required property string comparison
     required property string variable
     required property string sound
+    required property string animation
+    required property bool flipped
     required property string problem
     required property bool dragged
     required property bool emptyCavity
@@ -66,6 +68,8 @@ T.Control {
         case "y": return String(pointY)
         case "value": return String(value)
         case "color": return blockColor
+        case "animation": return animation
+        case "flipped": return flipped ? "true" : "false"
         default: return ""
         }
     }
@@ -75,6 +79,8 @@ T.Control {
         if (key === "otherItem") return otherItemName
         if (key === "variable") return variable.length === 0 ? "" : doc.variables.some((choice) => choice.name === variable) ? variable : "Missing variable"
         if (key === "sound") return sound.length === 0 ? "" : doc.sounds.some((choice) => choice.name === sound) ? sound : "Missing sound"
+        if (key === "animation") return animation.length === 0 ? "" : choices("animation").some((choice) => choice.id === animation) ? animation : "Missing animation"
+        if (key === "flipped") return flipped ? "Face left" : "Face right"
         const list = key === "button" ? doc.buttons : doc.comparisons
         const found = list.find((choice) => choice.id === fieldValue(key))
         return found ? found.name : ""
@@ -84,6 +90,11 @@ T.Control {
         if (key === "item" || key === "otherItem") return doc.sceneItems
         if (key === "variable") return doc.variables
         if (key === "sound") return doc.sounds
+        if (key === "animation") {
+            const chosen = doc.sceneItems.find((candidate) => candidate.id === item)
+            return chosen ? chosen.animations : []
+        }
+        if (key === "flipped") return [{ id: "false", name: "Face right" }, { id: "true", name: "Face left" }]
         return key === "button" ? doc.buttons : doc.comparisons
     }
 
@@ -92,6 +103,8 @@ T.Control {
         if (key === "comparison") return "Choose a comparison"
         if (key === "variable") return "Choose a variable"
         if (key === "sound") return "Choose a sound"
+        if (key === "animation") return "Choose animation"
+        if (key === "flipped") return "Choose direction"
         return "Choose item"
     }
 
@@ -203,13 +216,13 @@ T.Control {
             BlockPicker {
                 function forceFocus() { forceActiveFocus(Qt.TabFocusReason) }
                 objectName: "field_" + block.blockId + "_" + editor.key
-                preferredWidth: editor.kind === "comparison" ? 172 : editor.kind === "button" ? 148 : 168
+                preferredWidth: editor.kind === "comparison" ? 172 : editor.kind === "button" ? 148 : editor.kind === "animation" ? 140 : editor.kind === "flip" ? 118 : 168
                 choices: block.choices(editor.key)
                 current: block.fieldValue(editor.key)
                 shown: block.fieldName(editor.key)
                 placeholder: block.placeholder(editor.key)
-                invalid: (editor.kind === "item" || editor.kind === "variable" || editor.kind === "sound") && (shown === "Missing item" || shown === "Missing variable" || shown === "Missing sound" || shown === "")
-                emptyText: editor.kind === "variable" ? "Add a variable in the Variables area first." : editor.kind === "sound" ? "Import a sound in the Sounds area first." : "Add an item in the Scene tab first."
+                invalid: (editor.kind === "item" || editor.kind === "variable" || editor.kind === "sound" || editor.kind === "animation") && (shown === "Missing item" || shown === "Missing variable" || shown === "Missing sound" || shown === "" || shown === "Missing animation")
+                emptyText: editor.kind === "variable" ? "Add a variable in the Variables area first." : editor.kind === "animation" ? "Give the item a sprite sheet and an animation first." : editor.kind === "sound" ? "Import a sound in the Sounds area first." : "Add an item in the Scene tab first."
                 onChosen: (id) => block.doc.setField(block.blockId, editor.key, id)
                 Accessible.description: block.title
             }

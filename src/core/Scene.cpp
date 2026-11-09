@@ -25,12 +25,14 @@ namespace Studio {
 namespace {
 
 // The version saved today. Older files still load: version 1 cannot hold images, neither 1 nor 2 can
-// hold particles, and before 4 a brace in a text was only a brace.
-constexpr int CurrentSchema = 4;
+// hold particles, before 4 a brace in a text was only a brace, and before 5 there are no sprite
+// sheets, tilemaps, world or camera.
+constexpr int CurrentSchema = 5;
 constexpr int OldestLoadableSchema = 1;
 constexpr int ImageSchema = 2;
 constexpr int ParticleSchema = 3;
 constexpr int VariableTextSchema = 4;
+constexpr int WorldSchema = 5;
 constexpr int MaximumItems = 256;
 constexpr int MaximumTextLength = 64;
 constexpr int MaximumScale = 40;
@@ -41,6 +43,7 @@ constexpr auto RectangleType = "rectangle";
 constexpr auto TextType = "text";
 constexpr auto ImageType = "image";
 constexpr auto ParticlesType = "particles";
+constexpr auto TilemapType = "tilemap";
 constexpr int MaximumParticleAmount = 8000;
 constexpr int MinimumParticleSpeed = 10;
 constexpr int MaximumParticleSpeed = 300;
@@ -54,6 +57,7 @@ constexpr auto ImageFolderPrefix = "assets/";
 constexpr auto GeneratedHeaderPath = "src/GeneratedScene.hpp";
 constexpr auto GeneratedImageSourcePath = "src/GeneratedImages.cpp";
 constexpr auto GeneratedImageFolder = "src/GeneratedImages";
+constexpr auto TileFilePattern = "tilemap-*.tiles";
 // Limits for decoded images (MaximumImageDimension is in Scene.h): the T# width and height fields
 // allow more, but one scene has to fit in GPU memory next to everything else, and every byte also
 // ends up in the game's executable.
@@ -133,6 +137,63 @@ QString validateParticles(const SceneItem& item, qsizetype index) {
     return {};
 }
 
+QString validateSheet(const SceneItem& item, qsizetype index) {
+    const auto hasFrames = item.frameWidth != 0 || item.frameHeight != 0;
+    if (!hasFrames) {
+        if (!item.animations.isEmpty() || !item.animation.isEmpty()) return itemError(item, index, "frameWidth and frameHeight are needed before an image can have animations.");
+        return {};
+    }
+    const auto sizeProblem = [&](const char* field, int value) {
+        if (value >= 1 && value <= MaximumImageDimension) return QString();
+        return itemError(item, index, QString("%1 must be a whole number from 1 to %2.").arg(field).arg(MaximumImageDimension));
+    };
+    if (const auto problem = sizeProblem("frameWidth", item.frameWidth); !problem.isEmpty()) return problem;
+    if (const auto problem = sizeProblem("frameHeight", item.frameHeight); !problem.isEmpty()) return problem;
+    if (item.animations.size() > MaximumAnimationsPerSprite) return itemError(item, index, QString("a sprite can have at most %1 animations.").arg(MaximumAnimationsPerSprite));
+
+    QSet<QString> names;
+    for (const auto& animation : item.animations) {
+        if (!isVariableName(animation.name)) return itemError(item, index, QString("the animation name \"%1\" is not allowed. A name is 1 to %2 letters, digits or _, and cannot start with a digit.").arg(animation.name).arg(MaximumVariableNameLength));
+        if (names.contains(animation.name)) return itemError(item, index, QString("two animations are named \"%1\". Give each animation its own name.").arg(animation.name));
+        names.insert(animation.name);
+        if (animation.frames.isEmpty() || animation.frames.size() > MaximumFramesPerAnimation) return itemError(item, index, QString("animation \"%1\" needs 1 to %2 frames.").arg(animation.name).arg(MaximumFramesPerAnimation));
+        for (const auto frame : animation.frames) {
+            if (frame < 0 || frame > MaximumTileIndex) return itemError(item, index, QString("animation \"%1\" has frame %2, but frames are numbered from 0 to %3.").arg(animation.name).arg(frame).arg(MaximumTileIndex));
+        }
+        if (animation.fps < 1 || animation.fps > MaximumFramesPerSecond) return itemError(item, index, QString("animation \"%1\" needs fps from 1 to %2.").arg(animation.name).arg(MaximumFramesPerSecond));
+    }
+    if (!item.animation.isEmpty() && !names.contains(item.animation)) return itemError(item, index, QString("animation names \"%1\", which this sprite does not have.").arg(item.animation));
+    return {};
+}
+
+QString validateTilemap(const SceneItem& item, qsizetype index) {
+    if (!isImageSource(item.source)) return itemError(item, index, "source must be a .png file inside the project's assets folder, for example assets/tiles.png.");
+    const auto tileSize = [&](const char* field, int value) {
+        if (value >= MinimumTileDimension && value <= MaximumTileDimension) return QString();
+        return itemError(item, index, QString("%1 must be a whole number from %2 to %3.").arg(field).arg(MinimumTileDimension).arg(MaximumTileDimension));
+    };
+    if (const auto problem = tileSize("tileWidth", item.tileWidth); !problem.isEmpty()) return problem;
+    if (const auto problem = tileSize("tileHeight", item.tileHeight); !problem.isEmpty()) return problem;
+    if (item.tileScale < 1 || item.tileScale > MaximumTileScale) return itemError(item, index, QString("tileScale must be a whole number from 1 to %1.").arg(MaximumTileScale));
+    const auto sideProblem = [&](const char* field, int value) {
+        if (value >= 1 && value <= MaximumTilemapSide) return QString();
+        return itemError(item, index, QString("%1 must be a whole number from 1 to %2.").arg(field).arg(MaximumTilemapSide));
+    };
+    if (const auto problem = sideProblem("columns", item.columns); !problem.isEmpty()) return problem;
+    if (const auto problem = sideProblem("rows", item.rows); !problem.isEmpty()) return problem;
+    if (item.tiles.size() != qint64(item.columns) * item.rows) return itemError(item, index, QString("tiles must hold %1 tiles for this map, one row of %2 at a time.").arg(qint64(item.columns) * item.rows).arg(item.columns));
+    for (const auto tile : item.tiles) {
+        if (tile < -1 || tile > MaximumTileIndex) return itemError(item, index, QString("tiles has tile %1, but a tile is -1 for empty or a number from 0 to %2.").arg(tile).arg(MaximumTileIndex));
+    }
+    int previous = -1;
+    for (const auto solid : item.solidTiles) {
+        if (solid < 0 || solid > MaximumTileIndex) return itemError(item, index, QString("solidTiles has %1, but a tile number is 0 to %2.").arg(solid).arg(MaximumTileIndex));
+        if (solid <= previous) return itemError(item, index, "solidTiles must be sorted from low to high, with no number twice.");
+        previous = solid;
+    }
+    return {};
+}
+
 QString validateItem(const SceneItem& item, qsizetype index, QSet<QString>& usedIds) {
     if (item.id.isEmpty()) return itemError(item, index, "id must be a non-empty string.");
     if (usedIds.contains(item.id)) return itemError(item, index, QString("id \"%1\" is already used. Give each item its own id.").arg(item.id));
@@ -140,7 +201,8 @@ QString validateItem(const SceneItem& item, qsizetype index, QSet<QString>& used
 
     const auto isImage = item.type == ImageType;
     const auto isParticles = item.type == ParticlesType;
-    if (item.type != RectangleType && item.type != TextType && !isImage && !isParticles) return itemError(item, index, "type must be \"rectangle\", \"text\", \"image\" or \"particles\".");
+    const auto isTilemap = item.type == TilemapType;
+    if (item.type != RectangleType && item.type != TextType && !isImage && !isParticles && !isTilemap) return itemError(item, index, "type must be \"rectangle\", \"text\", \"image\", \"particles\" or \"tilemap\".");
 
     for (const auto& [field, value] : {std::pair<const char*, double>{"x", item.x}, {"y", item.y}}) {
         if (!isUsableNumber(value)) return itemError(item, index, QString("%1 must be a number between -1e38 and 1e38.").arg(field));
@@ -151,10 +213,14 @@ QString validateItem(const SceneItem& item, qsizetype index, QSet<QString>& used
         }
     }
 
+    if (item.flipX && !isImage) return itemError(item, index, "only an image can be flipped.");
+    if (item.pixelated && !isImage) return itemError(item, index, "only an image can be pixelated.");
+
     if (isImage) {
         if (!isImageSource(item.source)) return itemError(item, index, "source must be a .png file inside the project's assets folder, for example assets/logo.png.");
-        return {};
+        return validateSheet(item, index);
     }
+    if (isTilemap) return validateTilemap(item, index);
 
     if (!isColor(item.color)) return itemError(item, index, "color must look like #RRGGBB, for example #FFD23F.");
 
@@ -169,6 +235,12 @@ QString validateItem(const SceneItem& item, qsizetype index, QSet<QString>& used
     return {};
 }
 
+QJsonObject animationToJson(const SceneAnimation& animation) {
+    QJsonArray frames;
+    for (const auto frame : animation.frames) frames.append(frame);
+    return {{"name", animation.name}, {"frames", frames}, {"fps", animation.fps}};
+}
+
 double numberOrInvalid(const QJsonValue& value) {
     return value.isDouble() ? value.toDouble() : std::numeric_limits<double>::quiet_NaN();
 }
@@ -176,6 +248,52 @@ double numberOrInvalid(const QJsonValue& value) {
 int wholeNumberOrInvalid(const QJsonValue& value) {
     if (!value.isDouble() || value.toDouble() != std::floor(value.toDouble()) || std::abs(value.toDouble()) > 1e8) return InvalidNumber;
     return static_cast<int>(value.toDouble());
+}
+
+QList<int> wholeNumberList(const QJsonValue& value) {
+    QList<int> numbers;
+    for (const auto& entry : value.toArray()) numbers.append(wholeNumberOrInvalid(entry));
+    return numbers;
+}
+
+QString parseSheet(const QJsonObject& sheet, qsizetype index, SceneItem& item) {
+    item.frameWidth = wholeNumberOrInvalid(sheet.value("frameWidth"));
+    item.frameHeight = wholeNumberOrInvalid(sheet.value("frameHeight"));
+    item.animation = sheet.value("animation").toString();
+    const auto list = sheet.value("animations");
+    if (!list.isUndefined() && !list.isArray()) return itemError(item, index, "animations must be a list of animations.");
+    for (const auto& entry : list.toArray()) {
+        if (!entry.isObject()) return itemError(item, index, "each animation must be a JSON object.");
+        const auto object = entry.toObject();
+        if (!object.value("frames").isArray()) return itemError(item, index, QString("animation \"%1\" needs a frames list.").arg(object.value("name").toString()));
+        item.animations.append({object.value("name").toString(), wholeNumberList(object.value("frames")), wholeNumberOrInvalid(object.value("fps"))});
+    }
+    return {};
+}
+
+QString parseTilemap(const QJsonObject& object, qsizetype index, SceneItem& item) {
+    item.source = object.value("source").toString();
+    item.tileWidth = wholeNumberOrInvalid(object.value("tileWidth"));
+    item.tileHeight = wholeNumberOrInvalid(object.value("tileHeight"));
+    item.tileScale = wholeNumberOrInvalid(object.value("tileScale"));
+    item.columns = wholeNumberOrInvalid(object.value("columns"));
+    item.rows = wholeNumberOrInvalid(object.value("rows"));
+    const auto rowsValue = object.value("tiles");
+    if (!rowsValue.isArray()) return itemError(item, index, "tiles must be a list with one text per row of the map.");
+    const auto rows = rowsValue.toArray();
+    if (item.columns >= 1 && item.columns <= MaximumTilemapSide && item.rows >= 1 && item.rows <= MaximumTilemapSide) {
+        if (rows.size() != item.rows) return itemError(item, index, QString("tiles has %1 rows, but the map has %2 rows.").arg(rows.size()).arg(item.rows));
+        item.tiles.reserve(qint64(item.columns) * item.rows);
+        for (const auto& row : rows) {
+            QList<int> cells;
+            if (!row.isString() || !decodeTileRow(row.toString(), item.columns, cells)) return itemError(item, index, QString("tiles has the row \"%1\", which is not %2 tiles written as value or value*count.").arg(row.toString().left(32)).arg(item.columns));
+            item.tiles += cells;
+        }
+    }
+    if (const auto solid = object.value("solidTiles"); solid.isArray()) item.solidTiles = wholeNumberList(solid);
+    else if (!solid.isUndefined()) return itemError(item, index, "solidTiles must be a list of tile numbers.");
+    if (item.tileWidth >= 0 && item.tileScale >= 0) updateTilemapSize(item);
+    return {};
 }
 
 // Values of the wrong JSON type become values validateScene rejects, so each rule has one message.
@@ -196,11 +314,28 @@ QString parseItem(const QJsonValue& value, qsizetype index, SceneItem& item) {
         const auto scale = object.value("scale");
         item.scale = scale.isDouble() ? scale.toInt(0) : 0;
         item.text = object.value("text").toString();
-    } else {
+    } else if (item.type != TilemapType) {
         item.width = numberOrInvalid(object.value("width"));
         item.height = numberOrInvalid(object.value("height"));
     }
-    if (item.type == ImageType) item.source = object.value("source").toString();
+    if (item.type == ImageType) {
+        item.source = object.value("source").toString();
+        for (const auto& [field, target] : {std::pair<const char*, bool*>{"pixelated", &item.pixelated}, {"flipX", &item.flipX}}) {
+            const auto flag = object.value(field);
+            if (!flag.isUndefined() && !flag.isBool()) return itemError(item, index, QString("%1 must be true or false.").arg(field));
+            *target = flag.toBool();
+        }
+        const auto sheet = object.value("sheet");
+        if (!sheet.isUndefined()) {
+            if (!sheet.isObject()) return itemError(item, index, "sheet must be a JSON object.");
+            const auto problem = parseSheet(sheet.toObject(), index, item);
+            if (!problem.isEmpty()) return problem;
+        }
+    }
+    if (item.type == TilemapType) {
+        const auto problem = parseTilemap(object, index, item);
+        if (!problem.isEmpty()) return problem;
+    }
     if (item.type == ParticlesType) {
         item.preset = object.value("preset").toString();
         item.palette = object.value("palette").toString();
@@ -217,6 +352,9 @@ QString parseItem(const QJsonValue& value, qsizetype index, SceneItem& item) {
     const auto controllable = object.value("controllable");
     if (!controllable.isUndefined() && !controllable.isBool()) return itemError(item, index, "controllable must be true or false.");
     item.controllable = controllable.toBool();
+    const auto screenFixed = object.value("screenFixed");
+    if (!screenFixed.isUndefined() && !screenFixed.isBool()) return itemError(item, index, "screenFixed must be true or false.");
+    item.screenFixed = screenFixed.toBool();
     return {};
 }
 
@@ -229,8 +367,36 @@ QJsonObject itemToJson(const SceneItem& item) {
         {"y", item.y},
         {"controllable", item.controllable},
     };
-    if (item.type != ImageType) object.insert("color", item.color);
-    if (item.type == ImageType) object.insert("source", item.source);
+    if (item.screenFixed) object.insert("screenFixed", true);
+    if (item.type != ImageType && item.type != TilemapType) object.insert("color", item.color);
+    if (item.type == ImageType) {
+        object.insert("source", item.source);
+        if (item.pixelated) object.insert("pixelated", true);
+        if (item.flipX) object.insert("flipX", true);
+        if (isSpriteSheet(item)) {
+            QJsonArray animations;
+            for (const auto& animation : item.animations) animations.append(animationToJson(animation));
+            QJsonObject sheet{{"frameWidth", item.frameWidth}, {"frameHeight", item.frameHeight}, {"animations", animations}};
+            if (!item.animation.isEmpty()) sheet.insert("animation", item.animation);
+            object.insert("sheet", sheet);
+        }
+    }
+    if (item.type == TilemapType) {
+        object.insert("source", item.source);
+        object.insert("tileWidth", item.tileWidth);
+        object.insert("tileHeight", item.tileHeight);
+        object.insert("tileScale", item.tileScale);
+        object.insert("columns", item.columns);
+        object.insert("rows", item.rows);
+        QJsonArray rows;
+        for (int row = 0; row < item.rows; ++row) rows.append(encodeTileRow(item.tiles, row * item.columns, item.columns));
+        object.insert("tiles", rows);
+        if (!item.solidTiles.isEmpty()) {
+            QJsonArray solid;
+            for (const auto tile : item.solidTiles) solid.append(tile);
+            object.insert("solidTiles", solid);
+        }
+    }
     if (item.type == ParticlesType) {
         object.insert("preset", item.preset);
         object.insert("palette", item.palette);
@@ -244,7 +410,7 @@ QJsonObject itemToJson(const SceneItem& item) {
     if (item.type == TextType) {
         object.insert("scale", item.scale);
         object.insert("text", item.text);
-    } else {
+    } else if (item.type != TilemapType) {
         object.insert("width", item.width);
         object.insert("height", item.height);
     }
@@ -266,22 +432,34 @@ QByteArray colorLiterals(const QString& color) {
 }
 
 
-QByteArray itemLine(const SceneItem& item, const QStringList& imageSources, int particleIndex) {
+QByteArray itemLine(const SceneItem& item, const QStringList& imageSources, int particleIndex, int tilemapIndex, int spriteIndex) {
     const auto isText = item.type == TextType;
     const auto isImage = item.type == ImageType;
     const auto isParticles = item.type == ParticlesType;
+    const auto isTilemap = item.type == TilemapType;
     const auto shown = isText ? widestText(item.text) : QString();
     const auto width = isText ? double((shown.size() * 6 - 1) * item.scale) : item.width;
     const auto height = isText ? double(7 * item.scale) : item.height;
     QByteArray line = "    {Kind::";
-    line += isText ? "Text" : isImage ? "Image" : isParticles ? "Particles" : "Rectangle";
+    line += isText ? "Text" : isImage ? "Image" : isParticles ? "Particles" : isTilemap ? "Tilemap" : "Rectangle";
     for (const auto value : {item.x, item.y, width, height}) line += ", " + floatLiteral(value);
-    line += ", " + (isImage ? QByteArray("0.0f, 0.0f, 0.0f") : colorLiterals(item.color));
+    line += ", " + ((isImage || isTilemap) ? QByteArray("0.0f, 0.0f, 0.0f") : colorLiterals(item.color));
     line += ", " + floatLiteral(isText ? item.scale : 0);
     line += ", \"" + (isText ? textLiteral(shown) : QByteArray()) + "\", ";
     line += item.controllable ? "true" : "false";
-    if (isImage) line += ", " + QByteArray::number(imageSources.indexOf(item.source));
-    if (isParticles) line += ", -1, " + QByteArray::number(particleIndex);
+    const auto imageIndex = (isImage || isTilemap) ? QByteArray::number(imageSources.indexOf(item.source)) : QByteArray("-1");
+    if (isTilemap || spriteIndex >= 0 || item.pixelated || item.flipX || item.screenFixed) {
+        // These items spell out every field, so the older lines below stay as they were.
+        line += ", " + imageIndex + ", " + QByteArray::number(isParticles ? particleIndex : -1);
+        line += ", " + QByteArray::number(isTilemap ? tilemapIndex : -1) + ", " + QByteArray::number(spriteIndex);
+        line += QByteArray(", ") + (item.screenFixed ? "true" : "false");
+        line += QByteArray(", ") + ((item.pixelated || isTilemap) ? "true" : "false");
+        line += QByteArray(", ") + (item.flipX ? "true" : "false");
+    } else if (isImage) {
+        line += ", " + imageIndex;
+    } else if (isParticles) {
+        line += ", -1, " + QByteArray::number(particleIndex);
+    }
     line += "},\n";
     return line;
 }
@@ -338,17 +516,167 @@ QString newBackupFolderName(const QString& root) {
 
 QString validateScene(const Scene& scene) {
     if (!isColor(scene.background)) return "Background color must look like #RRGGBB, for example #151C3A.";
+    if (scene.worldWidth < ScreenWidthUnits || scene.worldWidth > MaximumWorldSide) return QString("The world's width must be a whole number from %1 to %2.").arg(ScreenWidthUnits).arg(MaximumWorldSide);
+    if (scene.worldHeight < ScreenHeightUnits || scene.worldHeight > MaximumWorldSide) return QString("The world's height must be a whole number from %1 to %2.").arg(ScreenHeightUnits).arg(MaximumWorldSide);
+    const auto inCameraRange = [](double value, int worldSide, int screenSide) { return std::isfinite(value) && value >= 0 && value <= worldSide - screenSide; };
+    if (!inCameraRange(scene.cameraX, scene.worldWidth, ScreenWidthUnits) || !inCameraRange(scene.cameraY, scene.worldHeight, ScreenHeightUnits)) return "The camera must start inside the world: from 0 up to the world's size minus the 1920x1080 screen.";
     if (scene.items.size() > MaximumItems) return QString("The scene has %1 items, but a scene can hold at most %2. Remove some items and try again.").arg(scene.items.size()).arg(MaximumItems);
     QSet<QString> usedIds;
     bool hasParticles = false;
+    bool hasTilemap = false;
+    bool hasSheet = false;
     for (qsizetype index = 0; index < scene.items.size(); ++index) {
         const auto problem = validateItem(scene.items[index], index, usedIds);
         if (!problem.isEmpty()) return problem;
         hasParticles = hasParticles || scene.items[index].type == ParticlesType;
+        hasTilemap = hasTilemap || scene.items[index].type == TilemapType;
+        hasSheet = hasSheet || isSpriteSheet(scene.items[index]);
     }
-    // Only scenes with particles are bound by this, so scenes from before particles keep working.
-    if (hasParticles && sceneQuadCount(scene) > MaximumSceneBlocks) {
+    if (const auto cells = sceneTileCells(scene); cells > MaximumSceneTileCells) {
+        return QString("The tilemaps hold %1 tiles, but a scene can hold at most %2. Make a tilemap smaller or remove a layer.").arg(cells).arg(MaximumSceneTileCells);
+    }
+    // Only scenes that use them are bound by these, so older scenes keep working.
+    if ((hasParticles || hasTilemap) && sceneQuadCount(scene) > MaximumSceneBlocks) {
+        if (hasTilemap) return QString("This scene would draw %1 tiles and blocks at once, but a scene can draw at most %2. Make the tiles bigger or remove a layer.").arg(sceneQuadCount(scene)).arg(MaximumSceneBlocks);
         return QString("This scene would draw %1 blocks, but a scene with particles can draw at most %2. Lower Amount on a particles item or remove some text.").arg(sceneQuadCount(scene)).arg(MaximumSceneBlocks);
+    }
+    if ((hasTilemap || hasSheet) && sceneDrawCalls(scene) > MaximumSceneDrawCalls) {
+        return QString("This scene would need %1 draw calls, but a scene with tiles or sprites can use at most %2. Put items that use the same picture next to each other in the Layers list, or remove some.").arg(sceneDrawCalls(scene)).arg(MaximumSceneDrawCalls);
+    }
+    return {};
+}
+
+bool isSpriteSheet(const SceneItem& item) {
+    return item.type == ImageType && item.frameWidth > 0 && item.frameHeight > 0;
+}
+
+void updateTilemapSize(SceneItem& item) {
+    item.width = static_cast<double>(item.columns) * item.tileWidth * item.tileScale;
+    item.height = static_cast<double>(item.rows) * item.tileHeight * item.tileScale;
+}
+
+void resizeTilemap(SceneItem& item, int columns, int rows) {
+    QList<int> resized(qint64(std::max(columns, 0)) * std::max(rows, 0), -1);
+    for (int row = 0; row < std::min(rows, item.rows); ++row) {
+        for (int column = 0; column < std::min(columns, item.columns); ++column) resized[row * columns + column] = item.tiles.value(row * item.columns + column, -1);
+    }
+    item.tiles = resized;
+    item.columns = columns;
+    item.rows = rows;
+    updateTilemapSize(item);
+}
+
+int tilemapReservedQuads(const SceneItem& item) {
+    const auto reserved = [](int cells, int cellSize, int screen) {
+        return std::min(qint64(cells), qint64(std::ceil(static_cast<double>(screen) / std::max(cellSize, 1))) + 1);
+    };
+    return static_cast<int>(reserved(item.columns, item.tileWidth * item.tileScale, ScreenWidthUnits) * reserved(item.rows, item.tileHeight * item.tileScale, ScreenHeightUnits));
+}
+
+int sceneTileCells(const Scene& scene) {
+    qint64 total = 0;
+    for (const auto& item : scene.items) {
+        if (item.type == TilemapType) total += qint64(item.columns) * item.rows;
+    }
+    return static_cast<int>(std::min<qint64>(total, std::numeric_limits<int>::max()));
+}
+
+int sceneDrawCalls(const Scene& scene) {
+    int calls = 1; // the background opens the first solid draw
+    QString open;
+    for (const auto& item : scene.items) {
+        if (item.type == ImageType || item.type == TilemapType) {
+            const auto nearest = item.pixelated || item.type == TilemapType;
+            const auto key = item.source + (nearest ? "#nearest" : "#linear");
+            if (key != open) {
+                ++calls;
+                open = key;
+            }
+        } else if (!open.isEmpty()) {
+            ++calls;
+            open.clear();
+        }
+    }
+    return calls;
+}
+
+QString encodeTileRow(const QList<int>& tiles, int first, int count) {
+    QStringList runs;
+    for (int index = first; index < first + count;) {
+        const auto value = tiles.value(index, -1);
+        int length = 1;
+        while (index + length < first + count && tiles.value(index + length, -1) == value) ++length;
+        runs << (length == 1 ? QString::number(value) : QString("%1*%2").arg(value).arg(length));
+        index += length;
+    }
+    return runs.join(',');
+}
+
+bool decodeTileRow(const QString& text, int columns, QList<int>& out) {
+    out.clear();
+    if (text.isEmpty()) return false;
+    for (const auto& run : text.split(',')) {
+        const auto parts = run.split('*');
+        if (parts.size() > 2 || parts.first().isEmpty() || parts.first().trimmed() != parts.first()) return false;
+        bool valueOk = false;
+        const auto value = parts.first().toInt(&valueOk);
+        if (!valueOk) return false;
+        int count = 1;
+        if (parts.size() == 2) {
+            bool countOk = false;
+            count = parts.last().toInt(&countOk);
+            if (!countOk || count < 1 || parts.last().trimmed() != parts.last()) return false;
+        }
+        if (count > columns - out.size()) return false;
+        for (int index = 0; index < count; ++index) out.append(value);
+    }
+    return out.size() == columns;
+}
+
+QByteArray tilemapCellBytes(const SceneItem& item) {
+    QByteArray bytes;
+    bytes.reserve(item.tiles.size() * 4);
+    for (const auto tile : item.tiles) {
+        const auto value = static_cast<std::uint32_t>(tile);
+        for (int byte = 0; byte < 4; ++byte) bytes.append(static_cast<char>((value >> (byte * 8)) & 0xff));
+    }
+    return bytes;
+}
+
+QString sceneImagesProblem(const Scene& scene, const QList<SceneImageData>& images) {
+    const auto findImage = [&](const QString& source) -> const SceneImageData* {
+        const auto found = std::ranges::find(images, source, &SceneImageData::source);
+        return found == images.end() ? nullptr : &*found;
+    };
+    for (qsizetype index = 0; index < scene.items.size(); ++index) {
+        const auto& item = scene.items[index];
+        if (isSpriteSheet(item)) {
+            const auto* image = findImage(item.source);
+            if (!image) continue;
+            if (item.frameWidth > image->width || item.frameHeight > image->height) {
+                return itemError(item, index, QString("the frames are %1x%2 pixels, but %3 is only %4x%5. Choose a smaller frame size.").arg(item.frameWidth).arg(item.frameHeight).arg(item.source).arg(image->width).arg(image->height));
+            }
+            const auto frames = (image->width / item.frameWidth) * (image->height / item.frameHeight);
+            for (const auto& animation : item.animations) {
+                for (const auto frame : animation.frames) {
+                    if (frame >= frames) return itemError(item, index, QString("animation \"%1\" uses frame %2, but the sheet has only %3 frames.").arg(animation.name).arg(frame).arg(frames));
+                }
+            }
+        }
+        if (item.type == TilemapType) {
+            const auto* image = findImage(item.source);
+            if (!image) continue;
+            if (item.tileWidth > image->width || item.tileHeight > image->height) {
+                return itemError(item, index, QString("the tiles are %1x%2 pixels, but %3 is only %4x%5. Choose a smaller tile size.").arg(item.tileWidth).arg(item.tileHeight).arg(item.source).arg(image->width).arg(image->height));
+            }
+            const auto tileCount = (image->width / item.tileWidth) * (image->height / item.tileHeight);
+            for (const auto tile : item.tiles) {
+                if (tile >= tileCount) return itemError(item, index, QString("it uses tile %1, but the tileset has only %2 tiles. Paint over it or choose a larger tileset.").arg(tile).arg(tileCount));
+            }
+            for (const auto tile : item.solidTiles) {
+                if (tile >= tileCount) return itemError(item, index, QString("it marks tile %1 solid, but the tileset has only %2 tiles.").arg(tile).arg(tileCount));
+            }
+        }
     }
     return {};
 }
@@ -458,6 +786,7 @@ int sceneQuadCount(const Scene& scene) {
     for (const auto& item : scene.items) {
         if (item.type == TextType) total += widestText(item.text).size();
         else if (item.type == ParticlesType) total += item.amount;
+        else if (item.type == TilemapType) total += tilemapReservedQuads(item);
         else total += 1;
     }
     return static_cast<int>(std::min<qint64>(total, std::numeric_limits<int>::max()));
@@ -516,6 +845,19 @@ SceneLoadResult loadScene(const QString& path) {
 
     Scene scene;
     scene.background = root.value("background").toString();
+    const auto world = root.value("world");
+    const auto camera = root.value("camera");
+    if (!world.isUndefined() || !camera.isUndefined()) {
+        if (version < WorldSchema) return failure(QString("%1 uses a world or camera, which needs schemaVersion %2. Change schemaVersion to %2 and try again.").arg(fileName).arg(WorldSchema));
+        if (!world.isUndefined()) {
+            scene.worldWidth = world.isObject() ? wholeNumberOrInvalid(world.toObject().value("width")) : InvalidNumber;
+            scene.worldHeight = world.isObject() ? wholeNumberOrInvalid(world.toObject().value("height")) : InvalidNumber;
+        }
+        if (!camera.isUndefined()) {
+            scene.cameraX = camera.isObject() ? numberOrInvalid(camera.toObject().value("x")) : std::numeric_limits<double>::quiet_NaN();
+            scene.cameraY = camera.isObject() ? numberOrInvalid(camera.toObject().value("y")) : std::numeric_limits<double>::quiet_NaN();
+        }
+    }
     const auto items = root.value("items").toArray();
     for (qsizetype index = 0; index < items.size(); ++index) {
         SceneItem item;
@@ -524,6 +866,8 @@ SceneLoadResult loadScene(const QString& path) {
         if (version < ImageSchema && item.type == ImageType) return failure(QString("%1 uses an image item, which needs schemaVersion %2. Change schemaVersion to %2 and try again.").arg(fileName).arg(ImageSchema));
         if (version < ParticleSchema && item.type == ParticlesType) return failure(QString("%1 uses a particles item, which needs schemaVersion %2. Change schemaVersion to %2 and try again.").arg(fileName).arg(ParticleSchema));
         if (version < VariableTextSchema && item.type == TextType) item.text.replace('{', "{{").replace('}', "}}");
+        const auto usesWorldItem = item.type == TilemapType || item.frameWidth != 0 || item.frameHeight != 0 || !item.animations.isEmpty() || item.pixelated || item.flipX || item.screenFixed;
+        if (version < WorldSchema && usesWorldItem) return failure(QString("%1 uses a tilemap, sprite sheet or screen-fixed item, which needs schemaVersion %2. Change schemaVersion to %2 and try again.").arg(fileName).arg(WorldSchema));
         scene.items.append(item);
     }
 
@@ -538,7 +882,10 @@ bool saveScene(const QString& path, const Scene& scene, QString& error) {
 
     QJsonArray items;
     for (const auto& item : scene.items) items.append(itemToJson(item));
-    const QJsonObject root{{"schemaVersion", CurrentSchema}, {"background", scene.background}, {"items", items}};
+    QJsonObject root{{"schemaVersion", CurrentSchema}, {"background", scene.background}, {"items", items}};
+    // A stage-sized world saves no world and no camera, so the file reads as it did.
+    if (scene.worldWidth != ScreenWidthUnits || scene.worldHeight != ScreenHeightUnits) root.insert("world", QJsonObject{{"width", scene.worldWidth}, {"height", scene.worldHeight}});
+    if (scene.cameraX != 0 || scene.cameraY != 0) root.insert("camera", QJsonObject{{"x", scene.cameraX}, {"y", scene.cameraY}});
     const auto contents = QJsonDocument(root).toJson();
 
     QSaveFile file(path);
@@ -564,7 +911,7 @@ QByteArray textLiteral(const QString& text) {
 QStringList sceneImageSources(const Scene& scene) {
     QStringList sources;
     for (const auto& item : scene.items) {
-        if (item.type == ImageType && !sources.contains(item.source)) sources << item.source;
+        if ((item.type == ImageType || item.type == TilemapType) && !sources.contains(item.source)) sources << item.source;
     }
     return sources;
 }
@@ -594,7 +941,7 @@ QString imageFileProblem(const QString& projectRoot, const QString& source) {
     return {};
 }
 
-QByteArray generateImageSource(const QList<SceneImageData>& images) {
+QByteArray generateImageSource(const QList<SceneImageData>& images, int tilemapCount) {
     QByteArray source = "// Generated by AnyDevKit Studio from scene.json. Do not edit.\n#include \"GeneratedScene.hpp\"\n\n";
     if (!images.isEmpty()) {
         // Pixels are raw files pulled in by the assembler, so the compiler never parses them.
@@ -606,6 +953,12 @@ QByteArray generateImageSource(const QList<SceneImageData>& images) {
         source += "__asm__(\".pushsection .rodata\\n.balign 16\\n.hidden " + symbol + "\\n" + symbol + ":\\n.incbin \\\"\" SCENE_IMAGE_DIRECTORY \"/image-" + number + ".rgba\\\"\\n.popsection\\n\");\n";
         source += "extern \"C\" const std::uint8_t " + symbol + "[];\n";
     }
+    for (int index = 0; index < tilemapCount; ++index) {
+        const auto number = QByteArray::number(index);
+        const auto symbol = "StudioSceneTiles" + number;
+        source += "__asm__(\".pushsection .rodata\\n.balign 16\\n.hidden " + symbol + "\\n" + symbol + ":\\n.incbin \\\"\" SCENE_IMAGE_DIRECTORY \"/tilemap-" + number + ".tiles\\\"\\n.popsection\\n\");\n";
+        source += "extern \"C\" const std::int32_t " + symbol + "[];\n";
+    }
     source += "\nnamespace GeneratedScene {\n\n";
     if (images.isEmpty()) {
         source += "const std::array<Image, 0> Images{};\n";
@@ -614,6 +967,13 @@ QByteArray generateImageSource(const QList<SceneImageData>& images) {
         for (qsizetype index = 0; index < images.size(); ++index) {
             source += "    {StudioSceneImage" + QByteArray::number(index) + ", " + QByteArray::number(images[index].width) + ", " + QByteArray::number(images[index].height) + "},\n";
         }
+        source += "}};\n";
+    }
+    if (tilemapCount == 0) {
+        source += "const std::array<const std::int32_t*, 0> TilemapCells{};\n";
+    } else {
+        source += "const std::array<const std::int32_t*, TilemapCount> TilemapCells{{\n";
+        for (int index = 0; index < tilemapCount; ++index) source += "    StudioSceneTiles" + QByteArray::number(index) + ",\n";
         source += "}};\n";
     }
     source += "\n}\n";
@@ -636,8 +996,67 @@ QByteArray particleEffectLine(const SceneItem& item) {
     return line;
 }
 
+// Sprites and their animations, each table in the order the items that use them appear.
+QByteArray spriteTables(const Scene& scene, const QList<SceneImageData>& images) {
+    QByteArray sprites, animations, frames;
+    int spriteCount = 0, animationCount = 0, frameCount = 0;
+    for (const auto& item : scene.items) {
+        if (!isSpriteSheet(item)) continue;
+        const auto& image = *std::ranges::find(images, item.source, &SceneImageData::source);
+        int startIndex = 0;
+        if (!item.animation.isEmpty()) {
+            const auto found = std::ranges::find(item.animations, item.animation, &SceneAnimation::name);
+            if (found != item.animations.end()) startIndex = static_cast<int>(found - item.animations.begin());
+        }
+        sprites += "    {" + QByteArray::number(item.frameWidth) + ", " + QByteArray::number(item.frameHeight)
+            + ", " + QByteArray::number(image.width / item.frameWidth) + ", " + QByteArray::number(image.height / item.frameHeight)
+            + ", " + QByteArray::number(animationCount) + ", " + QByteArray::number(item.animations.size())
+            + ", " + QByteArray::number(startIndex) + "},\n";
+        for (const auto& animation : item.animations) {
+            animations += "    {" + QByteArray::number(frameCount) + ", " + QByteArray::number(animation.frames.size()) + ", " + QByteArray::number(animation.fps) + "},\n";
+            for (const auto frame : animation.frames) frames += (frameCount++ == 0 ? "" : ", ") + QByteArray::number(frame);
+            ++animationCount;
+        }
+        ++spriteCount;
+    }
+    const auto table = [](const char* type, const char* name, int count, const QByteArray& body) {
+        if (count == 0) return QByteArray("inline constexpr std::array<") + type + ", 0> " + name + "{};\n";
+        return QByteArray("inline constexpr std::array<") + type + ", " + QByteArray::number(count) + "> " + name + "{{\n" + body + "}};\n";
+    };
+    QByteArray text = "inline constexpr std::size_t SpriteCount = " + QByteArray::number(spriteCount) + ";\n";
+    text += table("Sprite", "Sprites", spriteCount, sprites);
+    text += table("Animation", "Animations", animationCount, animations);
+    text += frameCount == 0 ? QByteArray("inline constexpr std::array<std::uint16_t, 0> AnimationFrames{};\n")
+                            : "inline constexpr std::array<std::uint16_t, " + QByteArray::number(frameCount) + "> AnimationFrames{{" + frames + "}};\n";
+    return text;
+}
+
+// Solid tiles are flagged per tile index and kept here for collisions added later; nothing reads them yet.
+QByteArray tilemapTables(const Scene& scene, const QList<SceneImageData>& images) {
+    const auto imageSources = sceneImageSources(scene);
+    QByteArray tilemaps, solid;
+    int tilemapCount = 0, solidCount = 0;
+    for (const auto& item : scene.items) {
+        if (item.type != TilemapType) continue;
+        const auto& image = *std::ranges::find(images, item.source, &SceneImageData::source);
+        tilemaps += "    {" + QByteArray::number(item.columns) + ", " + QByteArray::number(item.rows) + ", " + QByteArray::number(item.tileWidth) + ", " + QByteArray::number(item.tileHeight)
+            + ", " + QByteArray::number(item.tileWidth * item.tileScale) + ", " + QByteArray::number(item.tileHeight * item.tileScale)
+            + ", " + QByteArray::number(image.width / item.tileWidth) + ", " + QByteArray::number(imageSources.indexOf(item.source))
+            + ", " + QByteArray::number(tilemapReservedQuads(item)) + ", " + QByteArray::number(solidCount) + ", " + QByteArray::number(item.solidTiles.size()) + "},\n";
+        for (const auto tile : item.solidTiles) solid += (solidCount++ == 0 ? "" : ", ") + QByteArray::number(tile);
+        ++tilemapCount;
+    }
+    QByteArray text = "inline constexpr std::size_t TilemapCount = " + QByteArray::number(tilemapCount) + ";\n";
+    text += tilemapCount == 0 ? QByteArray("inline constexpr std::array<Tilemap, 0> Tilemaps{};\n")
+                              : "inline constexpr std::array<Tilemap, " + QByteArray::number(tilemapCount) + "> Tilemaps{{\n" + tilemaps + "}};\n";
+    text += solidCount == 0 ? QByteArray("inline constexpr std::array<std::uint16_t, 0> SolidTiles{};\n")
+                            : "inline constexpr std::array<std::uint16_t, " + QByteArray::number(solidCount) + "> SolidTiles{{" + solid + "}};\n";
+    text += "extern const std::array<const std::int32_t*, TilemapCount> TilemapCells; // defined in src/GeneratedImages.cpp, columns * rows cells each\n";
+    return text;
+}
+
 QByteArray generateSceneHeader(const Scene& scene, const QList<SceneImageData>& images) {
-    if (!validateScene(scene).isEmpty() || !imagesMatchScene(scene, images)) return {};
+    if (!validateScene(scene).isEmpty() || !imagesMatchScene(scene, images) || !sceneImagesProblem(scene, images).isEmpty()) return {};
     const auto imageSources = sceneImageSources(scene);
 
     QByteArray header = R"cpp(// Generated by AnyDevKit Studio from scene.json. Do not edit.
@@ -650,7 +1069,7 @@ QByteArray generateSceneHeader(const Scene& scene, const QList<SceneImageData>& 
 
 namespace GeneratedScene {
 
-enum class Kind : std::uint8_t { Rectangle, Text, Image, Particles };
+enum class Kind : std::uint8_t { Rectangle, Text, Image, Particles, Tilemap };
 
 struct Item {
     Kind kind;
@@ -661,6 +1080,11 @@ struct Item {
     bool controllable;
     std::int32_t image = -1; // index into Images for an image item
     std::int32_t particles = -1; // index into ParticleEffects for a particles item
+    std::int32_t tilemap = -1; // index into Tilemaps for a tilemap item
+    std::int32_t sprite = -1; // index into Sprites for an image that is a sprite sheet
+    bool screenFixed = false; // stays at the same place on the screen as the camera moves
+    bool pixelated = false; // drawn with nearest-neighbour sampling, on whole pixels
+    bool flipped = false; // drawn mirrored left to right when the game starts
 };
 
 // Row by row, top row first, 4 bytes per pixel: red, green, blue, alpha, with alpha already applied.
@@ -678,7 +1102,28 @@ struct ParticleEffect {
     bool looping;
 };
 
+// One animation of a sprite. Its frames are AnimationFrames[firstFrame] onward, frameCount of them.
+struct Animation {
+    std::uint32_t firstFrame, frameCount, framesPerSecond;
+};
+
+// A sprite sheet's layout, and which of Animations are its own.
+struct Sprite {
+    std::uint32_t frameWidth, frameHeight, columns, rows, firstAnimation, animationCount, startAnimation;
+};
+
+// A tilemap. Its cells live in TilemapCells; solid tiles are SolidTiles[firstSolid] onward, solidCount of them.
+struct Tilemap {
+    std::uint32_t columns, rows, tileWidth, tileHeight, cellWidth, cellHeight, tilesetColumns;
+    std::int32_t image;
+    std::uint32_t reservedQuads, firstSolid, solidCount;
+};
+
 )cpp";
+    header += "inline constexpr float WorldWidth = " + floatLiteral(scene.worldWidth) + ";\n";
+    header += "inline constexpr float WorldHeight = " + floatLiteral(scene.worldHeight) + ";\n";
+    header += "inline constexpr float CameraStartX = " + floatLiteral(scene.cameraX) + ";\n";
+    header += "inline constexpr float CameraStartY = " + floatLiteral(scene.cameraY) + ";\n";
     header += "inline constexpr std::array<float, 3> Background{" + colorLiterals(scene.background) + "};\n";
     header += "inline constexpr std::size_t ImageCount = " + QByteArray::number(images.size()) + ";\n";
     header += "extern const std::array<Image, ImageCount> Images; // defined in src/GeneratedImages.cpp\n";
@@ -698,14 +1143,21 @@ struct ParticleEffect {
     } else {
         header += "inline constexpr std::array<ParticleEffect, " + QByteArray::number(particleEffects) + "> ParticleEffects{{\n" + particleLines + "}};\n";
     }
+    header += spriteTables(scene, images);
+    header += tilemapTables(scene, images);
     if (scene.items.isEmpty()) {
         header += "inline constexpr std::array<Item, 0> Items{};\n";
     } else {
         header += "inline constexpr std::array<Item, " + QByteArray::number(scene.items.size()) + "> Items{{\n";
         int particleIndex = 0;
+        int tilemapIndex = 0;
+        int spriteIndex = 0;
         for (const auto& item : scene.items) {
-            header += itemLine(item, imageSources, particleIndex);
+            const auto isSheet = isSpriteSheet(item);
+            header += itemLine(item, imageSources, particleIndex, tilemapIndex, isSheet ? spriteIndex : -1);
             if (item.type == ParticlesType) ++particleIndex;
+            if (item.type == TilemapType) ++tilemapIndex;
+            if (isSheet) ++spriteIndex;
         }
         header += "}};\n";
     }
@@ -715,6 +1167,10 @@ struct ParticleEffect {
 
 bool writeGeneratedScene(const QString& projectRoot, const Scene& scene, const QList<SceneImageData>& images, QString& error) {
     error.clear();
+    if (const auto problem = sceneImagesProblem(scene, images); !problem.isEmpty()) {
+        error = problem;
+        return false;
+    }
     const auto header = generateSceneHeader(scene, images);
     if (header.isEmpty()) {
         error = "The scene could not be exported because it has a problem or its images do not match. Check the scene and try again.";
@@ -722,8 +1178,19 @@ bool writeGeneratedScene(const QString& projectRoot, const Scene& scene, const Q
     }
     const auto root = QDir::cleanPath(QDir(projectRoot).absolutePath());
 
-    QList<RuntimeFile> files{{GeneratedHeaderPath, header}, {GeneratedImageSourcePath, generateImageSource(images)}};
+    QList<SceneItem> tilemaps;
+    for (const auto& item : scene.items) {
+        if (item.type == TilemapType) tilemaps.append(item);
+    }
+
+    QList<RuntimeFile> files{{GeneratedHeaderPath, header}, {GeneratedImageSourcePath, generateImageSource(images, tilemaps.size())}};
     QSet<QString> keptImages;
+    QSet<QString> keptTiles;
+    for (qsizetype index = 0; index < tilemaps.size(); ++index) {
+        const auto name = QString("tilemap-%1.tiles").arg(index);
+        files.append({QString(GeneratedImageFolder) + '/' + name, tilemapCellBytes(tilemaps[index])});
+        keptTiles.insert(name);
+    }
     for (qsizetype index = 0; index < images.size(); ++index) {
         const auto name = QString("image-%1.rgba").arg(index);
         files.append({QString(GeneratedImageFolder) + '/' + name, images[index].pixels});
@@ -751,6 +1218,9 @@ bool writeGeneratedScene(const QString& projectRoot, const Scene& scene, const Q
     const QDir imageFolder(folderInfo.filePath());
     for (const auto& name : imageFolder.entryList({"image-*.rgba"}, QDir::Files)) {
         if (!keptImages.contains(name)) QFile::remove(imageFolder.filePath(name));
+    }
+    for (const auto& name : imageFolder.entryList({TileFilePattern}, QDir::Files)) {
+        if (!keptTiles.contains(name)) QFile::remove(imageFolder.filePath(name));
     }
     return true;
 }
@@ -839,6 +1309,20 @@ bool sceneRuntimeNeedsUpdate(const QString& projectRoot) {
     QFile file(QDir::cleanPath(QDir(projectRoot).absolutePath()) + "/include/Scene/SceneState.hpp");
     if (!file.open(QIODevice::ReadOnly)) return false;
     return !file.readAll().contains("GeneratedVariables.hpp");
+}
+
+bool sceneRuntimeNeedsUpdate(const QString& projectRoot, const Scene& scene) {
+    const auto usesWorld = scene.worldWidth != ScreenWidthUnits || scene.worldHeight != ScreenHeightUnits || scene.cameraX != 0 || scene.cameraY != 0;
+    const auto usesWorldItem = std::ranges::any_of(scene.items, [](const SceneItem& item) {
+        return item.type == TilemapType || item.frameWidth != 0 || item.frameHeight != 0 || !item.animations.isEmpty() || item.pixelated || item.flipX || item.screenFixed;
+    });
+    return (usesWorld || usesWorldItem) && sceneRuntimeLacksWorld(projectRoot);
+}
+
+bool sceneRuntimeLacksWorld(const QString& projectRoot) {
+    QFile file(QDir::cleanPath(QDir(projectRoot).absolutePath()) + "/include/Scene/SceneState.hpp");
+    if (!file.open(QIODevice::ReadOnly)) return false;
+    return !file.readAll().contains("Scene/World2D.hpp");
 }
 
 bool installSceneRuntime(const QString& runtimeDirectory, const QString& projectRoot, const QString& projectName, QString& error, const Scene& starter) {
