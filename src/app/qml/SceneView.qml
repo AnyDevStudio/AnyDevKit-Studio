@@ -47,6 +47,10 @@ Item {
         required property string label
 
         Layout.fillWidth: true
+        // Shares the column when the window is short, so every tile and Undo stay on screen.
+        Layout.fillHeight: true
+        Layout.minimumHeight: 64
+        Layout.maximumHeight: 104
         implicitHeight: 104
         radius: 10
         color: hover.containsMouse ? Theme.raised : Theme.ink
