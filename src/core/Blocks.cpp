@@ -851,10 +851,10 @@ const QList<ButtonInfo>& buttonCatalog() {
         {ControllerButton::DpadDown, "dpadDown", "D-pad down"},
         {ControllerButton::DpadLeft, "dpadLeft", "D-pad left"},
         {ControllerButton::DpadRight, "dpadRight", "D-pad right"},
-        {ControllerButton::MoveUp, "moveUp", "Stick or D-pad up"},
-        {ControllerButton::MoveDown, "moveDown", "Stick or D-pad down"},
-        {ControllerButton::MoveLeft, "moveLeft", "Stick or D-pad left"},
-        {ControllerButton::MoveRight, "moveRight", "Stick or D-pad right"},
+        {ControllerButton::MoveUp, "moveUp", "Move up"},
+        {ControllerButton::MoveDown, "moveDown", "Move down"},
+        {ControllerButton::MoveLeft, "moveLeft", "Move left"},
+        {ControllerButton::MoveRight, "moveRight", "Move right"},
     };
     return catalog;
 }

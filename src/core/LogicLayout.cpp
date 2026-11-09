@@ -19,7 +19,7 @@ double fieldWidth(const BlockField& field) {
     if (field.kind == "variable" || field.kind == "sound") return 168;
     if (field.kind == "button") return 148;
     if (field.kind == "comparison") return 172;
-    if (field.kind == "whole") return 96;
+    if (field.kind == "whole") return field.label.isEmpty() ? 96 : 156;
     if (field.kind == "number") return 100;
     if (field.kind == "color") return 40;
     if (field.kind == "animation") return 140;
@@ -28,12 +28,20 @@ double fieldWidth(const BlockField& field) {
     return 120;
 }
 
+// What the block's own fields need side by side, so a block with many of them never spills out of its edge.
+double fieldsWidth(const BlockInfo& info) {
+    const auto fields = blockFields(info);
+    auto total = 2 * BlockPadding;
+    for (const auto& field : fields) total += fieldWidth(field) + FieldGap;
+    return fields.isEmpty() ? total : total - FieldGap;
+}
+
 double blockWidth(const Block& block, int depth) {
     if (depth >= MaximumLogicDepth) return BlockWidth;
     const auto& info = blockInfo(block.type);
     auto contents = BlockWidth;
     for (const auto& child : block.children) contents = std::max(contents, blockWidth(child, depth + 1));
-    return info.holdsActions && !info.isEvent ? contents + NestIndent : contents;
+    return std::max(fieldsWidth(info), info.holdsActions && !info.isEvent ? contents + NestIndent : contents);
 }
 
 class Placer {
