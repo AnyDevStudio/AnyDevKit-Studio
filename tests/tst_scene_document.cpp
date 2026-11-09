@@ -358,6 +358,8 @@ private slots:
         QVERIFY(document.setItemValue(1, "amount", 7990));
         QVERIFY(document.addItem("particles", 960, 540) == -1);
         QVERIFY2(document.error().contains("16000"), qPrintable(document.error()));
+    }
+
     void aNewImageKeepsItsAspectAndFitsTheStage() {
         QTemporaryDir directory;
         SceneDocument document;

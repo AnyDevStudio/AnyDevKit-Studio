@@ -3,6 +3,7 @@
 #include "BuildRunner.h"
 #include "CodeEditors.h"
 #include "GamePageDocument.h"
+#include "LogicDocument.h"
 #include "NewGame.h"
 #include "Project.h"
 #include "SceneDocument.h"
@@ -21,6 +22,13 @@ struct SceneDocumentForeign {
     Q_GADGET
     QML_FOREIGN(Studio::SceneDocument)
     QML_NAMED_ELEMENT(SceneDocument)
+    QML_UNCREATABLE("Owned by the studio controller")
+};
+
+struct LogicDocumentForeign {
+    Q_GADGET
+    QML_FOREIGN(Studio::LogicDocument)
+    QML_NAMED_ELEMENT(LogicDocument)
     QML_UNCREATABLE("Owned by the studio controller")
 };
 
@@ -50,6 +58,7 @@ class StudioController : public QObject {
     Q_PROPERTY(QString outputSize READ outputSize NOTIFY buildChanged)
     Q_PROPERTY(QStringListModel* log READ log CONSTANT)
     Q_PROPERTY(Studio::SceneDocument* scene READ scene CONSTANT)
+    Q_PROPERTY(Studio::LogicDocument* logic READ logic CONSTANT)
     Q_PROPERTY(Studio::GamePageDocument* gamePage READ gamePage CONSTANT)
     Q_PROPERTY(QVariantList editors READ editors CONSTANT)
     Q_PROPERTY(QString selectedEditor READ selectedEditor WRITE setSelectedEditor NOTIFY editorChanged)
@@ -78,6 +87,7 @@ public:
     QString outputSize() const;
     QStringListModel* log();
     SceneDocument* scene();
+    LogicDocument* logic();
     GamePageDocument* gamePage();
     QVariantList editors() const;
     QString selectedEditor() const;
@@ -117,6 +127,7 @@ signals:
     void openErrorChanged();
     void buildChanged();
     void buildFinished(bool success);
+    void logicBlockedBuild();
     void editorChanged();
     void toolFoldersChanged();
     void creatingGameChanged();
@@ -127,6 +138,7 @@ private:
     void launchEditor(const CodeEditor& editor, const QString& file);
     void refreshFiles();
     bool exportScene();
+    void openLogic();
     void resetBuild();
     void setStageState(int index, const QString& state);
     void appendLog(const QStringList& lines);
@@ -139,6 +151,7 @@ private:
     BuildRunner runner;
     QStringListModel logModel;
     SceneDocument sceneDocument;
+    LogicDocument logicDocument;
     GamePageDocument gamePageDocument;
     QVariantList stageEntries;
     QString state = "idle";

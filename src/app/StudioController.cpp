@@ -52,6 +52,12 @@ StudioController::StudioController(QObject* parent) : QObject(parent) {
         emit buildFinished(success);
     });
 
+    const auto refreshLogicScene = [this] { logicDocument.setScene(sceneDocument.scene()); };
+    connect(&sceneDocument, &QAbstractItemModel::modelReset, this, refreshLogicScene);
+    connect(&sceneDocument, &QAbstractItemModel::rowsInserted, this, refreshLogicScene);
+    connect(&sceneDocument, &QAbstractItemModel::rowsRemoved, this, refreshLogicScene);
+    connect(&sceneDocument, &QAbstractItemModel::dataChanged, this, refreshLogicScene);
+
     connect(this, &StudioController::buildChanged, &gamePageDocument, [this] { gamePageDocument.setBuilding(runner.isRunning()); });
     connect(&gamePageDocument, &GamePageDocument::titleSaved, this, [this](const QString& title) {
         if (!project) return;
@@ -79,6 +85,7 @@ QString StudioController::outputName() const { return project && !size.isEmpty()
 QString StudioController::outputSize() const { return size; }
 QStringListModel* StudioController::log() { return &logModel; }
 SceneDocument* StudioController::scene() { return &sceneDocument; }
+LogicDocument* StudioController::logic() { return &logicDocument; }
 GamePageDocument* StudioController::gamePage() { return &gamePageDocument; }
 
 void StudioController::addSceneEditor() {
@@ -89,6 +96,7 @@ void StudioController::addSceneEditor() {
         return;
     }
     sceneDocument.open(project->root + "/scene.json");
+    openLogic();
     refreshFiles();
     emit projectChanged();
 }
@@ -128,6 +136,15 @@ void StudioController::replaceSceneImage(int index, const QUrl& file) {
     emit projectChanged();
 }
 
+void StudioController::openLogic() {
+    if (!project || !sceneDocument.isLoaded()) {
+        logicDocument.close();
+        return;
+    }
+    logicDocument.open(project->root + "/logic.json");
+    logicDocument.setScene(sceneDocument.scene());
+}
+
 void StudioController::refreshFiles() {
     fileEntries.clear();
     if (!project) return;
@@ -139,11 +156,20 @@ void StudioController::refreshFiles() {
 bool StudioController::exportScene() {
     if (!sceneDocument.isLoaded()) return true;
     QString problem;
-    if (Studio::exportScene(project->root, sceneDocument.scene(), problem) && exportLogicHeader(project->root, sceneDocument.scene(), problem)) return true;
-    state = "failed";
-    message = problem;
-    emit buildChanged();
-    return false;
+    if (!Studio::exportScene(project->root, sceneDocument.scene(), problem)) {
+        state = "failed";
+        message = problem;
+        emit buildChanged();
+        return false;
+    }
+    if (!exportLogicHeader(project->root, sceneDocument.scene(), problem)) {
+        state = "failed";
+        message = problem;
+        emit buildChanged();
+        emit logicBlockedBuild();
+        return false;
+    }
+    return true;
 }
 
 bool StudioController::openFolder(const QUrl& folder) {
@@ -160,6 +186,7 @@ bool StudioController::openPath(const QString& path) {
     project = result.project;
     refreshFiles();
     sceneDocument.open(project->root + "/scene.json");
+    openLogic();
     gamePageDocument.open(project->root, project->app0Path, project->paramPath, project->titleName);
     resetBuild();
     emit projectChanged();
@@ -171,6 +198,7 @@ void StudioController::closeProject() {
     project.reset();
     fileEntries.clear();
     sceneDocument.close();
+    logicDocument.close();
     gamePageDocument.close();
     resetBuild();
     emit projectChanged();

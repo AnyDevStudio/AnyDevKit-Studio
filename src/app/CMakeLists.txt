@@ -27,6 +27,13 @@ qt_add_qml_module(AnyDevKitStudio
         qml/ImagePicker.qml
         qml/ImageGlyph.qml
         qml/ImagePlaceholder.qml
+        qml/LogicView.qml
+        qml/LogicBlock.qml
+        qml/BlockOutline.qml
+        qml/BlockGlyph.qml
+        qml/BlockPicker.qml
+        qml/BlockNumber.qml
+        qml/BlockColorPicker.qml
         qml/GamePageView.qml
         qml/ConsolePreview.qml
         qml/Field.qml
