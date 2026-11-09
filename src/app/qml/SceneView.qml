@@ -169,6 +169,8 @@ Item {
 
     Shortcut {
         sequences: [StandardKey.Undo]
+        // On another tab this would quietly change the scene behind it.
+        enabled: view.visible
         onActivated: view.scene.undo()
     }
 
