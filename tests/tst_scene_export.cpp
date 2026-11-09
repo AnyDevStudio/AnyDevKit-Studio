@@ -230,7 +230,10 @@ private slots:
             {"G\xC3\xB6rsel 2.png", "assets/g-rsel-2.png"},
             {"\xE5\x9B\xBE.png", "assets/image.png"},
             {".hidden.png", "assets/hidden.png"},
+#ifndef Q_OS_WIN
+            // Windows reserves this name, so the source picture cannot exist there.
             {"con.png", "assets/image-con.png"},
+#endif
         };
         auto colorIndex = 0;
         for (const auto& entry : cases) {
@@ -355,6 +358,9 @@ private slots:
     }
 
     void importRefusesToWriteThroughALinkedAssetsFolder() {
+#ifdef Q_OS_WIN
+        QSKIP("Creating symbolic links needs extra rights on Windows.");
+#endif
         QTemporaryDir project, desktop, elsewhere;
         QVERIFY(QFile::link(elsewhere.path(), project.path() + "/assets"));
         QImage image(4, 4, QImage::Format_RGB32);

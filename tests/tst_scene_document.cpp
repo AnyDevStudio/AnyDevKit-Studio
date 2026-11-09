@@ -628,6 +628,9 @@ private slots:
     }
 
     void aLinkedImageFileIsNotShown() {
+#ifdef Q_OS_WIN
+        QSKIP("Creating symbolic links needs extra rights on Windows.");
+#endif
         QTemporaryDir directory;
         QTemporaryDir outside;
         createFile(outside.path() + "/secret.png");
