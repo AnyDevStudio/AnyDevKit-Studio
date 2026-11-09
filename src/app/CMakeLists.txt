@@ -15,6 +15,7 @@ qt_add_qml_module(AnyDevKitStudio
         qml/PillButton.qml
         qml/SafeAreaFrame.qml
         qml/WelcomeView.qml
+        qml/NewGameForm.qml
         qml/ProjectView.qml
         qml/StageLane.qml
         qml/FileList.qml

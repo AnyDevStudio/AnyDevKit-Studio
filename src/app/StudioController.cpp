@@ -20,6 +20,8 @@ namespace Studio {
 namespace {
 
 constexpr int MaximumLogLines = 20000;
+constexpr auto SdkRootSetting = "adk/sdkRoot";
+constexpr auto DependencyRootSetting = "adk/dependencyRoot";
 
 }
 
@@ -27,6 +29,11 @@ StudioController::StudioController(QObject* parent) : QObject(parent) {
     detectedEditors = detectCodeEditors(hostEditorLocations());
     const auto saved = QSettings().value("codeEditor", "system").toString();
     if (std::ranges::any_of(detectedEditors, [&](const CodeEditor& editor) { return editor.id == saved; })) editorId = saved;
+    savedSdkRoot = QSettings().value(SdkRootSetting).toString();
+    savedDependencyRoot = QSettings().value(DependencyRootSetting).toString();
+
+    connect(&gameCreator, &BuildRunner::outputLine, this, [this](const QString& line) { gameCreatorOutput << line; });
+    connect(&gameCreator, &BuildRunner::finished, this, &StudioController::finishCreatingGame);
 
     connect(&runner, &BuildRunner::stepStarted, this, [this](int index) {
         setStageState(index, "running");
@@ -108,7 +115,7 @@ bool StudioController::openFolder(const QUrl& folder) {
 }
 
 bool StudioController::openPath(const QString& path) {
-    if (runner.isRunning()) return false;
+    if (runner.isRunning() || gameCreator.isRunning()) return false;
     const auto result = loadProject(path);
     lastOpenError = result.error;
     emit openErrorChanged();
@@ -223,6 +230,72 @@ void StudioController::setSelectedEditor(const QString& id) {
 
 void StudioController::copyLog() const {
     QGuiApplication::clipboard()->setText(logModel.stringList().join('\n'));
+}
+
+QString StudioController::sdkRoot() const { return savedSdkRoot; }
+QString StudioController::dependencyRoot() const { return savedDependencyRoot; }
+bool StudioController::creatingGame() const { return gameCreator.isRunning(); }
+QString StudioController::newGameError() const { return lastNewGameError; }
+QString StudioController::gameNameProblem(const QString& name) const { return validateGameName(name); }
+QString StudioController::parentFolderProblem(const QString& path) const { return validateParentDirectory(path); }
+QString StudioController::sdkFolderProblem(const QString& path) const { return validateSdkRoot(path); }
+QString StudioController::dependencyFolderProblem(const QString& path) const { return validateDependencyRoot(path); }
+QString StudioController::localPath(const QUrl& folder) const { return folder.toLocalFile(); }
+
+void StudioController::rememberSdkRoot(const QString& path) {
+    if (path == savedSdkRoot || !validateSdkRoot(path).isEmpty()) return;
+    savedSdkRoot = path;
+    QSettings().setValue(SdkRootSetting, path);
+    emit toolFoldersChanged();
+}
+
+void StudioController::rememberDependencyRoot(const QString& path) {
+    if (path == savedDependencyRoot || !validateDependencyRoot(path).isEmpty()) return;
+    savedDependencyRoot = path;
+    QSettings().setValue(DependencyRootSetting, path);
+    emit toolFoldersChanged();
+}
+
+void StudioController::setNewGameError(const QString& error) {
+    if (error == lastNewGameError) return;
+    lastNewGameError = error;
+    emit newGameErrorChanged();
+}
+
+void StudioController::clearNewGameError() {
+    setNewGameError({});
+}
+
+void StudioController::createGame(const QString& name, const QString& parentFolder, const QString& sdkFolder, const QString& dependencyFolder) {
+    if (runner.isRunning() || gameCreator.isRunning()) return;
+    const NewGameRequest request{name, parentFolder, sdkFolder, dependencyFolder};
+    // Remembered before the checks below: folders that are right stay right even if the name is not.
+    rememberSdkRoot(sdkFolder);
+    rememberDependencyRoot(dependencyFolder);
+    const auto problem = validateNewGame(request);
+    setNewGameError(problem);
+    if (!problem.isEmpty()) return;
+
+    pendingGame = request;
+    gameCreatorOutput.clear();
+    gameCreator.start({adkInitStep(request)}, parentFolder, withToolDirectories(QProcessEnvironment::systemEnvironment(), hostToolDirectories()));
+    emit creatingGameChanged();
+}
+
+void StudioController::finishCreatingGame(bool success, const QString& runnerMessage) {
+    emit creatingGameChanged();
+    if (!success) {
+        setNewGameError(describeAdkInitFailure(gameCreatorOutput, runnerMessage));
+        return;
+    }
+
+    const auto directory = newGameDirectory(pendingGame);
+    QString error;
+    if (!installSceneRuntime(":/runtime/SceneGame", directory, pendingGame.name, error)) {
+        setNewGameError(QString("The game was created in %1, but its scene editor could not be added. %2 Open that folder and choose Add the scene editor to try again.").arg(directory, error));
+        return;
+    }
+    if (!openPath(directory)) setNewGameError(QString("The game was created in %1, but it could not be opened. %2").arg(directory, lastOpenError));
 }
 
 }

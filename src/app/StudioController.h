@@ -3,6 +3,7 @@
 #include "BuildRunner.h"
 #include "CodeEditors.h"
 #include "GamePageDocument.h"
+#include "NewGame.h"
 #include "Project.h"
 #include "SceneDocument.h"
 
@@ -54,6 +55,10 @@ class StudioController : public QObject {
     Q_PROPERTY(QString selectedEditor READ selectedEditor WRITE setSelectedEditor NOTIFY editorChanged)
     Q_PROPERTY(QString selectedEditorName READ selectedEditorName NOTIFY editorChanged)
     Q_PROPERTY(QString editorError READ editorError NOTIFY editorChanged)
+    Q_PROPERTY(QString sdkRoot READ sdkRoot NOTIFY toolFoldersChanged)
+    Q_PROPERTY(QString dependencyRoot READ dependencyRoot NOTIFY toolFoldersChanged)
+    Q_PROPERTY(bool creatingGame READ creatingGame NOTIFY creatingGameChanged)
+    Q_PROPERTY(QString newGameError READ newGameError NOTIFY newGameErrorChanged)
 
 public:
     explicit StudioController(QObject* parent = nullptr);
@@ -79,6 +84,10 @@ public:
     QString selectedEditorName() const;
     QString editorError() const;
     void setSelectedEditor(const QString& id);
+    QString sdkRoot() const;
+    QString dependencyRoot() const;
+    bool creatingGame() const;
+    QString newGameError() const;
 
     Q_INVOKABLE void addSceneEditor();
     Q_INVOKABLE void openProjectInEditor();
@@ -89,6 +98,15 @@ public:
     Q_INVOKABLE void revealOutput() const;
     Q_INVOKABLE void openFile(const QString& relativePath);
     Q_INVOKABLE void copyLog() const;
+    Q_INVOKABLE QString gameNameProblem(const QString& name) const;
+    Q_INVOKABLE QString parentFolderProblem(const QString& path) const;
+    Q_INVOKABLE QString sdkFolderProblem(const QString& path) const;
+    Q_INVOKABLE QString dependencyFolderProblem(const QString& path) const;
+    Q_INVOKABLE QString localPath(const QUrl& folder) const;
+    Q_INVOKABLE void rememberSdkRoot(const QString& path);
+    Q_INVOKABLE void rememberDependencyRoot(const QString& path);
+    Q_INVOKABLE void clearNewGameError();
+    Q_INVOKABLE void createGame(const QString& name, const QString& parentFolder, const QString& sdkFolder, const QString& dependencyFolder);
 
     bool openPath(const QString& path);
 
@@ -98,6 +116,9 @@ signals:
     void buildChanged();
     void buildFinished(bool success);
     void editorChanged();
+    void toolFoldersChanged();
+    void creatingGameChanged();
+    void newGameErrorChanged();
 
 private:
     const CodeEditor* currentEditor() const;
@@ -107,6 +128,8 @@ private:
     void resetBuild();
     void setStageState(int index, const QString& state);
     void appendLog(const QStringList& lines);
+    void setNewGameError(const QString& error);
+    void finishCreatingGame(bool success, const QString& runnerMessage);
 
     std::optional<Project> project;
     QVariantList fileEntries;
@@ -122,6 +145,12 @@ private:
     QList<CodeEditor> detectedEditors;
     QString editorId = "system";
     QString lastEditorError;
+    BuildRunner gameCreator;
+    NewGameRequest pendingGame;
+    QStringList gameCreatorOutput;
+    QString lastNewGameError;
+    QString savedSdkRoot;
+    QString savedDependencyRoot;
 };
 
 }
