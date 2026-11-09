@@ -8,11 +8,26 @@ Item {
     required property StudioController studio
 
     property string mode: "scene"
+
+    onModeChanged: if (mode === "logic") logicView.focusCanvas()
+
+    // The hidden scene editor keeps its own undo shortcut, so on this tab undo is claimed here first.
+    Keys.onShortcutOverride: (event) => { if (mode === "logic" && event.matches(StandardKey.Undo)) event.accepted = true }
+    Keys.onPressed: (event) => {
+        if (mode === "logic" && event.matches(StandardKey.Undo)) {
+            studio.logic.undo()
+            event.accepted = true
+        }
+    }
     readonly property string revealLabel: Qt.platform.os === "osx" ? "Show in Finder" : "Show in folder"
 
     Connections {
         target: view.studio
         function onBuildChanged() { if (view.studio.building) view.mode = "build" }
+        function onLogicBlockedBuild() {
+            view.mode = "logic"
+            logicView.showFirstProblem()
+        }
     }
 
     component ModeTab: T.Button {
@@ -92,17 +107,20 @@ Item {
                     spacing: 4
 
                     ModeTab { target: "scene"; text: "Scene" }
+                    ModeTab { target: "logic"; text: "Logic" }
                     ModeTab { target: "game"; text: "Game page" }
                     ModeTab { target: "build"; text: "Code and build" }
                 }
 
                 PillButton {
+                    objectName: "buildButton"
                     primary: true
                     visible: !view.studio.building
                     enabled: !view.studio.gamePage.busy
                     text: view.studio.buildState === "idle" ? "Build PS5 package" : "Build again"
                     onClicked: {
                         gamePageView.commitPendingName()
+                        logicView.commitPendingEdits()
                         view.studio.build()
                     }
                 }
@@ -118,7 +136,7 @@ Item {
         StackLayout {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            currentIndex: view.mode === "scene" ? 0 : view.mode === "game" ? 1 : 2
+            currentIndex: view.mode === "scene" ? 0 : view.mode === "logic" ? 1 : view.mode === "game" ? 2 : 3
 
             Item {
                 SceneView {
@@ -169,6 +187,11 @@ Item {
                         font.pixelSize: 15
                     }
                 }
+            }
+
+            LogicView {
+                id: logicView
+                studio: view.studio
             }
 
             GamePageView {
