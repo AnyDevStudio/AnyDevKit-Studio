@@ -6,6 +6,18 @@ Item {
     id: view
 
     required property SceneDocument scene
+    required property StudioController studio
+
+    // An image first needs a file, so it goes through the picker instead of appearing straight away.
+    function place(kind, centerX, centerY) {
+        if (kind === "image") imagePicker.chooseNew(centerX, centerY)
+        else scene.addItem(kind, centerX, centerY)
+    }
+
+    ImagePicker {
+        id: imagePicker
+        studio: view.studio
+    }
 
     component Tile: Rectangle {
         id: tile
@@ -22,8 +34,8 @@ Item {
         Accessible.name: "Add " + label
         border.width: activeFocus ? 2 : 1
         border.color: activeFocus ? Theme.paper : Theme.line
-        Keys.onReturnPressed: view.scene.addItem(kind, 960, 540)
-        Keys.onSpacePressed: view.scene.addItem(kind, 960, 540)
+        Keys.onReturnPressed: view.place(kind, 960, 540)
+        Keys.onSpacePressed: view.place(kind, 960, 540)
 
         Rectangle {
             anchors.centerIn: parent
@@ -42,6 +54,15 @@ Item {
             text: "Abc"
             color: Theme.signal
             visible: tile.kind === "text"
+        }
+
+        ImageGlyph {
+            anchors.centerIn: parent
+            anchors.verticalCenterOffset: -12
+            width: 58
+            height: 34
+            visible: tile.kind === "image"
+            cutout: tile.color
         }
 
         Text {
@@ -84,13 +105,13 @@ Item {
                 const dragged = ghost.visible
                 ghost.visible = false
                 if (!dragged) {
-                    view.scene.addItem(tile.kind, 960, 540)
+                    view.place(tile.kind, 960, 540)
                     return
                 }
                 const stage = stageArea.stage
                 const point = mapToItem(stage, mouse.x, mouse.y)
                 if (point.x >= 0 && point.y >= 0 && point.x <= stage.width && point.y <= stage.height) {
-                    view.scene.addItem(tile.kind, point.x / stage.unit, point.y / stage.unit)
+                    view.place(tile.kind, point.x / stage.unit, point.y / stage.unit)
                     stageArea.takeFocus()
                 }
             }
@@ -126,6 +147,7 @@ Item {
 
                 Tile { kind: "rectangle"; label: "Shape" }
                 Tile { kind: "text"; label: "Text" }
+                Tile { kind: "image"; label: "Image" }
 
                 Item { Layout.fillHeight: true }
 
@@ -145,6 +167,7 @@ Item {
             Layout.fillWidth: true
             Layout.fillHeight: true
             Layout.margins: 28
+            onImageFileDropped: (file, centerX, centerY) => view.studio.addSceneImage(file, centerX, centerY)
         }
 
         Rectangle {
@@ -156,6 +179,7 @@ Item {
                 anchors.fill: parent
                 anchors.margins: 18
                 scene: view.scene
+                onReplaceImageRequested: imagePicker.chooseReplacement(view.scene.selectedIndex)
             }
         }
     }
@@ -178,6 +202,11 @@ Item {
             visible: ghost.kind === "text"
             text: "Text"
             color: Theme.signal
+        }
+
+        ImageGlyph {
+            anchors.fill: parent
+            visible: ghost.kind === "image"
         }
     }
 }

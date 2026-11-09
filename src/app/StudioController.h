@@ -90,6 +90,8 @@ public:
     QString newGameError() const;
 
     Q_INVOKABLE void addSceneEditor();
+    Q_INVOKABLE void addSceneImage(const QUrl& file, double centerX, double centerY);
+    Q_INVOKABLE void replaceSceneImage(int index, const QUrl& file);
     Q_INVOKABLE void openProjectInEditor();
     Q_INVOKABLE bool openFolder(const QUrl& folder);
     Q_INVOKABLE void closeProject();

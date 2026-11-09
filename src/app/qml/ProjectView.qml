@@ -12,7 +12,7 @@ Item {
 
     Connections {
         target: view.studio
-        function onBuildChanged() { if (view.studio.building) view.mode = "build" }
+        function onBuildChanged() { if (view.studio.building || view.studio.buildState === "failed") view.mode = "build" }
     }
 
     component ModeTab: T.Button {
@@ -125,6 +125,7 @@ Item {
                     anchors.fill: parent
                     visible: view.studio.scene.loaded
                     scene: view.studio.scene
+                    studio: view.studio
                 }
 
                 ColumnLayout {
