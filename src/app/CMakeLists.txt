@@ -28,6 +28,9 @@ qt_add_qml_module(AnyDevKitStudio
         qml/ConsolePreview.qml
         qml/Field.qml
         qml/ColorRow.qml
+        qml/ChoiceRow.qml
+        qml/SliderRow.qml
+        qml/PixelBurst.qml
     SOURCES
         StudioController.cpp
         StudioController.h
@@ -35,6 +38,8 @@ qt_add_qml_module(AnyDevKitStudio
         ReducedMotion.h
         PixelText.cpp
         PixelText.h
+        ParticlePreview.cpp
+        ParticlePreview.h
     RESOURCES
         assets/fonts/ArchivoBlack-Regular.ttf
         assets/fonts/IBMPlexSans-Regular.ttf
@@ -53,6 +58,8 @@ qt_add_resources(AnyDevKitStudio "scene_runtime"
 )
 
 target_link_libraries(AnyDevKitStudio PRIVATE studio_core studio_gamepage studio_export Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickControls2)
+# The stage preview compiles the game's particle simulation, so the two always match.
+target_include_directories(AnyDevKitStudio PRIVATE "${PROJECT_SOURCE_DIR}/runtime/SceneGame/include")
 
 target_compile_definitions(AnyDevKitStudio PRIVATE PROJECT_VERSION_TEXT="${PROJECT_VERSION}")
 

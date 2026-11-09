@@ -44,6 +44,13 @@ Item {
             visible: tile.kind === "text"
         }
 
+        PixelBurst {
+            anchors.centerIn: parent
+            anchors.verticalCenterOffset: -12
+            cell: 8
+            visible: tile.kind === "particles"
+        }
+
         Text {
             anchors.horizontalCenter: parent.horizontalCenter
             anchors.bottom: parent.bottom
@@ -126,6 +133,7 @@ Item {
 
                 Tile { kind: "rectangle"; label: "Shape" }
                 Tile { kind: "text"; label: "Text" }
+                Tile { kind: "particles"; label: "Particles" }
 
                 Item { Layout.fillHeight: true }
 
@@ -178,6 +186,12 @@ Item {
             visible: ghost.kind === "text"
             text: "Text"
             color: Theme.signal
+        }
+
+        PixelBurst {
+            anchors.centerIn: parent
+            cell: 8
+            visible: ghost.kind === "particles"
         }
     }
 }
