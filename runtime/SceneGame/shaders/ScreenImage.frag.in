@@ -1,0 +1,10 @@
+#version 450
+// Fragment shader for image items only: Screen.frag still draws everything else, so scenes
+// without images never reach this one. Texels are premultiplied, see docs/scene-format.md.
+layout(set = 0, binding = 0) uniform sampler imageSampler;
+layout(set = 0, binding = 1) uniform texture2D imageTexture;
+layout(location = 0) in vec2 coordinate;
+layout(location = 0) out vec4 outputColor;
+void main() {
+    outputColor = textureLod(sampler2D(imageTexture, imageSampler), coordinate, 0.0);
+}
