@@ -99,5 +99,9 @@ add_executable(tst_world2d tst_world2d.cpp)
 target_include_directories(tst_world2d PRIVATE "${PROJECT_SOURCE_DIR}/runtime/SceneGame/include")
 add_test(NAME tst_world2d COMMAND tst_world2d)
 
+qt_add_executable(tst_setup tst_setup.cpp)
+target_link_libraries(tst_setup PRIVATE studio_setup Qt6::Test)
+add_test(NAME tst_setup COMMAND tst_setup)
+
 # qt_standard_project_setup makes Windows executables GUI apps, which hides test output.
-set_target_properties(tst_particles tst_core tst_scene tst_scene_document tst_gamepage tst_blocks tst_logic_document tst_scene_export tst_font_tables tst_sounds tst_world2d tst_sprites_tilemap PROPERTIES WIN32_EXECUTABLE FALSE)
+set_target_properties(tst_particles tst_core tst_scene tst_scene_document tst_gamepage tst_blocks tst_logic_document tst_scene_export tst_font_tables tst_sounds tst_world2d tst_sprites_tilemaptst_particles tst_setup PROPERTIES WIN32_EXECUTABLE FALSE)

@@ -37,7 +37,7 @@ Drag shapes and text onto the stage, press one button, and the same scene runs a
 | Image drawing | Textured images in the game | Builds for PS5, not yet seen running |
 | Sound | Import WAV, MP3 or OGG, then play effects and music from blocks | Builds for PS5, not yet heard on a console |
 | Saving | Save and load variables on the console | Builds for PS5, not yet run on a console |
-| Guided setup | Install AnyDevKit and its tools from inside Studio | Planned |
+| Guided setup | Check your tools, then download AnyDevKit and the PS5 libraries from inside Studio | Working, run against the published release on Apple Silicon macOS |
 | Preview | Run the project on the developer's computer without a console | Planned |
 
 ## Build from source

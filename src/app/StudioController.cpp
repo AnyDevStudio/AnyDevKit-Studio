@@ -17,6 +17,7 @@
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QSettings>
+#include <QStandardPaths>
 
 #include <algorithm>
 
@@ -38,9 +39,43 @@ QString exportFormatSetting(const QString& root) {
     return "export/format/" + QString::fromLatin1(QCryptographicHash::hash(root.toUtf8(), QCryptographicHash::Sha256).toHex().left(32));
 }
 
+// Where AnyDevKit and its libraries are installed. A test or scripted run points this at its own folder.
+QString setupDataDirectory() {
+    const auto overridden = qEnvironmentVariable("ANYDEVKIT_STUDIO_DATA_DIR");
+    return overridden.isEmpty() ? QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation) : overridden;
 }
 
-StudioController::StudioController(QObject* parent) : QObject(parent) {
+// The address releases are looked up at. Only a local test server may replace GitHub.
+QString setupApiBase() {
+    const auto overridden = qEnvironmentVariable("ANYDEVKIT_STUDIO_RELEASE_API");
+    const auto host = QUrl(overridden).host();
+    if (!overridden.isEmpty() && (host == "127.0.0.1" || host == "localhost")) return overridden;
+    return "https://api.github.com";
+}
+
+SetupFlowConfig setupFlowConfig(HttpClient& http, const ToolProbe& probe) {
+    SetupFlowConfig config;
+    config.dataDirectory = setupDataDirectory();
+    config.platform = currentHostPlatform();
+    config.apiBase = setupApiBase();
+    config.toolDirectories = hostToolDirectories();
+    config.environment = QProcessEnvironment::systemEnvironment();
+    // A scripted run can show the "missing tool" screen by limiting where tools are looked for.
+    if (const auto toolPath = qEnvironmentVariable("ANYDEVKIT_STUDIO_TOOL_PATH"); !toolPath.isEmpty()) {
+        config.toolDirectories = {};
+        config.environment.insert("PATH", toolPath);
+    }
+    config.http = &http;
+    config.probe = &probe;
+    config.homeDirectory = QDir::homePath();
+    config.existingSdkRoot = QSettings().value(SdkRootSetting).toString();
+    config.existingDependencyRoot = QSettings().value(DependencyRootSetting).toString();
+    return config;
+}
+
+}
+
+StudioController::StudioController(QObject* parent) : QObject(parent), setupProbe(hostToolDirectories()), setupFlow(setupFlowConfig(setupHttp, setupProbe)) {
     detectedEditors = detectCodeEditors(hostEditorLocations());
     const auto saved = QSettings().value("codeEditor", "system").toString();
     if (std::ranges::any_of(detectedEditors, [&](const CodeEditor& editor) { return editor.id == saved; })) editorId = saved;
@@ -50,6 +85,11 @@ StudioController::StudioController(QObject* parent) : QObject(parent) {
     pkgKeys.mountModulusPath = QSettings().value(PkgMountSetting).toString();
     pkgKeys.passcode = QSettings().value(PkgPasscodeSetting).toString();
     pkgKeys.imageSeed = QSettings().value(PkgImageSeedSetting).toString();
+
+    connect(&setupFlow, &SetupFlow::finished, this, [this](const QString& sdkFolder, const QString& dependencyFolder) {
+        rememberSdkRoot(sdkFolder);
+        rememberDependencyRoot(dependencyFolder);
+    });
 
     connect(&gameCreator, &BuildRunner::outputLine, this, [this](const QString& line) { gameCreatorOutput << line; });
     connect(&gameCreator, &BuildRunner::finished, this, &StudioController::finishCreatingGame);
@@ -474,11 +514,17 @@ void StudioController::copyLog() const {
     QGuiApplication::clipboard()->setText(logModel.stringList().join('\n'));
 }
 
+void StudioController::copyText(const QString& text) const {
+    QGuiApplication::clipboard()->setText(text);
+}
+
 QString StudioController::sdkRoot() const { return savedSdkRoot; }
 QString StudioController::dependencyRoot() const { return savedDependencyRoot; }
 bool StudioController::creatingGame() const { return gameCreator.isRunning(); }
 QString StudioController::newGameError() const { return lastNewGameError; }
 QString StudioController::openingTab() const { return currentOpeningTab; }
+SetupFlow* StudioController::setup() { return &setupFlow; }
+bool StudioController::needsToolSetup() const { return savedSdkRoot.isEmpty() || savedDependencyRoot.isEmpty(); }
 
 QVariantList StudioController::projectTypes() const {
     QVariantList entries;
