@@ -5,6 +5,7 @@
 #include "Blocks.h"
 #include "SceneExport.h"
 #include "SceneImageImport.h"
+#include "SoundImport.h"
 
 #include <QClipboard>
 #include <QCryptographicHash>
@@ -182,6 +183,39 @@ void StudioController::replaceSceneImage(int index, const QUrl& file) {
     emit projectChanged();
 }
 
+bool StudioController::canPlaySoundPreview() const { return SoundPreviewPlayer::available(); }
+bool StudioController::canDecodeCompressedSound() const { return Studio::canDecodeCompressedSound(); }
+
+void StudioController::importSound(const QUrl& file) {
+    if (!project || !logicDocument.isLoaded()) return;
+    ImportedSound imported;
+    QString problem;
+    if (!importSoundFile(project->root, logicDocument.program().sounds, file.toLocalFile(), imported, problem)) {
+        logicDocument.reportProblem(problem);
+        return;
+    }
+    if (!logicDocument.addSound(imported.name, imported.source)) return;
+    refreshFiles();
+    emit projectChanged();
+}
+
+QVariantMap StudioController::soundPreview(const QString& source) const {
+    if (!project) return {};
+    constexpr int Columns = 48; // what fits in the Sounds area's waveform strip
+    const auto preview = Studio::soundPreview(project->root, source, Columns);
+    if (!preview.error.isEmpty()) return {{"error", preview.error}};
+    QVariantList peaks;
+    for (const auto peak : preview.peaks) peaks.append(peak);
+    return {{"seconds", preview.seconds}, {"sampleRate", preview.sampleRate}, {"channels", preview.channels}, {"peaks", peaks}};
+}
+
+void StudioController::playSoundPreview(const QString& source) {
+    if (!project || !SoundPreviewPlayer::available() || !soundFileProblem(project->root, source).isEmpty()) return;
+    soundPlayer.play(project->root + '/' + source);
+}
+
+void StudioController::stopSoundPreview() { soundPlayer.stop(); }
+
 void StudioController::openLogic() {
     if (!project || !sceneDocument.isLoaded()) {
         logicDocument.close();
@@ -218,17 +252,28 @@ bool StudioController::exportScene() {
     }
 
     // A project that started with an older Studio needs game code that knows about variables.
-    if (usesVariables() && sceneRuntimeNeedsUpdate(project->root)) {
+    if ((usesVariables() && sceneRuntimeNeedsUpdate(project->root)) || (usesSoundFeatures() && soundRuntimeNeedsUpdate(project->root))) {
         if (!installSceneRuntime(":/runtime/SceneGame", project->root, project->name, problem)) {
             state = "failed";
             message = problem;
             emit buildChanged();
             return false;
         }
-        appendLog({"Updated this project's game code to show variables. Its previous files are in .studio-backup."});
+        appendLog({"Updated this project's game code for variables, sound and saving. Its previous files are in .studio-backup."});
         refreshFiles();
     }
     return true;
+}
+
+bool StudioController::usesSoundFeatures() const {
+    const auto& program = logicDocument.program();
+    if (!program.sounds.isEmpty()) return true;
+    const auto uses = [](const auto& self, const QList<Block>& blocks) -> bool {
+        return std::ranges::any_of(blocks, [&](const Block& block) {
+            return block.type == BlockType::SaveVariables || block.type == BlockType::LoadVariables || block.type == BlockType::StopMusic || block.type == BlockType::SetVolume || self(self, block.children);
+        });
+    };
+    return uses(uses, program.events);
 }
 
 bool StudioController::usesVariables() const {

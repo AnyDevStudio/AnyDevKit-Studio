@@ -284,6 +284,12 @@ Item {
                         doc: view.doc
                     }
 
+                    SoundsPanel {
+                        Layout.fillWidth: true
+                        doc: view.doc
+                        studio: view.studio
+                    }
+
                     Item {
                         id: paletteArea
                         objectName: "paletteArea"

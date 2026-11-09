@@ -10,15 +10,16 @@ existed. The API for editors is in [src/core/Blocks.h](../src/core/Blocks.h).
 
 ## logic.json
 
-A program is a list of variables and a tree of blocks. Events are the top level, each holding actions,
-and an `ifVariable` action can hold more actions.
+A program is a list of variables, a list of sounds and a tree of blocks. Events are the top level, each
+holding actions, and an `ifVariable` action can hold more actions.
 
 ```json
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "variables": [
     { "name": "score", "initial": 0 }
   ],
+  "sounds": [],
   "events": [
     {
       "id": "event-1",
@@ -90,6 +91,12 @@ and an `ifVariable` action can hold more actions.
 | `changeVariable` | Change variable | `variable`, `value`     | adds `value`, which can be negative    |
 | `ifVariable`  | If variable       | `variable`, `comparison`, `value`, `actions` | runs `actions` when the variable compares true to `value` |
 | `burstParticles` | Burst particles from item | `item` | plays that Particles item once, at its current position, on top of anything already running. The item must be a Particles item |
+| `playSound`   | Play sound        | `sound`                 | plays that sound once                  |
+| `playMusic`   | Play music on loop | `sound`                | loops that sound as music, replacing any other music. If it is already playing, it keeps its place |
+| `stopMusic`   | Stop music        |                         | stops the music; sounds keep playing   |
+| `setVolume`   | Set volume        | `value`                 | sets the whole game's volume to `value` percent, 0 to 100 |
+| `saveVariables` | Save variables  |                         | keeps every variable's value on the console |
+| `loadVariables` | Load variables  |                         | asks for the saved values back         |
 
 `comparison` is one of `equal`, `notEqual`, `less`, `lessOrEqual`, `greater`, `greaterOrEqual`.
 
@@ -106,12 +113,32 @@ A name is unique regardless of case. At most 64 variables. A text item shows one
 its `text`, as described in [scene-format.md](scene-format.md). A program with no variables and text with
 no `{name}` behave exactly as before.
 
+### Sounds
+
+`sounds` lists the sounds of the project, in the order the Sounds area shows them. Each is a 16-bit
+source file Studio keeps in `assets/sounds`.
+
+| Field    | Values                                                      | Does                       |
+| -------- | ----------------------------------------------------------- | -------------------------- |
+| `name`   | 1 to 40 letters, digits, `-` or `_`, unique regardless of case | what the blocks call it |
+| `source` | `assets/sounds/<file>.wav`, a plain file in that folder      | the file the sound comes from |
+
+Importing copies the file there. A WAV is kept as it is. MP3 and OGG are decoded once, when imported, and
+kept as a 16-bit WAV, so a project builds on a copy of Studio that has no decoder. This decoding needs Qt
+Multimedia; Studio built without it imports WAV only and says so. At most 64 sounds. The WAV can be PCM 8,
+16, 24 or 32-bit, or 32-bit float, mono or stereo. A compressed WAV (such as MP3 inside WAV) is refused.
+Deleting a sound removes it from the list and leaves its file, so undo can bring it back; a build only embeds
+sounds on the list. Deleting a sound blocks still use asks first, and those blocks become problems to fix,
+the same as a deleted variable.
+
 ### Rules
 
-- `schemaVersion` is `2`, the version Studio saves. A file saved with `1` still loads: it has no `variables`
-  list, and its `addScore`, `setScore` and `ifScore` blocks become `changeVariable`, `setVariable` and
-  `ifVariable` on a variable named `score` that starts at 0. A file with no score blocks gets no variables.
-  The block types `addScore`, `setScore` and `ifScore` only exist in version 1 files.
+- `schemaVersion` is `3`, the version Studio saves. A file saved with `2` still loads and simply has no
+  sounds. A file saved with `1` still loads too: it has no `variables` list, and its `addScore`,
+  `setScore` and `ifScore` blocks become `changeVariable`, `setVariable` and `ifVariable` on a variable named
+  `score` that starts at 0. A file with no score blocks gets no variables. The block types `addScore`,
+  `setScore` and `ifScore` only exist in version 1 files. Sound and save blocks need version `3`, which also
+  needs the `sounds` list, even if it is empty.
 - `id` is 1 to 64 letters, digits, `-` or `_`, unique across the whole program. It stays the same
   across saves, so an editor can refer to a block.
 - Events go at the top level only. Actions go inside an event or inside `ifVariable`.
@@ -121,8 +148,10 @@ no `{name}` behave exactly as before.
 - `variable` is the `name` of a variable in `variables`. A build fails when it is empty or names a variable
   that does not exist, and when a text item shows a variable that does not exist. Deleting a variable in
   Studio asks first and leaves the blocks and text that used it to be repaired, for the same reason.
+- `sound` is the `name` of a sound in `sounds`. A build fails when it is empty or names a sound not in the list.
 - `x` and `y` are numbers from -1000000 to 1000000. `color` is `#RRGGBB`.
-- `value` and `initial` are whole numbers from -1000000000 to 1000000000.
+- `value` and `initial` are whole numbers from -1000000000 to 1000000000, except that `setVolume`'s `value` is
+  a percentage from 0 to 100.
 - Limits: 128 events, 2048 blocks in total, blocks nested at most 8 levels deep counting the event as
   level 1, and a file of at most 4 MB.
 
@@ -154,6 +183,21 @@ Limits at run time:
 - A `controllable` item always stays inside the stage, even when a block moves it.
 - Any other item stays within -1000000 to 1000000.
 - A variable stops at the largest or smallest 32-bit whole number instead of overflowing.
+
+Sound and saving never hold up a frame:
+
+- `playSound`, `playMusic`, `stopMusic` and `setVolume` hand a short command to the mixer and return at once.
+  If the queue of commands is full, which needs hundreds of sounds in one frame, the newest is dropped.
+- The mixer has 16 voices, one for music and 15 for sounds. A sound that starts when all 15 are busy takes the
+  voice that has played the longest. A `playSound` in `everyFrame` restarts a voice each frame.
+- `saveVariables` copies the variables and `loadVariables` asks for a load, and both return at once. The work
+  happens on a background thread: at most one save runs at a time and only the newest values are kept, so
+  saving every frame is safe but wasteful. Loaded values replace the variables at the start of a later frame,
+  so a block after `loadVariables` in the same event still sees the old values. A variable that was not in the
+  saved file keeps its current value.
+- A game with no sounds opens no audio port, and one with no save or load blocks never starts the save service.
+- If audio cannot start or a save or load fails, for example because the user has no save data space, the block
+  does nothing and the game keeps running. The game never stops because of a failed save.
 
 A hidden item is not drawn but keeps its position, can still be moved and still follows the
 controller if it is `controllable`. A hidden Particles item also stops making new particles; the ones
@@ -283,3 +327,34 @@ each variable, enough for the sign and ten digits of -2147483648), so that happe
 A project that started with an older Studio gets this game code at its next build that uses a variable.
 Studio updates the project's runtime files then and keeps the previous ones in `.studio-backup`, the same
 way as Add the scene editor. A project that uses no variables is left as it is.
+
+## Sound files
+
+Each sound in `sounds` becomes one raw file, `src/GeneratedSounds/sound-N.pcm`, numbered in list order. It is
+the game's only audio format, with no header:
+
+- 48000 Hz, 2 channels, signed 16-bit little-endian samples, left then right, so one frame is 4 bytes.
+- Mono sources are copied to both channels. Other sample rates are resampled with linear interpolation.
+
+`src/GeneratedSounds.cpp` embeds those files with `.incbin` and defines the `Sounds` table declared in
+`src/GeneratedSounds.hpp`. As with images, unchanged files are left alone so an unchanged project does not
+recompile, and a project with no sounds still gets an empty table. The project's sounds together can use at
+most 256 MB of PCM, about 23 minutes.
+
+## Save files
+
+A game with save or load blocks stores its variables through libSceSaveData, in a save named
+`StudioVariables`, in the file `variables.bin` (written through a temporary file and renamed, then committed).
+The file is, little endian:
+
+| Bytes        | Holds                                                         |
+| ------------ | ------------------------------------------------------------- |
+| 4            | `ADKS`                                                        |
+| 4            | format version, 1                                             |
+| 4            | count                                                         |
+| count x 8    | each variable's name hash (FNV-1a of its name) and its value  |
+| 4            | FNV-1a of all of the above                                    |
+
+`GeneratedVariables::NameHashes` holds the hashes. A value finds its variable by name hash, so a later
+version of a game can reorder, add or remove variables without losing saved values. A damaged file, or one with
+an unknown version, is ignored and changes nothing.

@@ -454,6 +454,15 @@ private slots:
         QCOMPARE(reread.samples, decoded.samples);
     }
 
+    void aProjectFromBeforeSoundIsDetected() {
+        QTemporaryDir project;
+        QVERIFY(!soundRuntimeNeedsUpdate(project.path())); // no game code to replace
+        writeFile(project.path() + "/include/Scene/SceneState.hpp", "#include \"GeneratedVariables.hpp\"\n");
+        QVERIFY(soundRuntimeNeedsUpdate(project.path()));
+        writeFile(project.path() + "/include/Scene/SceneState.hpp", "#include \"Audio/Mixer.hpp\"\n");
+        QVERIFY(!soundRuntimeNeedsUpdate(project.path()));
+    }
+
     void previewDescribesAndSummarisesASound() {
         QTemporaryDir directory;
         const auto root = directory.path();

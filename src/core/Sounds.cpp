@@ -435,6 +435,12 @@ bool importWavSound(const QString& projectRoot, const QList<ProjectSound>& exist
     return storeImportedSound(projectRoot, existing, info.completeBaseName(), bytes, imported, error);
 }
 
+bool soundRuntimeNeedsUpdate(const QString& projectRoot) {
+    QFile file(QDir::cleanPath(QDir(projectRoot).absolutePath()) + "/include/Scene/SceneState.hpp");
+    if (!file.open(QIODevice::ReadOnly)) return false;
+    return !file.readAll().contains("Audio/Mixer.hpp");
+}
+
 SoundPreviewData soundPreview(const QString& projectRoot, const QString& source, int columns) {
     SoundPreviewData preview;
     if (const auto problem = soundFileProblem(projectRoot, source); !problem.isEmpty()) {

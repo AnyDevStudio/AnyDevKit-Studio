@@ -21,13 +21,16 @@ ctest --test-dir build --output-on-failure
 - `src/gamepage`: the Game page's `param.json` edits and image work. It uses Qt Gui, so it is separate
   from `src/core`. Tests are in `tests/tst_gamepage.cpp`.
 - `src/export`: turns a scene into the project's generated files. It decodes images, so unlike
-  `src/core` it uses Qt Gui. Behaviour changes need a test in `tests/tst_scene_export.cpp`.
+  `src/core` it uses Qt Gui. Behaviour changes need a test in `tests/tst_scene_export.cpp`. Decoding MP3 and
+  OGG on import also lives here; it uses Qt Multimedia when Studio is built with it and is skipped otherwise.
 - `src/app`: the application and the bridge between C++ and QML.
 - `src/app/qml`: the interface. Colors, fonts and motion timings live in `Theme.qml`.
 - `runtime/SceneGame`: the PS5 game code Studio adds to a project. It compiles the headers exported
   from the scene and from the block logic, as described in [docs/scene-format.md](docs/scene-format.md)
   and [docs/blocks-format.md](docs/blocks-format.md). `include/Scene/Particles.hpp.in` is also compiled
-  by the stage preview and `tests/tst_particles.cpp`, so it must stay free of `@NAME@` and Qt.
+  by the stage preview and `tests/tst_particles.cpp`, so it must stay free of `@NAME@` and Qt. The same goes
+  for `include/Audio/Mixer.hpp.in` and `include/Save/SaveData.hpp.in`, which `tests/tst_audio_mixer.cpp` and
+  `tests/tst_save_format.cpp` run under sanitizers. Nothing in the tests plays a sound.
 
 ## Rules worth knowing
 

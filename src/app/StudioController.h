@@ -5,6 +5,7 @@
 #include "ExportFormat.h"
 #include "GamePageDocument.h"
 #include "LogicDocument.h"
+#include "SoundPreviewPlayer.h"
 #include "NewGame.h"
 #include "Project.h"
 #include "SceneDocument.h"
@@ -80,6 +81,8 @@ class StudioController : public QObject {
     Q_PROPERTY(QVariantList projectTypes READ projectTypes CONSTANT)
     Q_PROPERTY(QString defaultProjectType READ defaultProjectType CONSTANT)
     Q_PROPERTY(QString openingTab READ openingTab NOTIFY projectChanged)
+    Q_PROPERTY(bool canPlaySoundPreview READ canPlaySoundPreview CONSTANT)
+    Q_PROPERTY(bool canDecodeCompressedSound READ canDecodeCompressedSound CONSTANT)
 
 public:
     explicit StudioController(QObject* parent = nullptr);
@@ -122,8 +125,14 @@ public:
     QVariantList projectTypes() const;
     QString defaultProjectType() const;
     QString openingTab() const;
+    bool canPlaySoundPreview() const;
+    bool canDecodeCompressedSound() const;
 
     Q_INVOKABLE void addSceneEditor();
+    Q_INVOKABLE void importSound(const QUrl& file);
+    Q_INVOKABLE QVariantMap soundPreview(const QString& source) const;
+    Q_INVOKABLE void playSoundPreview(const QString& source);
+    Q_INVOKABLE void stopSoundPreview();
     Q_INVOKABLE void addSceneImage(const QUrl& file, double centerX, double centerY);
     Q_INVOKABLE void replaceSceneImage(int index, const QUrl& file);
     Q_INVOKABLE void openProjectInEditor();
@@ -172,6 +181,7 @@ private:
     void refreshFiles();
     bool exportScene();
     bool usesVariables() const;
+    bool usesSoundFeatures() const;
     void openLogic();
     void resetBuild();
     QString exportProblem() const;
@@ -188,6 +198,7 @@ private:
     QStringListModel logModel;
     SceneDocument sceneDocument;
     LogicDocument logicDocument;
+    SoundPreviewPlayer soundPlayer;
     GamePageDocument gamePageDocument;
     QVariantList stageEntries;
     ExportFormat selectedFormat = ExportFormat::Ffpfsc;

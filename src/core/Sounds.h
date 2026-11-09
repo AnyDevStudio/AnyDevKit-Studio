@@ -76,4 +76,7 @@ struct SoundPreviewData {
 
 SoundPreviewData soundPreview(const QString& projectRoot, const QString& source, int columns);
 
+// True when a project's game code is from before sound and saving were added, so it needs reinstalling.
+bool soundRuntimeNeedsUpdate(const QString& projectRoot);
+
 }
