@@ -46,36 +46,42 @@ Item {
 
         spacing: 12
 
-        Rectangle {
-            Layout.preferredWidth: slot.wide ? 96 : 54
+        // A fixed column keeps the text of every row aligned, whatever the picture's shape.
+        Item {
+            Layout.preferredWidth: 96
             Layout.preferredHeight: 54
             Layout.alignment: Qt.AlignTop
-            radius: 6
-            color: Theme.ink
-            border.width: 1
-            border.color: Theme.line
 
-            Image {
-                anchors.fill: parent
-                anchors.margins: 1
-                source: slot.image
-                cache: false
-                asynchronous: true
-                fillMode: Image.PreserveAspectCrop
-                sourceSize.width: 240
-                visible: slot.image.toString().length > 0
+            Rectangle {
+                width: slot.wide ? 96 : 54
+                height: 54
+                radius: 6
+                color: Theme.ink
+                border.width: 1
+                border.color: Theme.line
 
-                Behavior on opacity { NumberAnimation { duration: Theme.ms(180) } }
-                opacity: status === Image.Ready ? 1 : 0
-            }
+                Image {
+                    anchors.fill: parent
+                    anchors.margins: 1
+                    source: slot.image
+                    cache: false
+                    asynchronous: true
+                    fillMode: Image.PreserveAspectCrop
+                    sourceSize.width: 240
+                    visible: slot.image.toString().length > 0
 
-            Text {
-                anchors.centerIn: parent
-                visible: slot.image.toString().length === 0
-                text: "Empty"
-                color: Theme.line
-                font.family: Theme.mono
-                font.pixelSize: 11
+                    Behavior on opacity { NumberAnimation { duration: Theme.ms(180) } }
+                    opacity: status === Image.Ready ? 1 : 0
+                }
+
+                Text {
+                    anchors.centerIn: parent
+                    visible: slot.image.toString().length === 0
+                    text: "Empty"
+                    color: Theme.line
+                    font.family: Theme.mono
+                    font.pixelSize: 11
+                }
             }
         }
 
