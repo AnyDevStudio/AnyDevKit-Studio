@@ -4,6 +4,7 @@
 
 #include <QAbstractListModel>
 #include <QHash>
+#include <QSet>
 #include <QVariantMap>
 
 namespace Studio {
@@ -39,6 +40,7 @@ public:
         SourceRole,
         ImageUrlRole,
         ImageProblemRole,
+        HiddenRole,
     };
 
     explicit SceneDocument(QObject* parent = nullptr);
@@ -81,6 +83,19 @@ public:
     Q_INVOKABLE bool setItemValue(int index, const QString& property, const QVariant& value);
     Q_INVOKABLE void setBackground(const QString& color);
     Q_INVOKABLE void removeItem(int index);
+    // Later items are drawn on top. Each of these is one undo step and false means nothing moved.
+    Q_INVOKABLE bool reorderItem(int index, int newIndex);
+    // `gap` counts in the layers panel, which lists front-most first: 0 is above its top row.
+    Q_INVOKABLE bool reorderItemToGap(int index, int gap);
+    Q_INVOKABLE bool bringItemForward(int index);
+    Q_INVOKABLE bool sendItemBackward(int index);
+    Q_INVOKABLE bool bringItemToFront(int index);
+    Q_INVOKABLE bool sendItemToBack(int index);
+    // Returns the new row, right above the source, or -1 after explaining why not in the notice.
+    Q_INVOKABLE int duplicateItem(int index);
+    // Editor only: hides an item on the stage. Nothing here reaches scene.json or the undo history.
+    Q_INVOKABLE void setItemHidden(int index, bool hidden);
+    Q_INVOKABLE bool isItemHidden(int index) const;
     Q_INVOKABLE void undo();
     // Looks again at the image files on disk, so the stage follows files that went missing or came back.
     Q_INVOKABLE void recheckImages();
@@ -105,6 +120,7 @@ private:
     int insertItem(SceneItem item);
     bool refreshImageProblems();
     QString nextItemId() const;
+    int indexOfItem(const QString& id) const;
 
     QString path;
     Scene document;
@@ -117,6 +133,7 @@ private:
     QString noticeText;
     bool noticeProblem = false;
     QHash<QString, QString> imageProblems; // by source, only images that cannot be used
+    QSet<QString> hiddenItems; // by id, so it follows an item through reorders and undo
 };
 
 }
