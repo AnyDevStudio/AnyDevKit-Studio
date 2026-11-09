@@ -165,6 +165,19 @@ private slots:
         QCOMPARE(steps[2].removeFirst, QStringList({project.outputPath, project.workspacePath}));
     }
 
+    void configureStartsOverWhenTheProjectWasMoved() {
+        QTemporaryDir directory;
+        writeProject(directory.path());
+        const auto project = *loadProject(directory.path()).project;
+        QCOMPARE(ps5BuildSteps(project)[0].removeFirst, QStringList());
+
+        // A cache made here stays; one made in the project's old folder is thrown away, because CMake refuses it.
+        writeText(directory.path() + "/build/ps5/CMakeCache.txt", QString("CMAKE_HOME_DIRECTORY:INTERNAL=%1\n").arg(project.root).toUtf8());
+        QCOMPARE(ps5BuildSteps(project)[0].removeFirst, QStringList());
+        writeText(directory.path() + "/build/ps5/CMakeCache.txt", "CMAKE_HOME_DIRECTORY:INTERNAL=/somewhere/else/Demo\n");
+        QCOMPARE(ps5BuildSteps(project)[0].removeFirst, QStringList({project.root + "/build/ps5"}));
+    }
+
     void listsSourcesAndSkipsBuildOutput() {
         QTemporaryDir directory;
         writeText(directory.path() + "/src/Main.cpp");
