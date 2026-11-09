@@ -669,6 +669,94 @@ private slots:
         QCOMPARE(document.rowCount(), 0);
         QVERIFY(!document.canUndo());
     }
+    void theStageShowsInitialValuesAndTheInspectorTheRealText() {
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        document.addItem("text", 900, 500);
+        QVERIFY(document.setItemValue(0, "text", "Score: {score}"));
+        QVERIFY(document.setItemValue(0, "scale", 2));
+        document.setVariables({{"score", 7}});
+        const auto index = document.index(0);
+        QCOMPARE(document.data(index, SceneDocument::TextRole).toString(), QString("Score: 7"));
+        QCOMPARE(document.data(index, SceneDocument::WidthRole).toDouble(), (8.0 * 6 - 1) * 2);
+        QCOMPARE(document.selected().value("text").toString(), QString("Score: {score}"));
+        QCOMPARE(document.scene().items[0].text, QString("Score: {score}"));
+        QCOMPARE(savedScene(directory).items[0].text, QString("Score: {score}"));
+    }
+
+    void anUnknownVariableStaysVisibleOnTheStage() {
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        document.addItem("text", 900, 500);
+        QVERIFY(document.setItemValue(0, "text", "{ghost}"));
+        QCOMPARE(document.data(document.index(0), SceneDocument::TextRole).toString(), QString("{ghost}"));
+    }
+
+    void literalBracesShowOnceOnTheStage() {
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        document.addItem("text", 900, 500);
+        QVERIFY(document.setItemValue(0, "text", "{{hi}}"));
+        QCOMPARE(document.data(document.index(0), SceneDocument::TextRole).toString(), QString("{hi}"));
+        QCOMPARE(document.data(document.index(0), SceneDocument::WidthRole).toDouble(), (4.0 * 6 - 1) * 8);
+    }
+
+    void changingAnInitialValueRepaintsTheTextThatShowsIt() {
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        document.addItem("text", 900, 500);
+        document.addItem("text", 900, 700);
+        QVERIFY(document.setItemValue(0, "text", "{score}"));
+        document.setVariables({{"score", 1}});
+        QSignalSpy spy(&document, &QAbstractItemModel::dataChanged);
+        document.setVariables({{"score", 2}});
+        QCOMPARE(spy.count(), 1);
+        QCOMPARE(spy.first().at(0).value<QModelIndex>().row(), 0);
+        QCOMPARE(document.data(document.index(0), SceneDocument::TextRole).toString(), QString("2"));
+        spy.clear();
+        document.setVariables({{"score", 2}});
+        QCOMPARE(spy.count(), 0);
+    }
+
+    void theInspectorCanListVariables() {
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        document.setVariables({{"score", 0}, {"lives", 3}});
+        QCOMPARE(document.variableNames(), QStringList({"score", "lives"}));
+    }
+
+    void renamingAVariableUpdatesTextAndUndoHistory() {
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        document.addItem("text", 900, 500);
+        QVERIFY(document.setItemValue(0, "text", "S: {score}"));
+        document.setVariables({{"score", 1}});
+        QVERIFY(document.setItemValue(0, "scale", 2));
+        document.renameVariable("score", "points");
+        document.setVariables({{"points", 1}});
+        QCOMPARE(document.scene().items[0].text, QString("S: {points}"));
+        QCOMPARE(savedScene(directory).items[0].text, QString("S: {points}"));
+        QCOMPARE(document.data(document.index(0), SceneDocument::TextRole).toString(), QString("S: 1"));
+        document.undo();
+        QCOMPARE(document.scene().items[0].text, QString("S: {points}"));
+        QCOMPARE(document.scene().items[0].scale, 8);
+    }
+
+    void renamingANameNothingUsesChangesNothing() {
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        document.addItem("text", 900, 500);
+        QVERIFY(document.setItemValue(0, "text", "Hello"));
+        document.renameVariable("score", "points");
+        QCOMPARE(document.scene().items[0].text, QString("Hello"));
+    }
 };
 
 QTEST_GUILESS_MAIN(SceneDocumentTests)

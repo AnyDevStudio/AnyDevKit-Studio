@@ -4,23 +4,31 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QHash>
+#include <QByteArrayList>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QSaveFile>
 #include <QSet>
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
+#include <tuple>
 
 namespace Studio {
 
 namespace {
 
-constexpr int SupportedSchema = 1;
+// The version saved today. Version 1 files still load: their score blocks become variable blocks.
+constexpr int CurrentSchema = 2;
+constexpr int OldestLoadableSchema = 1;
+constexpr int VariableSchema = 2;
+constexpr auto ScoreVariableName = "score";
 constexpr auto LogicFileName = "logic.json";
 constexpr auto HeaderFolder = "src";
 constexpr auto HeaderFileName = "GeneratedLogic.hpp";
+constexpr auto VariablesHeaderFileName = "GeneratedVariables.hpp";
 
 QString describeBlock(const Block& block) {
     const auto& title = blockInfo(block.type).title;
@@ -71,7 +79,8 @@ void countBlocks(const QList<Block>& blocks, int depth, qsizetype& count) {
 // the rules a saved file must follow are checked.
 class Validator {
 public:
-    explicit Validator(const Scene* scene) : scene(scene) {
+    Validator(const Scene* scene, const LogicProgram& program) : scene(scene) {
+        for (const auto& variable : program.variables) variableNames.insert(variable.name);
         if (scene) {
             for (const auto& item : scene->items) {
                 itemIds.insert(item.id);
@@ -89,11 +98,33 @@ public:
         if (total > MaximumLogicBlocks) {
             return {{{}, QString("This program has %1 blocks, but a program can hold at most %2. Remove some blocks and try again.").arg(total).arg(MaximumLogicBlocks)}};
         }
+        checkVariables(program);
         for (const auto& block : program.events) visit(block, 1);
         return problems;
     }
 
 private:
+    void checkVariables(const LogicProgram& program) {
+        if (program.variables.size() > MaximumLogicVariables) {
+            problems.append({{}, QString("This program has %1 variables, but a program can hold at most %2. Remove some variables and try again.").arg(program.variables.size()).arg(MaximumLogicVariables)});
+            return;
+        }
+        QSet<QString> seen;
+        for (const auto& variable : program.variables) {
+            if (!isVariableName(variable.name)) {
+                problems.append({{}, QString("The variable name \"%1\" is not allowed. A name is 1 to %2 English letters, digits or _, and cannot start with a digit.").arg(variable.name).arg(MaximumVariableNameLength)});
+            }
+            const auto folded = variable.name.toCaseFolded();
+            if (seen.contains(folded)) {
+                problems.append({{}, QString("There is more than one variable named \"%1\". Give each variable its own name.").arg(variable.name)});
+            }
+            seen.insert(folded);
+            if (std::abs(static_cast<qint64>(variable.initial)) > MaximumVariableValue) {
+                problems.append({{}, QString("The variable \"%1\" needs a whole number from -%2 to %2 to start at.").arg(variable.name).arg(MaximumVariableValue)});
+            }
+        }
+    }
+
     void report(const Block& block, const QString& message) {
         problems.append({block.id, message});
     }
@@ -104,6 +135,15 @@ private:
             report(block, QString("%1 has no item chosen. Choose an item from the scene.").arg(describeBlock(block)));
         } else if (!itemIds.contains(id)) {
             report(block, QString("%1 uses the item \"%2\", which is not in the scene. Choose an item that exists, or delete this block.").arg(describeBlock(block), id));
+        }
+    }
+
+    void checkVariable(const Block& block) {
+        if (!scene) return;
+        if (block.variable.isEmpty()) {
+            report(block, QString("%1 has no variable chosen. Choose a variable, or add one in the Variables area.").arg(describeBlock(block)));
+        } else if (!variableNames.contains(block.variable)) {
+            report(block, QString("%1 uses the variable \"%2\", which does not exist. Choose another variable, or add one named %2 in the Variables area.").arg(describeBlock(block), block.variable));
         }
     }
 
@@ -123,6 +163,7 @@ private:
         if (!info.holdsActions && !block.children.isEmpty()) report(block, QString("%1 cannot hold other blocks. Move them out of it.").arg(label));
 
         if (info.usesItem) checkItem(block, block.item);
+        if (info.usesVariable) checkVariable(block);
         if (block.type == BlockType::BurstParticles && scene && itemIds.contains(block.item) && !particleIds.contains(block.item)) {
             report(block, QString("%1 uses the item \"%2\", which is not a Particles item. Choose a Particles item to burst from.").arg(label, block.item));
         }
@@ -138,8 +179,8 @@ private:
             }
         }
         if (info.usesColor && !isColor(block.color)) report(block, QString("%1 needs a color that looks like #RRGGBB, for example #FFD23F.").arg(label));
-        if (info.usesValue && std::abs(static_cast<qint64>(block.value)) > MaximumLogicScore) {
-            report(block, QString("%1 needs a whole number from -%2 to %2.").arg(label).arg(MaximumLogicScore));
+        if (info.usesValue && std::abs(static_cast<qint64>(block.value)) > MaximumVariableValue) {
+            report(block, QString("%1 needs a whole number from -%2 to %2.").arg(label).arg(MaximumVariableValue));
         }
 
         if (block.children.isEmpty()) return;
@@ -153,6 +194,7 @@ private:
     const Scene* scene;
     QSet<QString> itemIds;
     QSet<QString> particleIds;
+    QSet<QString> variableNames;
     QSet<QString> usedIds;
     QList<LogicProblem> problems;
 };
@@ -165,12 +207,28 @@ QString unknownChoiceMessage(const QString& label, const QString& kind, const QS
     return QString("%1 has the %2 \"%3\", which does not exist. Choose one of: %4.").arg(label, kind, value, choices.join(", "));
 }
 
-QString parseBlock(const QJsonValue& value, qsizetype index, int depth, qsizetype& count, Block& block);
+// What the blocks of a schema 1 file had to say about the score, which the new blocks say about a variable.
+const QHash<QString, BlockType>& legacyScoreBlocks() {
+    static const QHash<QString, BlockType> blocks{
+        {"setScore", BlockType::SetVariable},
+        {"addScore", BlockType::ChangeVariable},
+        {"ifScore", BlockType::IfVariable},
+    };
+    return blocks;
+}
 
-QString parseChildren(const QJsonArray& actions, int depth, qsizetype& count, Block& block) {
+struct Parsing {
+    int schema = CurrentSchema;
+    qsizetype count = 0;
+    bool usesScore = false; // a schema 1 file had a score block, so it needs the score variable
+};
+
+QString parseBlock(const QJsonValue& value, qsizetype index, int depth, Parsing& parsing, Block& block);
+
+QString parseChildren(const QJsonArray& actions, int depth, Parsing& parsing, Block& block) {
     for (qsizetype index = 0; index < actions.size(); ++index) {
         Block child;
-        const auto problem = parseBlock(actions.at(index), index, depth + 1, count, child);
+        const auto problem = parseBlock(actions.at(index), index, depth + 1, parsing, child);
         if (!problem.isEmpty()) return problem;
         block.children.append(child);
     }
@@ -178,14 +236,19 @@ QString parseChildren(const QJsonArray& actions, int depth, qsizetype& count, Bl
 }
 
 // Fields of the wrong JSON type either stop here with a message or become values the validator rejects.
-QString parseBlock(const QJsonValue& value, qsizetype index, int depth, qsizetype& count, Block& block) {
+QString parseBlock(const QJsonValue& value, qsizetype index, int depth, Parsing& parsing, Block& block) {
     if (!value.isObject()) return QString("Block number %1 must be a JSON object.").arg(index + 1);
-    if (++count > MaximumLogicBlocks) return QString("This program has more than %1 blocks. Remove some blocks and try again.").arg(MaximumLogicBlocks);
+    if (++parsing.count > MaximumLogicBlocks) return QString("This program has more than %1 blocks. Remove some blocks and try again.").arg(MaximumLogicBlocks);
     const auto object = value.toObject();
     block.id = object.value("id").toString();
 
     const auto typeName = object.value("type").toString();
     const BlockInfo* found = nullptr;
+    const auto legacyScore = parsing.schema < VariableSchema && legacyScoreBlocks().contains(typeName);
+    if (legacyScore) {
+        found = &blockInfo(legacyScoreBlocks().value(typeName));
+        parsing.usesScore = true;
+    }
     for (const auto& candidate : blockCatalog()) {
         if (candidate.jsonName == typeName) found = &candidate;
     }
@@ -197,6 +260,9 @@ QString parseBlock(const QJsonValue& value, qsizetype index, int depth, qsizetyp
     const auto& info = *found;
     block.type = info.type;
     const auto label = describeBlock(block);
+    if (info.usesVariable && parsing.schema < VariableSchema && !legacyScore) {
+        return QString("%1 uses a variable, which needs schemaVersion %2. Change schemaVersion to %2 and add a \"variables\" list.").arg(label).arg(VariableSchema);
+    }
 
     if (info.usesButton) {
         const auto name = object.value("button").toString();
@@ -211,6 +277,7 @@ QString parseBlock(const QJsonValue& value, qsizetype index, int depth, qsizetyp
     }
     if (info.usesItem) block.item = object.value("item").toString();
     if (info.usesOtherItem) block.otherItem = object.value("otherItem").toString();
+    if (info.usesVariable) block.variable = legacyScore ? QString(ScoreVariableName) : object.value("variable").toString();
     if (info.usesPosition) {
         block.x = numberOrInvalid(object.value("x"));
         block.y = numberOrInvalid(object.value("y"));
@@ -219,8 +286,8 @@ QString parseBlock(const QJsonValue& value, qsizetype index, int depth, qsizetyp
     if (info.usesValue) {
         const auto number = object.value("value");
         const auto amount = number.toDouble();
-        if (!number.isDouble() || amount != std::floor(amount) || std::abs(amount) > MaximumLogicScore) {
-            return QString("%1 needs a whole number from -%2 to %2.").arg(label).arg(MaximumLogicScore);
+        if (!number.isDouble() || amount != std::floor(amount) || std::abs(amount) > MaximumVariableValue) {
+            return QString("%1 needs a whole number from -%2 to %2.").arg(label).arg(MaximumVariableValue);
         }
         block.value = static_cast<int>(amount);
     }
@@ -241,9 +308,24 @@ QString parseBlock(const QJsonValue& value, qsizetype index, int depth, qsizetyp
         if (!actions.isArray()) return QString("%1 needs an \"actions\" list. Add \"actions\": [] to it.").arg(label);
         const auto list = actions.toArray();
         if (!list.isEmpty() && depth >= MaximumLogicDepth) return nestingMessage(block);
-        return parseChildren(list, depth, count, block);
+        return parseChildren(list, depth, parsing, block);
     }
     if (!actions.isUndefined()) return QString("%1 cannot hold other blocks. Remove its \"actions\" list.").arg(label);
+    return {};
+}
+
+QString parseVariables(const QJsonArray& list, QList<LogicVariable>& variables) {
+    for (qsizetype index = 0; index < list.size(); ++index) {
+        if (!list.at(index).isObject()) return QString("Variable number %1 must be a JSON object.").arg(index + 1);
+        const auto object = list.at(index).toObject();
+        const auto name = object.value("name").toString();
+        const auto initial = object.value("initial");
+        const auto number = initial.toDouble();
+        if (!initial.isDouble() || number != std::floor(number) || std::abs(number) > MaximumVariableValue) {
+            return QString("The variable \"%1\" needs a whole number from -%2 to %2 to start at.").arg(name).arg(MaximumVariableValue);
+        }
+        variables.append({name, static_cast<int>(number)});
+    }
     return {};
 }
 
@@ -257,6 +339,7 @@ QJsonObject blockToJson(const Block& block) {
     }
     if (info.usesItem) object.insert("item", block.item);
     if (info.usesOtherItem) object.insert("otherItem", block.otherItem);
+    if (info.usesVariable) object.insert("variable", block.variable);
     if (info.usesPosition) {
         object.insert("x", block.x);
         object.insert("y", block.y);
@@ -289,6 +372,12 @@ QByteArray colorLiterals(const QString& color) {
     return channels.join(", ");
 }
 
+QJsonArray variablesToJson(const QList<LogicVariable>& variables) {
+    QJsonArray list;
+    for (const auto& variable : variables) list.append(QJsonObject{{"name", variable.name}, {"initial", variable.initial}});
+    return list;
+}
+
 QByteArray buttonConstant(ControllerButton button) {
     switch (button) {
     case ControllerButton::Cross: return "Cross";
@@ -303,14 +392,14 @@ QByteArray buttonConstant(ControllerButton button) {
     return {};
 }
 
-QByteArray comparisonOperator(ScoreComparison comparison) {
+QByteArray comparisonOperator(VariableComparison comparison) {
     switch (comparison) {
-    case ScoreComparison::Equal: return "==";
-    case ScoreComparison::NotEqual: return "!=";
-    case ScoreComparison::Less: return "<";
-    case ScoreComparison::LessOrEqual: return "<=";
-    case ScoreComparison::Greater: return ">";
-    case ScoreComparison::GreaterOrEqual: return ">=";
+    case VariableComparison::Equal: return "==";
+    case VariableComparison::NotEqual: return "!=";
+    case VariableComparison::Less: return "<";
+    case VariableComparison::LessOrEqual: return "<=";
+    case VariableComparison::Greater: return ">";
+    case VariableComparison::GreaterOrEqual: return ">=";
     }
     return {};
 }
@@ -323,11 +412,14 @@ QByteArray indentation(int level) {
 // and names are free text, which is why only indexes reach the generated code.
 class Generator {
 public:
-    explicit Generator(const Scene& scene) {
+    Generator(const Scene& scene, const LogicProgram& program) {
         for (qsizetype index = 0; index < scene.items.size(); ++index) itemIndexes.insert(scene.items[index].id, index);
+        for (qsizetype index = 0; index < program.variables.size(); ++index) variableIndexes.insert(program.variables[index].name, index);
     }
 
     QByteArray index(const QString& itemId) const { return QByteArray::number(itemIndexes.value(itemId)); }
+
+    QByteArray variable(const QString& name) const { return QByteArray::number(variableIndexes.value(name)); }
 
     void actions(const QList<Block>& blocks, int level, QByteArray& code) const {
         for (const auto& block : blocks) action(block, level, code);
@@ -352,17 +444,17 @@ public:
         case BlockType::SetColor:
             code += pad + "world.SetColor(" + index(block.item) + ", " + colorLiterals(block.color) + ");" + comment;
             return;
-        case BlockType::AddScore:
-            code += pad + "world.AddScore(" + QByteArray::number(block.value) + ");" + comment;
+        case BlockType::SetVariable:
+            code += pad + "world.SetVariable(" + variable(block.variable) + ", " + QByteArray::number(block.value) + ");" + comment;
             return;
-        case BlockType::SetScore:
-            code += pad + "world.SetScore(" + QByteArray::number(block.value) + ");" + comment;
+        case BlockType::ChangeVariable:
+            code += pad + "world.ChangeVariable(" + variable(block.variable) + ", " + QByteArray::number(block.value) + ");" + comment;
             return;
         case BlockType::BurstParticles:
             code += pad + "world.BurstParticles(" + index(block.item) + ");" + comment;
             return;
-        case BlockType::IfScore:
-            code += pad + "if (world.Score() " + comparisonOperator(block.comparison) + ' ' + QByteArray::number(block.value) + ") {" + comment;
+        case BlockType::IfVariable:
+            code += pad + "if (world.Variable(" + variable(block.variable) + ") " + comparisonOperator(block.comparison) + ' ' + QByteArray::number(block.value) + ") {" + comment;
             actions(block.children, level + 1, code);
             code += pad + "}\n";
             return;
@@ -397,6 +489,7 @@ public:
 
 private:
     QHash<QString, qsizetype> itemIndexes;
+    QHash<QString, qsizetype> variableIndexes;
 };
 
 void collectBurstTargets(const QList<Block>& blocks, QSet<QString>& targets) {
@@ -436,21 +529,21 @@ QByteArray assembleHeader(bool includeScene, bool includeButtons, int itemCount,
 
 const QList<BlockInfo>& blockCatalog() {
     // Keep in the order of BlockType: blockInfo indexes this list.
-    //                                                                               event  holds  button item   other  pos    color  value  cmp
+    //                                                                              event  holds  button item   other  pos    color  value  cmp    variable
     static const QList<BlockInfo> catalog{
-        {BlockType::WhenGameStarts, "whenGameStarts", "When the game starts",        true,  true,  false, false, false, false, false, false, false},
-        {BlockType::WhileButtonHeld, "whileButtonHeld", "While a button is held",    true,  true,  true,  false, false, false, false, false, false},
-        {BlockType::EveryFrame, "everyFrame", "Every frame",                         true,  true,  false, false, false, false, false, false, false},
-        {BlockType::WhenItemsTouch, "whenItemsTouch", "When two items touch",        true,  true,  false, true,  true,  false, false, false, false},
-        {BlockType::MoveBy, "moveBy", "Move item",                                   false, false, false, true,  false, true,  false, false, false},
-        {BlockType::SetPosition, "setPosition", "Set item position",                 false, false, false, true,  false, true,  false, false, false},
-        {BlockType::Show, "show", "Show item",                                       false, false, false, true,  false, false, false, false, false},
-        {BlockType::Hide, "hide", "Hide item",                                       false, false, false, true,  false, false, false, false, false},
-        {BlockType::SetColor, "setColor", "Set item color",                          false, false, false, true,  false, false, true,  false, false},
-        {BlockType::AddScore, "addScore", "Add to score",                            false, false, false, false, false, false, false, true,  false},
-        {BlockType::SetScore, "setScore", "Set score",                               false, false, false, false, false, false, false, true,  false},
-        {BlockType::IfScore, "ifScore", "If score",                                  false, true,  false, false, false, false, false, true,  true},
-        {BlockType::BurstParticles, "burstParticles", "Burst particles from item",   false, false, false, true,  false, false, false, false, false},
+        {BlockType::WhenGameStarts, "whenGameStarts", "When the game starts",        true,  true,  false, false, false, false, false, false, false, false},
+        {BlockType::WhileButtonHeld, "whileButtonHeld", "While a button is held",    true,  true,  true,  false, false, false, false, false, false, false},
+        {BlockType::EveryFrame, "everyFrame", "Every frame",                         true,  true,  false, false, false, false, false, false, false, false},
+        {BlockType::WhenItemsTouch, "whenItemsTouch", "When two items touch",        true,  true,  false, true,  true,  false, false, false, false, false},
+        {BlockType::MoveBy, "moveBy", "Move item",                                   false, false, false, true,  false, true,  false, false, false, false},
+        {BlockType::SetPosition, "setPosition", "Set item position",                 false, false, false, true,  false, true,  false, false, false, false},
+        {BlockType::Show, "show", "Show item",                                       false, false, false, true,  false, false, false, false, false, false},
+        {BlockType::Hide, "hide", "Hide item",                                       false, false, false, true,  false, false, false, false, false, false},
+        {BlockType::SetColor, "setColor", "Set item color",                          false, false, false, true,  false, false, true,  false, false, false},
+        {BlockType::SetVariable, "setVariable", "Set variable",                      false, false, false, false, false, false, false, true,  false, true},
+        {BlockType::ChangeVariable, "changeVariable", "Change variable",             false, false, false, false, false, false, false, true,  false, true},
+        {BlockType::IfVariable, "ifVariable", "If variable",                         false, true,  false, false, false, false, false, true,  true,  true},
+        {BlockType::BurstParticles, "burstParticles", "Burst particles from item",   false, false, false, true,  false, false, false, false, false, false},
     };
     return catalog;
 }
@@ -475,22 +568,35 @@ const QList<ButtonInfo>& buttonCatalog() {
 
 const QList<ComparisonInfo>& comparisonCatalog() {
     static const QList<ComparisonInfo> catalog{
-        {ScoreComparison::Equal, "equal", "is equal to"},
-        {ScoreComparison::NotEqual, "notEqual", "is not equal to"},
-        {ScoreComparison::Less, "less", "is less than"},
-        {ScoreComparison::LessOrEqual, "lessOrEqual", "is at most"},
-        {ScoreComparison::Greater, "greater", "is greater than"},
-        {ScoreComparison::GreaterOrEqual, "greaterOrEqual", "is at least"},
+        {VariableComparison::Equal, "equal", "is equal to"},
+        {VariableComparison::NotEqual, "notEqual", "is not equal to"},
+        {VariableComparison::Less, "less", "is less than"},
+        {VariableComparison::LessOrEqual, "lessOrEqual", "is at most"},
+        {VariableComparison::Greater, "greater", "is greater than"},
+        {VariableComparison::GreaterOrEqual, "greaterOrEqual", "is at least"},
     };
     return catalog;
 }
 
 QList<LogicProblem> validateLogicStructure(const LogicProgram& program) {
-    return Validator(nullptr).run(program);
+    return Validator(nullptr, program).run(program);
 }
 
 QList<LogicProblem> validateLogic(const LogicProgram& program, const Scene& scene) {
-    return Validator(&scene).run(program);
+    return Validator(&scene, program).run(program);
+}
+
+QList<LogicProblem> validateTextBindings(const Scene& scene, const LogicProgram& program) {
+    QList<LogicProblem> problems;
+    for (const auto& item : scene.items) {
+        if (item.type != "text") continue;
+        for (const auto& name : textVariables(item.text)) {
+            if (std::ranges::find(program.variables, name, &LogicVariable::name) != program.variables.end()) continue;
+            const auto shown = item.name.isEmpty() ? item.id : item.name;
+            problems.append({{}, QString("The text item \"%1\" shows the variable \"%2\", which does not exist. Create it in the Variables area on the Logic tab, or fix the text in the Scene tab.").arg(shown, name)});
+        }
+    }
+    return problems;
 }
 
 LogicLoadResult loadLogic(const QString& path) {
@@ -508,18 +614,27 @@ LogicLoadResult loadLogic(const QString& path) {
     const auto root = document.object();
 
     const auto schema = root.value("schemaVersion");
-    if (!schema.isDouble() || schema.toInt(-1) != SupportedSchema) return failure(QString("%1 needs schemaVersion %2, the only version this Studio supports.").arg(fileName).arg(SupportedSchema));
+    const auto version = schema.toInt(-1);
+    if (!schema.isDouble() || version < OldestLoadableSchema || version > CurrentSchema) return failure(QString("%1 needs schemaVersion %2 or %3, the versions this Studio supports.").arg(fileName).arg(OldestLoadableSchema).arg(CurrentSchema));
     if (!root.value("events").isArray()) return failure(QString("%1 has no events list. Add \"events\": [] to the file.").arg(fileName));
 
     LogicProgram program;
-    qsizetype count = 0;
+    if (version >= VariableSchema) {
+        if (!root.value("variables").isArray()) return failure(QString("%1 has no variables list. Add \"variables\": [] to the file.").arg(fileName));
+        const auto problem = parseVariables(root.value("variables").toArray(), program.variables);
+        if (!problem.isEmpty()) return failure(problem);
+    }
+
+    Parsing parsing;
+    parsing.schema = version;
     const auto events = root.value("events").toArray();
     for (qsizetype index = 0; index < events.size(); ++index) {
         Block block;
-        const auto problem = parseBlock(events.at(index), index, 1, count, block);
+        const auto problem = parseBlock(events.at(index), index, 1, parsing, block);
         if (!problem.isEmpty()) return failure(problem);
         program.events.append(block);
     }
+    if (parsing.usesScore) program.variables.append({ScoreVariableName, 0});
 
     const auto problems = validateLogicStructure(program);
     if (!problems.isEmpty()) return failure(problems.first().message);
@@ -535,7 +650,7 @@ bool saveLogic(const QString& path, const LogicProgram& program, QString& error)
 
     QJsonArray events;
     for (const auto& block : program.events) events.append(blockToJson(block));
-    const QJsonObject root{{"schemaVersion", SupportedSchema}, {"events", events}};
+    const QJsonObject root{{"schemaVersion", CurrentSchema}, {"variables", variablesToJson(program.variables)}, {"events", events}};
     const auto contents = QJsonDocument(root).toJson();
 
     QSaveFile file(path);
@@ -570,7 +685,7 @@ QByteArray generateLogicHeader(const LogicProgram& program, const Scene& scene) 
     if (!validateScene(scene).isEmpty() || !validateLogic(program, scene).isEmpty()) return {};
     if (program.events.isEmpty()) return generateEmptyLogicHeader();
 
-    const Generator generator(scene);
+    const Generator generator(scene, program);
     QByteArray startCode;
     // A one-shot item a block bursts plays when that block runs, not also when the game starts.
     QSet<QString> burstTargets;
@@ -596,6 +711,75 @@ QByteArray generateLogicHeader(const LogicProgram& program, const Scene& scene) 
     return assembleHeader(referencesItems(program.events), usesButtons, static_cast<int>(scene.items.size()), touchEvents, startCode, frameCode);
 }
 
+QByteArray generateVariablesHeader(const LogicProgram& program, const Scene& scene) {
+    if (!validateScene(scene).isEmpty() || !validateLogic(program, scene).isEmpty() || !validateTextBindings(scene, program).isEmpty()) return {};
+
+    QHash<QString, qsizetype> variableIndexes;
+    QByteArrayList initialValues;
+    QByteArrayList names;
+    for (qsizetype index = 0; index < program.variables.size(); ++index) {
+        variableIndexes.insert(program.variables[index].name, index);
+        initialValues << QByteArray::number(program.variables[index].initial);
+        names << program.variables[index].name.toLatin1(); // names are letters, digits and _, safe in a comment
+    }
+
+    QByteArray parts;
+    QByteArray bound;
+    QByteArray asserts;
+    int partCount = 0;
+    int boundCount = 0;
+    for (qsizetype itemIndex = 0; itemIndex < scene.items.size(); ++itemIndex) {
+        const auto& item = scene.items[itemIndex];
+        if (item.type != "text" || !textUsesVariables(item.text)) continue;
+        const auto parsed = parseTextTemplate(item.text);
+        const auto firstPart = partCount;
+        int quads = 0;
+        for (const auto& part : parsed.parts) {
+            if (part.variable.isEmpty()) {
+                parts += "    {\"" + textLiteral(part.text) + "\", -1},\n";
+                quads += part.text.size();
+            } else {
+                parts += "    {\"\", " + QByteArray::number(variableIndexes.value(part.variable)) + "},\n";
+                quads += MaximumVariableCharacters;
+            }
+            ++partCount;
+        }
+        bound += "    {" + QByteArray::number(itemIndex) + ", " + QByteArray::number(firstPart) + ", " + QByteArray::number(partCount - firstPart) + ", " + QByteArray::number(quads) + "},\n";
+        asserts += "static_assert(GeneratedScene::Items[" + QByteArray::number(itemIndex) + "].text.size() == " + QByteArray::number(quads) + ", \"GeneratedScene.hpp and GeneratedVariables.hpp do not match. Build the project again from Studio.\");\n";
+        ++boundCount;
+    }
+
+    QByteArray header = "// Generated by AnyDevKit Studio from logic.json and scene.json. Do not edit.\n#pragma once\n\n";
+    if (boundCount > 0) header += "#include \"GeneratedScene.hpp\"\n\n";
+    header += "#include <array>\n#include <cstddef>\n#include <cstdint>\n#include <string_view>\n\nnamespace GeneratedVariables {\n\n";
+    header += "inline constexpr std::size_t VariableCount = " + QByteArray::number(program.variables.size()) + ";\n";
+    header += "inline constexpr std::array<std::int32_t, " + QByteArray::number(program.variables.size()) + "> InitialValues";
+    header += initialValues.isEmpty() ? QByteArray("{};\n") : "{{" + initialValues.join(", ") + "}}; // " + names.join(", ") + "\n";
+    header += R"cpp(
+// One piece of a text item that shows variables: plain text, or a variable's value when variable is not -1.
+struct Part {
+    std::string_view text;
+    std::int32_t variable;
+};
+
+// A text item that shows variables. quads is how many characters it can ever need, sign and all digits included.
+struct BoundText {
+    std::size_t item, firstPart, partCount, quads;
+};
+
+)cpp";
+    if (boundCount == 0) {
+        header += "inline constexpr std::array<Part, 0> Parts{};\ninline constexpr std::array<BoundText, 0> BoundTexts{};\n";
+    } else {
+        header += "inline constexpr std::array<Part, " + QByteArray::number(partCount) + "> Parts{{\n" + parts + "}};\n";
+        header += "inline constexpr std::array<BoundText, " + QByteArray::number(boundCount) + "> BoundTexts{{\n" + bound + "}};\n\n";
+        header += "static_assert(GeneratedScene::Items.size() == " + QByteArray::number(scene.items.size()) + ", \"GeneratedScene.hpp and GeneratedVariables.hpp do not match. Build the project again from Studio.\");\n";
+        header += asserts;
+    }
+    header += "\n}\n";
+    return header;
+}
+
 bool exportLogicHeader(const QString& projectRoot, const Scene& scene, QString& error) {
     error.clear();
     const auto fail = [&](const QString& message) {
@@ -607,36 +791,47 @@ bool exportLogicHeader(const QString& projectRoot, const Scene& scene, QString& 
     const auto logicPath = root + '/' + LogicFileName;
     const QFileInfo logicInfo(logicPath);
 
+    const auto describeProblems = [](const QList<LogicProblem>& problems) {
+        auto message = problems.first().message;
+        const auto others = problems.size() - 1;
+        if (others == 1) message += " There is 1 more problem to fix.";
+        if (others > 1) message += QString(" There are %1 more problems to fix.").arg(others);
+        return message;
+    };
+
+    LogicProgram program;
     QByteArray header;
     if (!logicInfo.exists() && !logicInfo.isSymLink()) {
         header = generateEmptyLogicHeader();
     } else {
         const auto loaded = loadLogic(logicPath);
         if (!loaded.program) return fail(loaded.error);
-        const auto problems = validateLogic(*loaded.program, scene);
-        if (!problems.isEmpty()) {
-            auto message = problems.first().message;
-            const auto others = problems.size() - 1;
-            if (others == 1) message += " There is 1 more problem to fix.";
-            if (others > 1) message += QString(" There are %1 more problems to fix.").arg(others);
-            return fail(message);
-        }
-        header = generateLogicHeader(*loaded.program, scene);
+        program = *loaded.program;
+        const auto problems = validateLogic(program, scene);
+        if (!problems.isEmpty()) return fail(describeProblems(problems));
+        header = generateLogicHeader(program, scene);
         if (header.isEmpty()) return fail("The game logic could not be generated because the scene has a problem. Fix the scene and try again.");
     }
+    const auto textProblems = validateTextBindings(scene, program);
+    if (!textProblems.isEmpty()) return fail(describeProblems(textProblems));
+    const auto variablesHeader = generateVariablesHeader(program, scene);
+    if (variablesHeader.isEmpty()) return fail("The game logic could not be generated because the scene has a problem. Fix the scene and try again.");
 
     // A link could lead outside the project, and a build must only change files inside it.
     const auto folder = root + '/' + HeaderFolder;
     const auto path = folder + '/' + HeaderFileName;
-    for (const auto& candidate : {folder, path}) {
+    const auto variablesPath = folder + '/' + VariablesHeaderFileName;
+    for (const auto& candidate : {folder, path, variablesPath}) {
         const QFileInfo info(candidate);
         if (info.isSymLink() || info.isJunction()) return fail(QString("%1 is a link, and Studio will not write through it. Replace it with a regular file or folder and try again.").arg(QDir(root).relativeFilePath(candidate)));
     }
     if (!QDir().mkpath(folder)) return fail(QString("%1 could not be created. Check that the project folder is writable.").arg(HeaderFolder));
 
-    QSaveFile file(path);
-    if (!file.open(QIODevice::WriteOnly) || file.write(header) != header.size() || !file.commit()) {
-        return fail(QString("%1/%2 could not be written: %3. Check that the folder is writable.").arg(HeaderFolder, HeaderFileName, file.errorString()));
+    for (const auto& [target, contents, name] : {std::tuple(path, header, HeaderFileName), std::tuple(variablesPath, variablesHeader, VariablesHeaderFileName)}) {
+        QSaveFile file(target);
+        if (!file.open(QIODevice::WriteOnly) || file.write(contents) != contents.size() || !file.commit()) {
+            return fail(QString("%1/%2 could not be written: %3. Check that the folder is writable.").arg(HeaderFolder, name, file.errorString()));
+        }
     }
     return true;
 }

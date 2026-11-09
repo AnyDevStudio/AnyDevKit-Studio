@@ -10,7 +10,7 @@ The stage is always 1920x1080. The origin is the top left corner and `y` grows d
 
 ```json
 {
-  "schemaVersion": 3,
+  "schemaVersion": 4,
   "background": "#151C3A",
   "items": [
     {
@@ -71,15 +71,17 @@ The stage is always 1920x1080. The origin is the top left corner and `y` grows d
 
 Rules:
 
-- `schemaVersion` is `3`, the version Studio saves. Scenes saved with `1` or `2` still load: `1` cannot
-  hold image items, and neither can hold particles items. A scene holds at most 256 items, drawn in
-  list order, later items on top.
+- `schemaVersion` is `4`, the version Studio saves. Older scenes still load: `1` cannot hold image items,
+  `1` and `2` cannot hold particles items, and before `4` a brace in `text` was only a brace, so `{` and
+  `}` in an older file are read as `{{` and `}}`. A scene holds at most 256 items, drawn in list order,
+  later items on top.
 - `id` values are unique, non-empty strings. `name` is only for the editor.
 - Colors are `#RRGGBB`. `image` items have no color.
 - Positions and sizes are numbers. `rectangle`, `image` and `particles` need `width` and `height` above 0.
-- `text` holds 1 to 64 printable ASCII characters (U+0020 to U+007E). Its `scale` is a whole number
-  from 1 to 40. Each character is a 5x7 pixel cell advancing 6 cells, so the drawn width is
-  `(length * 6 - 1) * scale` and the height is `7 * scale`.
+- `text` holds 1 to 64 printable ASCII characters (U+0020 to U+007E), which can show variables; see
+  [Text that shows variables](#text-that-shows-variables). Its `scale` is a whole number from 1 to 40.
+  Each character is a 5x7 pixel cell advancing 6 cells, so the drawn width is `(length * 6 - 1) * scale`
+  and the height is `7 * scale`, where `length` is the characters it shows right now.
 - `image` draws the PNG file `source` stretched to `width` by `height`, respecting its transparency.
   `source` is a project-relative path that starts with `assets/` and ends in `.png`, with `/`
   separators and no `.` or `..` parts. The file must exist inside the project when the scene is built,
@@ -90,6 +92,27 @@ Rules:
   stays inside the stage.
 - `particles` draws an effect with blocky particles snapped to a pixel grid. `x`, `y`, `width` and
   `height` are the area the effect happens in. See [Particles](#particles).
+
+### Text that shows variables
+
+`text` can show the variables of [logic.json](blocks-format.md) as they change while the game runs.
+
+| In `text`  | Shows                                                       |
+| ---------- | ----------------------------------------------------------- |
+| `{score}`  | the value of the variable named `score`, as a whole number  |
+| `{{`       | a literal `{`                                               |
+| `}}`       | a literal `}`                                               |
+
+A brace on its own, or `{}`, or `{` around something that is not a variable name, is an error in the
+scene and is refused with a message that says how to show a brace. A variable counts as the characters
+typed for it towards the 64, and `{{` and `}}` count as one each. A build fails when a text item
+shows a variable that does not exist, naming the item and the variable, with an empty `logic.json` or
+none at all counted as having no variables.
+
+A text item reserves room for the widest number each variable could show, 11 characters for the sign and
+all ten digits of -2147483648. That is its length for the quad budget below. On the stage a variable
+appears with its `initial` value. The game rebuilds the text from the current values each frame with no
+allocation. Text with no variables behaves exactly as it did.
 
 ### Particles
 
@@ -179,7 +202,9 @@ inline constexpr std::array<Item, 4> Items{{
 `seed` is the FNV-1a hash of the item's `id`, so a particles item plays the same way on every run. Color
 channels are the `#RRGGBB` bytes divided by 255. For text items `width` and `height` hold the
 drawn size from the rule above. In a text literal `"` and `\\` are escaped, and so is every `?` that
-follows another `?`, because `??=` and similar sequences are trigraphs. An empty scene is `inline constexpr std::array<Item, 0> Items{};`, and a scene without
+follows another `?`, because `??=` and similar sequences are trigraphs. A text item's `text` here is what
+it shows when nothing changes: `{{` and `}}` are written as one brace, and each `{name}` is written as
+`00000000000`, so the length of `text` is always the quads the item reserves. An empty scene is `inline constexpr std::array<Item, 0> Items{};`, and a scene without
 particles has an empty `ParticleEffects` table.
 
 ## src/GeneratedImages

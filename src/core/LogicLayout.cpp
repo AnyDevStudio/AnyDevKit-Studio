@@ -16,6 +16,7 @@ constexpr double FieldGap = 10;
 
 double fieldWidth(const BlockField& field) {
     if (field.kind == "item") return field.label.isEmpty() ? 168 : 206;
+    if (field.kind == "variable") return 168;
     if (field.kind == "button") return 148;
     if (field.kind == "comparison") return 172;
     if (field.kind == "whole") return 96;
@@ -92,6 +93,7 @@ QList<BlockField> blockFields(const BlockInfo& info) {
     if (info.usesButton) fields.append({"button", "button", ""});
     if (info.usesItem) fields.append({"item", "item", ""});
     if (info.usesOtherItem) fields.append({"otherItem", "item", "and"});
+    if (info.usesVariable) fields.append({"variable", "variable", ""});
     if (info.usesComparison) fields.append({"comparison", "comparison", ""});
     if (info.usesValue) fields.append({"value", "whole", ""});
     if (info.usesPosition) {
@@ -105,7 +107,7 @@ QList<BlockField> blockFields(const BlockInfo& info) {
 QString blockCategory(const BlockInfo& info) {
     if (info.isEvent) return "events";
     if (info.usesPosition) return "movement";
-    if (info.usesComparison || (info.usesValue && !info.usesItem)) return "score";
+    if (info.usesVariable) return "variables";
     return "looks";
 }
 
@@ -113,7 +115,7 @@ QString blockCategoryTitle(const QString& category) {
     if (category == "events") return "Events";
     if (category == "movement") return "Movement";
     if (category == "looks") return "Looks";
-    if (category == "score") return "Score";
+    if (category == "variables") return "Variables";
     return category;
 }
 

@@ -14,6 +14,10 @@ namespace Studio {
 inline constexpr int MaximumSceneBlocks = 16000;
 // The largest an image may be on each side. The editor scales bigger pictures down to this.
 inline constexpr int MaximumImageDimension = 4096;
+// A variable name is short and simple, so it reads well inside text and blocks.
+inline constexpr int MaximumVariableNameLength = 24;
+// The widest a whole number can be: the sign and all ten digits of -2147483648.
+inline constexpr int MaximumVariableCharacters = 11;
 
 struct SceneItem {
     QString id;
@@ -41,6 +45,35 @@ struct Scene {
     QString background = "#151C3A";
     QList<SceneItem> items;
 };
+
+// A named whole number. The list lives in logic.json (see Blocks.h); it is declared here because a
+// text item can show one, and the scene needs nothing else from the logic.
+struct LogicVariable {
+    QString name;
+    int initial = 0;
+};
+
+// Letters, digits and _, not starting with a digit, at most MaximumVariableNameLength long.
+bool isVariableName(const QString& name);
+
+// A text item's `text` is plain characters, {{ and }} for literal braces, and {name} to show a variable.
+struct TextPart {
+    QString text;     // plain text with no escapes left, when variable is empty
+    QString variable; // the name, when this part shows a variable
+};
+
+struct TextTemplate {
+    QList<TextPart> parts;
+    QString problem; // empty when the text is well formed
+};
+
+TextTemplate parseTextTemplate(const QString& text);
+bool textUsesVariables(const QString& text);
+QStringList textVariables(const QString& text); // each name it shows, once, in the order first used
+// What the stage shows before the game runs: variables with their initial values and braces unescaped.
+// An unknown variable stays as typed, and so does a text that is not well formed.
+QString displayedText(const QString& text, const QList<LogicVariable>& variables);
+QString renameVariableInText(const QString& text, const QString& name, const QString& newName);
 
 // One decoded image for the generated code. Row by row, top row first, no padding, 4 bytes per
 // pixel: red, green, blue, alpha, with the color already multiplied by alpha.
@@ -70,11 +103,15 @@ Scene appStarterScene(); // an app: a header title and labeled buttons, nothing 
 QStringList sceneImageSources(const Scene& scene); // each image's source once, in the order first used
 // Empty when the scene is invalid or `images` does not hold exactly the scene's sources, in that order.
 QByteArray generateSceneHeader(const Scene& scene, const QList<SceneImageData>& images = {});
+QByteArray textLiteral(const QString& text); // the text as the contents of a C++ string literal
 QByteArray generateImageSource(const QList<SceneImageData>& images); // src/GeneratedImages.cpp
 QString imageSizeProblem(int width, int height, qint64 bytesSoFar); // empty when the image fits the limits
 QString imageFileProblem(const QString& projectRoot, const QString& source); // empty when it is a regular file we may read
 bool writeGeneratedScene(const QString& projectRoot, const Scene& scene, const QList<SceneImageData>& images, QString& error);
 // A project that already has a scene.json keeps it, so `starter` is only written when there is none.
 bool installSceneRuntime(const QString& runtimeDirectory, const QString& projectRoot, const QString& projectName, QString& error, const Scene& starter = starterScene());
+// True when the project has game code from a Studio that predates variables. It builds fine until a
+// project starts using them, so a project without variables is left alone.
+bool sceneRuntimeNeedsUpdate(const QString& projectRoot);
 
 }

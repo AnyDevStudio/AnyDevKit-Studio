@@ -8,10 +8,10 @@
 
 #include <optional>
 
-// Jigsaw style game logic. A program is a tree of typed blocks: events at the top level, actions
-// inside them, and more actions inside "If score" blocks. Every block has an id that stays the same
-// across saves, so an editor can select, reorder or draw a block as a graph node. The format is
-// described in docs/blocks-format.md.
+// Jigsaw style game logic. A program is a list of named variables and a tree of typed blocks: events
+// at the top level, actions inside them, and more actions inside "If variable" blocks. Every block has
+// an id that stays the same across saves, so an editor can select, reorder or draw a block as a graph
+// node. The format is described in docs/blocks-format.md.
 //
 // How an editor uses this file:
 //   1. loadLogic(path) to read logic.json, or start from an empty LogicProgram.
@@ -28,21 +28,21 @@ enum class BlockType {
     WhileButtonHeld,
     EveryFrame,
     WhenItemsTouch,
-    // Actions: inside an event or an IfScore.
+    // Actions: inside an event or an IfVariable.
     MoveBy,
     SetPosition,
     Show,
     Hide,
     SetColor,
-    AddScore,
-    SetScore,
-    IfScore, // also holds actions
+    SetVariable,
+    ChangeVariable,
+    IfVariable, // also holds actions
     BurstParticles, // the item must be a particles item
 };
 
 enum class ControllerButton { Cross, Circle, Square, Triangle, DpadUp, DpadDown, DpadLeft, DpadRight };
 
-enum class ScoreComparison { Equal, NotEqual, Less, LessOrEqual, Greater, GreaterOrEqual };
+enum class VariableComparison { Equal, NotEqual, Less, LessOrEqual, Greater, GreaterOrEqual };
 
 // Only the fields the type uses matter; blockInfo says which those are. The others are not saved.
 struct Block {
@@ -54,13 +54,15 @@ struct Block {
     QString otherItem;                                 // WhenItemsTouch's second item
     double x = 0, y = 0;                               // MoveBy (distance), SetPosition (place)
     QString color = "#FFD23F";                         // SetColor
-    int value = 0;                                     // AddScore, SetScore, IfScore's number
-    ScoreComparison comparison = ScoreComparison::Equal; // IfScore
+    QString variable;                                  // SetVariable, ChangeVariable, IfVariable: a variable's name
+    int value = 0;                                     // SetVariable's value, ChangeVariable's amount, IfVariable's number
+    VariableComparison comparison = VariableComparison::Equal; // IfVariable
 
-    QList<Block> children; // the actions inside an event or an IfScore, run in order
+    QList<Block> children; // the actions inside an event or an IfVariable, run in order
 };
 
 struct LogicProgram {
+    QList<LogicVariable> variables; // in the order they are listed in the Variables area
     QList<Block> events; // run from first to last
 };
 
@@ -78,6 +80,7 @@ struct BlockInfo {
     bool usesColor;
     bool usesValue;
     bool usesComparison;
+    bool usesVariable;
 };
 
 struct ButtonInfo {
@@ -87,7 +90,7 @@ struct ButtonInfo {
 };
 
 struct ComparisonInfo {
-    ScoreComparison comparison;
+    VariableComparison comparison;
     QString jsonName;
     QString title;
 };
@@ -102,7 +105,8 @@ inline constexpr int MaximumLogicBlocks = 2048; // events and actions together
 inline constexpr int MaximumLogicDepth = 8;     // an event is level 1, its actions level 2
 inline constexpr int MaximumBlockIdLength = 64;
 inline constexpr double MaximumLogicCoordinate = 1000000; // both for positions and for moves
-inline constexpr int MaximumLogicScore = 1000000000;
+inline constexpr int MaximumVariableValue = 1000000000; // the largest a block or an initial value can say
+inline constexpr int MaximumLogicVariables = 64;
 inline constexpr qint64 MaximumLogicFileBytes = 4 * 1024 * 1024;
 
 // One thing to fix. blockId is empty when the problem is the program as a whole.
@@ -116,19 +120,25 @@ struct LogicLoadResult {
     QString error;
 };
 
-// Reads logic.json. Missing or unchosen scene items are not an error here, so an unfinished program
-// can still be opened and repaired; validateLogic reports them.
+// Reads logic.json. Missing or unchosen scene items and variables are not an error here, so an
+// unfinished program can still be opened and repaired; validateLogic reports them. A schema 1 file's
+// score blocks are read as variable blocks using a variable named score.
 LogicLoadResult loadLogic(const QString& path);
 
 // Replaces the file only after the whole new contents are written. Fails when the structure is
 // invalid (validateLogicStructure), and leaves any existing file untouched.
 bool saveLogic(const QString& path, const LogicProgram& program, QString& error);
 
-// Rules that need no scene: ids, nesting, limits, number ranges and colors.
+// Rules that need no scene: variables, ids, nesting, limits, number ranges and colors.
 QList<LogicProblem> validateLogicStructure(const LogicProgram& program);
 
 // Everything a program must satisfy before it can be built, including that each item exists.
 QList<LogicProblem> validateLogic(const LogicProgram& program, const Scene& scene);
+
+// That every {name} in the scene's text is a variable of the program. One problem per missing name
+// per item, in scene order, with an empty blockId. Separate from validateLogic because a text item
+// is not a block: the editor shows these at build, naming the item.
+QList<LogicProblem> validateTextBindings(const Scene& scene, const LogicProgram& program);
 
 // A block id no block in the program uses yet.
 QString newBlockId(const LogicProgram& program);
@@ -139,9 +149,13 @@ QByteArray generateLogicHeader(const LogicProgram& program, const Scene& scene);
 // The header for a project with no logic. It depends on nothing else in the project.
 QByteArray generateEmptyLogicHeader();
 
-// Writes src/GeneratedLogic.hpp for the project at projectRoot from its logic.json, or the empty
-// header when there is no logic.json. Fails with a message for the user when the logic has a
-// problem, and then keeps the previous header.
+// The contents of src/GeneratedVariables.hpp: the variables' initial values and how each text item
+// that shows variables is built. Empty when the program, the scene or a text binding is invalid.
+QByteArray generateVariablesHeader(const LogicProgram& program, const Scene& scene);
+
+// Writes src/GeneratedLogic.hpp and src/GeneratedVariables.hpp for the project at projectRoot from
+// its logic.json, or the empty headers when there is no logic.json. Fails with a message for the
+// user when the logic or a text binding has a problem, and then keeps the previous headers.
 bool exportLogicHeader(const QString& projectRoot, const Scene& scene, QString& error);
 
 }

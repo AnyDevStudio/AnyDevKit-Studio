@@ -161,6 +161,7 @@ QVariant LogicDocument::data(const QModelIndex& index, int role) const {
     case DraggedRole: return carried.contains(id);
     case EmptyCavityRole: return info.holdsActions && !info.isEvent && block->children.isEmpty();
     case ProblemHeightRole: return place ? place->problemHeight : 0.0;
+    case VariableRole: return block->variable;
     default: return {};
     }
 }
@@ -198,6 +199,7 @@ QHash<int, QByteArray> LogicDocument::roleNames() const {
         {DraggedRole, "dragged"},
         {EmptyCavityRole, "emptyCavity"},
         {ProblemHeightRole, "problemHeight"},
+        {VariableRole, "variable"},
     };
 }
 
@@ -288,7 +290,7 @@ void LogicDocument::setSelectedId(const QString& id) {
 
 QVariantList LogicDocument::palette() const {
     QVariantList groups;
-    for (const auto* key : {"events", "movement", "looks", "score"}) {
+    for (const auto* key : {"events", "movement", "looks", "variables"}) {
         const QString category(key);
         QVariantList blocks;
         for (const auto& info : blockCatalog()) {
@@ -309,6 +311,12 @@ QVariantList LogicDocument::buttons() const {
 QVariantList LogicDocument::comparisons() const {
     QVariantList list;
     for (const auto& candidate : comparisonCatalog()) list.append(QVariantMap{{"id", candidate.jsonName}, {"name", candidate.title}});
+    return list;
+}
+
+QVariantList LogicDocument::variables() const {
+    QVariantList list;
+    for (const auto& variable : document.variables) list.append(QVariantMap{{"id", variable.name}, {"name", variable.name}, {"initial", variable.initial}});
     return list;
 }
 
@@ -362,10 +370,11 @@ Block LogicDocument::makeBlock(const BlockInfo& info, const QString& id) const {
     block.id = id;
     block.type = info.type;
     if (info.usesItem && !scene.items.isEmpty()) block.item = scene.items.first().id;
+    if (info.usesVariable && !document.variables.isEmpty()) block.variable = document.variables.first().name;
     if (info.usesOtherItem && scene.items.size() > 1) block.otherItem = scene.items[1].id;
     if (info.usesPosition) block.x = 4;
     if (info.usesValue) block.value = 1;
-    if (info.usesComparison) block.comparison = ScoreComparison::GreaterOrEqual;
+    if (info.usesComparison) block.comparison = VariableComparison::GreaterOrEqual;
     return block;
 }
 
@@ -422,7 +431,7 @@ void LogicDocument::afterChange() {
         emit dataChanged(index(0), index(static_cast<int>(rows.size()) - 1),
             {RunOrderRole, DepthRole, XRole, YRole, WidthRole, HeightRole, HeaderHeightRole, CavityHeightRole, FooterHeightRole, ProblemHeightRole,
              TwoRowsRole, ItemRole, OtherItemRole, ItemNameRole, OtherItemNameRole, ButtonRole, PointXRole, PointYRole, ColorRole, ValueRole,
-             ComparisonRole, ProblemRole, DraggedRole, EmptyCavityRole});
+             ComparisonRole, ProblemRole, DraggedRole, EmptyCavityRole, VariableRole});
     }
     emit programChanged();
     emit layoutChanged();
@@ -582,13 +591,15 @@ bool LogicDocument::setField(const QString& id, const QString& key, const QVaria
             setError("Type a whole number here, for example 10.");
             return false;
         }
-        if (std::abs(number) > MaximumLogicScore) {
-            setError(QString("This needs a whole number from -%1 to %1.").arg(MaximumLogicScore));
+        if (std::abs(number) > MaximumVariableValue) {
+            setError(QString("This needs a whole number from -%1 to %1.").arg(MaximumVariableValue));
             return false;
         }
         block.value = static_cast<int>(number);
     } else if (key == "color") {
         block.color = value.toString();
+    } else if (key == "variable") {
+        block.variable = value.toString();
     } else if (key == "button") {
         const auto name = value.toString();
         const auto found2 = std::ranges::find(buttonCatalog(), name, &ButtonInfo::jsonName);
@@ -604,7 +615,8 @@ bool LogicDocument::setField(const QString& id, const QString& key, const QVaria
     }
 
     const auto unchanged = block.item == before.item && block.otherItem == before.otherItem && block.x == before.x && block.y == before.y
-        && block.value == before.value && block.color == before.color && block.button == before.button && block.comparison == before.comparison;
+        && block.value == before.value && block.color == before.color && block.button == before.button && block.comparison == before.comparison
+        && block.variable == before.variable;
     if (unchanged) {
         setError({});
         return true;
@@ -614,11 +626,117 @@ bool LogicDocument::setField(const QString& id, const QString& key, const QVaria
 
 void LogicDocument::undo() {
     if (drag || history.isEmpty()) return;
+    const auto before = document.variables;
     document = history.takeLast();
     QString saveProblem;
     setError(saveLogic(path, document, saveProblem) ? QString() : saveProblem);
     afterChange();
     emit undoChanged();
+
+    // A rename changed one name in place, and text in the scene has to go back with it.
+    if (before.size() != document.variables.size()) return;
+    for (qsizetype index = 0; index < before.size(); ++index) {
+        if (before[index].name != document.variables[index].name) {
+            emit variableRenamed(before[index].name, document.variables[index].name);
+            return;
+        }
+    }
+}
+
+QString LogicDocument::variableNameProblem(const QString& name, const QString& ignoring) const {
+    if (name.isEmpty()) return "Type a name for the variable first.";
+    if (!isVariableName(name)) return QString("A variable name can use letters, digits and _, up to %1 characters, and cannot start with a digit. Try score or lives.").arg(MaximumVariableNameLength);
+    const auto folded = name.toCaseFolded();
+    for (const auto& variable : document.variables) {
+        if (variable.name != ignoring && variable.name.toCaseFolded() == folded) return QString("There is already a variable named %1. Choose another name.").arg(variable.name);
+    }
+    return {};
+}
+
+bool LogicDocument::addVariable(const QString& name) {
+    if (!loaded || drag) return false;
+    if (const auto problem = variableNameProblem(name); !problem.isEmpty()) {
+        setError(problem);
+        return false;
+    }
+    auto candidate = document;
+    candidate.variables.append({name, 0});
+    return commit(candidate);
+}
+
+bool LogicDocument::renameVariable(const QString& name, const QString& newName) {
+    if (!loaded || drag) return false;
+    if (name == newName) {
+        setError({});
+        return true;
+    }
+    if (const auto problem = variableNameProblem(newName, name); !problem.isEmpty()) {
+        setError(problem);
+        return false;
+    }
+    auto candidate = document;
+    const auto entry = std::ranges::find(candidate.variables, name, &LogicVariable::name);
+    if (entry == candidate.variables.end()) return false;
+    entry->name = newName;
+    const auto renameIn = [&](const auto& self, QList<Block>& blocks) -> void {
+        for (auto& block : blocks) {
+            if (blockInfo(block.type).usesVariable && block.variable == name) block.variable = newName;
+            self(self, block.children);
+        }
+    };
+    renameIn(renameIn, candidate.events);
+    if (!commit(candidate)) return false;
+    emit variableRenamed(name, newName);
+    return true;
+}
+
+bool LogicDocument::setVariableInitial(const QString& name, const QVariant& value) {
+    if (!loaded || drag) return false;
+    auto candidate = document;
+    const auto entry = std::ranges::find(candidate.variables, name, &LogicVariable::name);
+    if (entry == candidate.variables.end()) return false;
+    bool numeric = false;
+    const auto number = value.toDouble(&numeric);
+    if (!numeric || !std::isfinite(number) || number != std::floor(number)) {
+        setError("A variable starts at a whole number. Type one, for example 0.");
+        return false;
+    }
+    if (std::abs(number) > MaximumVariableValue) {
+        setError(QString("A variable can start at a whole number from -%1 to %1.").arg(MaximumVariableValue));
+        return false;
+    }
+    if (entry->initial == static_cast<int>(number)) {
+        setError({});
+        return true;
+    }
+    entry->initial = static_cast<int>(number);
+    return commit(candidate);
+}
+
+void LogicDocument::removeVariable(const QString& name) {
+    if (!loaded || drag) return;
+    auto candidate = document;
+    if (candidate.variables.removeIf([&](const LogicVariable& variable) { return variable.name == name; }) == 0) return;
+    commit(candidate);
+}
+
+QVariantList LogicDocument::variableUses(const QString& name) const {
+    QVariantList uses;
+    const auto walk = [&](const auto& self, const QList<Block>& blocks, const QString& eventTitle, int depth) -> void {
+        for (const auto& block : blocks) {
+            const auto& info = blockInfo(block.type);
+            const auto where = eventTitle.isEmpty() ? info.title : eventTitle;
+            if (info.usesVariable && block.variable == name) uses.append(QVariantMap{{"kind", "block"}, {"title", info.title}, {"where", QString("Inside \"%1\"").arg(where)}});
+            if (depth < MaximumLogicDepth) self(self, block.children, where, depth + 1);
+        }
+    };
+    walk(walk, document.events, {}, 1);
+    for (const auto& item : scene.items) {
+        if (item.type == "text" && textVariables(item.text).contains(name)) {
+            uses.append(QVariantMap{{"kind", "text"}, {"title", item.name.isEmpty() ? item.id : item.name}, {"where", "Shown on the stage"}});
+        }
+    }
+    return uses;
 }
 
 void LogicDocument::startMoving(const QString& id) {

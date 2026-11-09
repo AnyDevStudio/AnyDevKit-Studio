@@ -22,7 +22,7 @@ namespace {
 
 // The scene.json example from docs/scene-format.md.
 const QByteArray DocExample = R"json({
-  "schemaVersion": 3,
+  "schemaVersion": 4,
   "background": "#151C3A",
   "items": [
     {
@@ -347,7 +347,7 @@ private slots:
             const char* expected;
         } cases[] = {
             {"schema missing", [](QJsonObject& r) { r.remove("schemaVersion"); }, "schemaVersion"},
-            {"schema 4", [](QJsonObject& r) { r["schemaVersion"] = 4; }, "schemaVersion"},
+            {"schema 5", [](QJsonObject& r) { r["schemaVersion"] = 5; }, "schemaVersion"},
             {"schema 1 cannot hold images", [](QJsonObject& r) { r["schemaVersion"] = 1; }, "schemaVersion 2"},
             {"schema 2 cannot hold particles", [](QJsonObject& r) { r["schemaVersion"] = 2; }, "schemaVersion 3"},
             {"preset missing", removeField(3, "preset"), "Item Finale: preset"},
@@ -590,7 +590,7 @@ private slots:
         QString error;
         QVERIFY2(saveScene(path, scene, error), qPrintable(error));
         const auto root = QJsonDocument::fromJson(readBytes(path)).object();
-        QCOMPARE(root.value("schemaVersion").toInt(), 3);
+        QCOMPARE(root.value("schemaVersion").toInt(), 4);
         const auto box = root.value("items").toArray().at(0).toObject();
         QVERIFY(box.contains("width"));
         QVERIFY(!box.contains("scale"));
@@ -813,7 +813,7 @@ private slots:
         QString error;
         QVERIFY2(saveScene(path, scene, error), qPrintable(error));
         const auto root = QJsonDocument::fromJson(readBytes(path)).object();
-        QCOMPARE(root.value("schemaVersion").toInt(), 3);
+        QCOMPARE(root.value("schemaVersion").toInt(), 4);
         const auto saved = root.value("items").toArray().at(0).toObject();
         QCOMPARE(saved.value("source").toString(), QString("assets/logo.png"));
         QCOMPARE(saved.value("width").toDouble(), 64.0);
@@ -1404,6 +1404,183 @@ private slots:
         QString error;
         QVERIFY2(installSceneRuntime(runtime.path(), link, "Demo", error), qPrintable(error));
         QVERIFY(QFile::exists(real.path() + "/a.txt"));
+    }
+    // Text that shows variables.
+
+    void textTemplatesParse_data() {
+        QTest::addColumn<QString>("text");
+        QTest::addColumn<QStringList>("parts");
+        QTest::addColumn<QString>("problem");
+        QTest::newRow("plain") << "Hello" << QStringList{"Hello"} << "";
+        QTest::newRow("variable") << "Score: {score}" << QStringList{"Score: ", "$score"} << "";
+        QTest::newRow("only a variable") << "{a_1}" << QStringList{"$a_1"} << "";
+        QTest::newRow("two variables") << "{a}{b}" << QStringList{"$a", "$b"} << "";
+        QTest::newRow("escaped braces") << "{{x}}" << QStringList{"{x}"} << "";
+        QTest::newRow("escape beside a variable") << "{{{a}}}" << QStringList{"{", "$a", "}"} << "";
+        QTest::newRow("a lone open brace") << "a{b" << QStringList{} << "matching";
+        QTest::newRow("a lone close brace") << "a}b" << QStringList{} << "type it twice";
+        QTest::newRow("empty braces") << "a{}b" << QStringList{} << "variable name";
+        QTest::newRow("a space in the name") << "{my score}" << QStringList{} << "my score";
+        QTest::newRow("a name that starts with a digit") << "{1up}" << QStringList{} << "1up";
+    }
+
+    void textTemplatesParse() {
+        QFETCH(QString, text);
+        QFETCH(QStringList, parts);
+        QFETCH(QString, problem);
+        const auto parsed = parseTextTemplate(text);
+        if (!problem.isEmpty()) {
+            QVERIFY2(parsed.problem.contains(problem), qPrintable(parsed.problem));
+            return;
+        }
+        QCOMPARE(parsed.problem, QString());
+        QStringList seen;
+        for (const auto& part : parsed.parts) seen << (part.variable.isEmpty() ? part.text : "$" + part.variable);
+        QCOMPARE(seen, parts);
+    }
+
+    void displayedTextFillsInInitialValues_data() {
+        QTest::addColumn<QString>("text");
+        QTest::addColumn<QString>("expected");
+        QTest::newRow("plain") << "Hello" << "Hello";
+        QTest::newRow("known") << "Score: {score}" << "Score: 42";
+        QTest::newRow("negative") << "{low}" << "-5";
+        QTest::newRow("unknown stays as typed") << "{ghost}" << "{ghost}";
+        QTest::newRow("literal braces") << "{{score}}" << "{score}";
+        QTest::newRow("broken stays as typed") << "a{b" << "a{b";
+    }
+
+    void displayedTextFillsInInitialValues() {
+        QFETCH(QString, text);
+        QFETCH(QString, expected);
+        const QList<LogicVariable> values{{"score", 42}, {"low", -5}};
+        QCOMPARE(displayedText(text, values), expected);
+    }
+
+    void renamingInTextLeavesEverythingElseAlone_data() {
+        QTest::addColumn<QString>("text");
+        QTest::addColumn<QString>("expected");
+        QTest::newRow("used") << "Score: {score}" << "Score: {points}";
+        QTest::newRow("used twice") << "{score}/{score}" << "{points}/{points}";
+        QTest::newRow("other name") << "{scored}" << "{scored}";
+        QTest::newRow("escaped is plain text") << "{{score}}" << "{{score}}";
+        QTest::newRow("escape next to it") << "{{{score}}}" << "{{{points}}}";
+        QTest::newRow("no variables") << "score" << "score";
+    }
+
+    void renamingInTextLeavesEverythingElseAlone() {
+        QFETCH(QString, text);
+        QFETCH(QString, expected);
+        QCOMPARE(renameVariableInText(text, "score", "points"), expected);
+    }
+
+    void aSceneRefusesBrokenBracesAndExplainsTheFix() {
+        Scene scene;
+        scene.items = {label("t", "Title", "Hi {name")};
+        const auto problem = validateScene(scene);
+        QVERIFY2(problem.contains("Title"), qPrintable(problem));
+        QVERIFY2(problem.contains("twice"), qPrintable(problem));
+    }
+
+    void bracesCountOnceTowardsTheTextLimit() {
+        Scene scene;
+        scene.items = {label("t", "Title", QString("{{").repeated(64))};
+        QVERIFY2(validateScene(scene).isEmpty(), qPrintable(validateScene(scene)));
+        scene.items[0].text = QString("{{").repeated(65);
+        QVERIFY(!validateScene(scene).isEmpty());
+        scene.items[0].text = QString("{a}").repeated(21) + "b"; // a variable counts by its braces and name
+        QVERIFY2(validateScene(scene).isEmpty(), qPrintable(validateScene(scene)));
+        scene.items[0].text = QString("{a}").repeated(21) + "bc";
+        QVERIFY(!validateScene(scene).isEmpty());
+    }
+
+    void quadCountsReserveTheWidestNumber() {
+        Scene scene;
+        scene.items = {label("t", "Title", "{score}")};
+        QCOMPARE(sceneQuadCount(scene), 1 + 11);
+        scene.items[0].text = "A{a}B{b}C";
+        QCOMPARE(sceneQuadCount(scene), 1 + 3 + 22);
+        scene.items[0].text = "{{x}}";
+        QCOMPARE(sceneQuadCount(scene), 1 + 3);
+    }
+
+    void aReservedNumberCountsAgainstTheBlockBudget() {
+        Scene scene;
+        // 21 three-character variables fit in the 64 characters of text, and each may need 11 quads.
+        scene.items = {particles("a", 8000), particles("b", 7768), label("t", "Title", QString("{a}").repeated(21))};
+        QCOMPARE(sceneQuadCount(scene), 1 + 8000 + 7768 + 231);
+        QVERIFY2(validateScene(scene).isEmpty(), qPrintable(validateScene(scene)));
+        scene.items[1].amount = 7769;
+        QVERIFY2(validateScene(scene).contains("16000"), qPrintable(validateScene(scene)));
+    }
+
+    void boundTextReservesItsWidestFormInTheHeader() {
+        Scene scene;
+        scene.items = {label("t", "Title", "Score: {score}")};
+        const auto header = generateSceneHeader(scene);
+        // The number is held as eleven zeros, so the text's length is the quads the game reserves.
+        QVERIFY2(header.contains("\"Score: 00000000000\""), header.constData());
+        QVERIFY2(!header.contains("{score}"), header.constData());
+        QVERIFY2(header.contains(QByteArray::number((18 * 6 - 1) * 2) + ".0f"), header.constData());
+    }
+
+    void literalBracesReachTheHeaderAsOneBrace() {
+        Scene scene;
+        scene.items = {label("t", "Title", "{{ok}}")};
+        const auto header = generateSceneHeader(scene);
+        QVERIFY2(header.contains("\"{ok}\""), header.constData());
+        // Four characters at scale 2: (4 * 6 - 1) * 2.
+        QVERIFY2(header.contains("46.0f, 14.0f"), header.constData());
+    }
+
+    void textWithoutBracesGeneratesExactlyAsBefore() {
+        Scene scene;
+        scene.items = {label("t", "Title", "Hi")};
+        QVERIFY(generateSceneHeader(scene).contains("\"Hi\""));
+        QVERIFY(generateSceneHeader(scene).contains("22.0f, 14.0f"));
+    }
+
+    void anOlderSceneKeepsItsBracesAsPlainText() {
+        for (int version : {1, 2, 3}) {
+            QTemporaryDir directory;
+            QFile file(directory.path() + "/scene.json");
+            QVERIFY(file.open(QIODevice::WriteOnly));
+            file.write(QJsonDocument(QJsonObject{
+                {"schemaVersion", version},
+                {"background", "#151C3A"},
+                {"items", QJsonArray{QJsonObject{{"id", "t"}, {"type", "text"}, {"x", 0}, {"y", 0}, {"scale", 2}, {"color", "#FFFFFF"}, {"text", "{cost} a{b"}}}},
+            }).toJson());
+            file.close();
+            const auto loaded = loadScene(directory.path() + "/scene.json");
+            QVERIFY2(loaded.scene.has_value(), qPrintable(loaded.error));
+            QCOMPARE(loaded.scene->items[0].text, QString("{{cost}} a{{b"));
+            QCOMPARE(displayedText(loaded.scene->items[0].text, {}), QString("{cost} a{b"));
+            QVERIFY(!textUsesVariables(loaded.scene->items[0].text));
+            QVERIFY(generateSceneHeader(*loaded.scene).contains("\"{cost} a{b\""));
+        }
+    }
+
+    void anOlderSceneWithSixtyFourBracesStillLoads() {
+        QTemporaryDir directory;
+        QFile file(directory.path() + "/scene.json");
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write(QJsonDocument(QJsonObject{
+            {"schemaVersion", 3},
+            {"background", "#151C3A"},
+            {"items", QJsonArray{QJsonObject{{"id", "t"}, {"type", "text"}, {"x", 0}, {"y", 0}, {"scale", 2}, {"color", "#FFFFFF"}, {"text", QString(64, '{')}}}},
+        }).toJson());
+        file.close();
+        const auto loaded = loadScene(directory.path() + "/scene.json");
+        QVERIFY2(loaded.scene.has_value(), qPrintable(loaded.error));
+    }
+
+    void aSceneRuntimeThatPredatesVariablesIsDetected() {
+        QTemporaryDir project;
+        QVERIFY(!sceneRuntimeNeedsUpdate(project.path()));
+        writeText(project.path() + "/include/Scene/SceneState.hpp", "#include \"GeneratedScene.hpp\"\n");
+        QVERIFY(sceneRuntimeNeedsUpdate(project.path()));
+        writeText(project.path() + "/include/Scene/SceneState.hpp", "#include \"GeneratedVariables.hpp\"\n");
+        QVERIFY(!sceneRuntimeNeedsUpdate(project.path()));
     }
 };
 

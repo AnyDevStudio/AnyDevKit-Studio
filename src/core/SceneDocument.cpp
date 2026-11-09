@@ -20,10 +20,6 @@ constexpr int MaximumUndoSteps = 200;
 constexpr double LargestNewImageWidth = StageWidth / 2;
 constexpr double LargestNewImageHeight = StageHeight / 2;
 
-double drawnWidth(const SceneItem& item) {
-    return item.type == "text" ? static_cast<double>(item.text.size() * 6 - 1) * item.scale : item.width;
-}
-
 double drawnHeight(const SceneItem& item) {
     return item.type == "text" ? 7.0 * item.scale : item.height;
 }
@@ -31,6 +27,10 @@ double drawnHeight(const SceneItem& item) {
 }
 
 SceneDocument::SceneDocument(QObject* parent) : QAbstractListModel(parent) {}
+
+double SceneDocument::drawnWidth(const SceneItem& item) const {
+    return item.type == "text" ? static_cast<double>(displayedText(item.text, variables).size() * 6 - 1) * item.scale : item.width;
+}
 
 int SceneDocument::rowCount(const QModelIndex& parent) const {
     return parent.isValid() ? 0 : static_cast<int>(document.items.size());
@@ -48,7 +48,7 @@ QVariant SceneDocument::data(const QModelIndex& index, int role) const {
     case WidthRole: return drawnWidth(item);
     case HeightRole: return drawnHeight(item);
     case ColorRole: return item.color;
-    case TextRole: return item.text;
+    case TextRole: return displayedText(item.text, variables);
     case ScaleRole: return item.scale;
     case ControllableRole: return item.controllable;
     case ParticlesRole: return QVariantMap{
@@ -147,6 +147,12 @@ bool SceneDocument::canUndo() const { return !history.isEmpty(); }
 QString SceneDocument::error() const { return message; }
 QString SceneDocument::notice() const { return noticeText; }
 bool SceneDocument::noticeIsProblem() const { return noticeProblem; }
+QStringList SceneDocument::variableNames() const {
+    QStringList names;
+    for (const auto& variable : variables) names << variable.name;
+    return names;
+}
+
 QString SceneDocument::projectRoot() const { return path.isEmpty() ? QString() : QFileInfo(path).absolutePath(); }
 
 QString SceneDocument::imageWarning() const {
@@ -491,6 +497,42 @@ bool SceneDocument::setItemValue(int index, const QString& property, const QVari
     if (!commit(candidate)) return false;
     notifyItem(index);
     return true;
+}
+
+void SceneDocument::setVariables(const QList<LogicVariable>& newVariables) {
+    QStringList before;
+    for (const auto& item : document.items) before << displayedText(item.text, variables);
+    const auto namesChanged = variableNames() != [&] {
+        QStringList names;
+        for (const auto& variable : newVariables) names << variable.name;
+        return names;
+    }();
+    variables = newVariables;
+    if (namesChanged) emit variablesChanged();
+    for (int row = 0; row < document.items.size(); ++row) {
+        if (document.items[row].type == "text" && before[row] != displayedText(document.items[row].text, variables)) notifyItem(row);
+    }
+}
+
+void SceneDocument::renameVariable(const QString& name, const QString& newName) {
+    const auto renameIn = [&](Scene& scene) {
+        for (auto& item : scene.items) {
+            if (item.type == "text") item.text = renameVariableInText(item.text, name, newName);
+        }
+    };
+    const auto before = document.items;
+    renameIn(document);
+    for (auto& snapshot : history) renameIn(snapshot);
+    QList<int> changed;
+    for (int row = 0; row < document.items.size(); ++row) {
+        if (document.items[row].text != before[row].text) changed.append(row);
+    }
+    if (changed.isEmpty()) return;
+    if (loaded) {
+        QString failure;
+        setError(saveScene(path, document, failure) ? QString() : failure);
+    }
+    for (const auto row : changed) notifyItem(row);
 }
 
 void SceneDocument::setBackground(const QString& color) {

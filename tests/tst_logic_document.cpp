@@ -29,8 +29,24 @@ Scene twoItemScene() {
 }
 
 void openWithScene(const QTemporaryDir& directory, LogicDocument& document) {
+    QFile file(logicPath(directory));
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write(R"json({"schemaVersion": 2, "variables": [{"name": "score", "initial": 0}], "events": []})json");
+    file.close();
     QVERIFY(document.open(logicPath(directory)));
     document.setScene(twoItemScene());
+}
+
+Scene sceneWithText(const QString& text) {
+    auto scene = twoItemScene();
+    SceneItem label;
+    label.id = "item-3";
+    label.type = "text";
+    label.name = "Hud";
+    label.text = text;
+    label.scale = 2;
+    scene.items.append(label);
+    return scene;
 }
 
 QStringList idsIn(const QList<Block>& blocks) {
@@ -75,7 +91,7 @@ private slots:
             keys << map.value("key").toString();
             for (const auto& block : map.value("blocks").toList()) seen << block.toMap().value("type").toString();
         }
-        QCOMPARE(keys, QStringList({"events", "movement", "looks", "score"}));
+        QCOMPARE(keys, QStringList({"events", "movement", "looks", "variables"}));
         QStringList catalog;
         for (const auto& info : blockCatalog()) catalog << info.jsonName;
         auto sortedSeen = seen;
@@ -91,8 +107,8 @@ private slots:
         QCOMPARE(blockCategory(blockInfo(BlockType::SetPosition)), QString("movement"));
         QCOMPARE(blockCategory(blockInfo(BlockType::Hide)), QString("looks"));
         QCOMPARE(blockCategory(blockInfo(BlockType::SetColor)), QString("looks"));
-        QCOMPARE(blockCategory(blockInfo(BlockType::AddScore)), QString("score"));
-        QCOMPARE(blockCategory(blockInfo(BlockType::IfScore)), QString("score"));
+        QCOMPARE(blockCategory(blockInfo(BlockType::ChangeVariable)), QString("variables"));
+        QCOMPARE(blockCategory(blockInfo(BlockType::IfVariable)), QString("variables"));
     }
 
     void fieldsFollowTheCatalogFlags() {
@@ -105,7 +121,8 @@ private slots:
         QCOMPARE(keys(BlockType::SetColor), QStringList({"item", "color"}));
         QCOMPARE(keys(BlockType::WhileButtonHeld), QStringList({"button"}));
         QCOMPARE(keys(BlockType::WhenItemsTouch), QStringList({"item", "otherItem"}));
-        QCOMPARE(keys(BlockType::IfScore), QStringList({"comparison", "value"}));
+        QCOMPARE(keys(BlockType::IfVariable), QStringList({"variable", "comparison", "value"}));
+        QCOMPARE(keys(BlockType::SetVariable), QStringList({"variable", "value"}));
         QVERIFY(keys(BlockType::EveryFrame).isEmpty());
     }
 
@@ -173,7 +190,7 @@ private slots:
         const auto second = document.addFromPalette("show");
         QCOMPARE(idsIn(document.program().events.first().children), QStringList({first, second}));
 
-        const auto wrapper = document.addFromPalette("ifScore");
+        const auto wrapper = document.addFromPalette("ifVariable");
         document.setSelectedId(wrapper);
         const auto nested = document.addFromPalette("hide");
         QCOMPARE(idsIn(document.program().events.first().children.last().children), QStringList({nested}));
@@ -226,7 +243,7 @@ private slots:
         QCOMPARE(document.program().events.first().button, ControllerButton::DpadLeft);
         QVERIFY(!document.setField(held, "button", "start"));
 
-        const auto wrapper = document.addFromPalette("ifScore");
+        const auto wrapper = document.addFromPalette("ifVariable");
         QVERIFY(document.setField(wrapper, "comparison", "greaterOrEqual"));
         QVERIFY(document.setField(wrapper, "value", 10));
         QVERIFY(!document.setField(wrapper, "value", 1.5));
@@ -256,7 +273,7 @@ private slots:
         LogicDocument document;
         openWithScene(directory, document);
         document.addFromPalette("everyFrame");
-        const auto wrapper = document.addFromPalette("ifScore");
+        const auto wrapper = document.addFromPalette("ifVariable");
         document.setSelectedId(wrapper);
         const auto nested = document.addFromPalette("hide");
         document.setSelectedId(wrapper);
@@ -341,7 +358,7 @@ private slots:
         LogicDocument document;
         openWithScene(directory, document);
         document.addFromPalette("everyFrame");
-        const auto wrapper = document.addFromPalette("ifScore");
+        const auto wrapper = document.addFromPalette("ifVariable");
         document.setSelectedId(wrapper);
         document.addFromPalette("hide");
 
@@ -386,11 +403,11 @@ private slots:
         // An event is level 1, so wrappers reach level 7 here and a leaf can land at level 8 only.
         QString deepest;
         for (int level = 2; level <= 7; ++level) {
-            deepest = document.addFromPalette("ifScore");
+            deepest = document.addFromPalette("ifVariable");
             QVERIFY2(!deepest.isEmpty(), qPrintable(document.error()));
             document.setSelectedId(deepest);
         }
-        const auto wrapperBelow = document.addBlock("ifScore", document.program().events.first().id, 1);
+        const auto wrapperBelow = document.addBlock("ifVariable", document.program().events.first().id, 1);
         QVERIFY(!wrapperBelow.isEmpty());
         document.setSelectedId(wrapperBelow);
         const auto leaf = document.addFromPalette("hide");
@@ -438,12 +455,12 @@ private slots:
         const auto event = document.addFromPalette("whenGameStarts");
         const auto below = document.positionOf(event);
 
-        document.startAdding("addScore");
+        document.startAdding("changeVariable");
         document.dragTo(below.value("x").toDouble(), below.value("y").toDouble() + 70);
         const auto id = document.drop();
         QVERIFY(!id.isEmpty());
         QCOMPARE(document.selectedId(), id);
-        QCOMPARE(document.program().events.first().children.first().type, BlockType::AddScore);
+        QCOMPARE(document.program().events.first().children.first().type, BlockType::ChangeVariable);
         QCOMPARE(document.program().events.first().children.first().value, 1);
     }
 
@@ -468,7 +485,7 @@ private slots:
         LogicDocument document;
         openWithScene(directory, document);
         document.addFromPalette("everyFrame");
-        const auto wrapper = document.addFromPalette("ifScore");
+        const auto wrapper = document.addFromPalette("ifVariable");
         const auto emptyHeight = document.positionOf(wrapper).value("height").toDouble();
         document.setSelectedId(wrapper);
         document.addFromPalette("hide");
@@ -489,7 +506,7 @@ private slots:
         first.item = "item-1";
         Block wrapper;
         wrapper.id = "w";
-        wrapper.type = BlockType::IfScore;
+        wrapper.type = BlockType::IfVariable;
         Block nested = first;
         nested.id = "n";
         wrapper.children = {nested};
@@ -623,7 +640,7 @@ private slots:
         LogicDocument document;
         openWithScene(directory, document);
         const auto event = document.addFromPalette("everyFrame");
-        const auto wrapper = document.addFromPalette("ifScore");
+        const auto wrapper = document.addFromPalette("ifVariable");
         document.setSelectedId(wrapper);
         const auto nested = document.addFromPalette("hide");
         document.setSelectedId({});
@@ -675,6 +692,188 @@ private slots:
         for (int i = 0; i < MaximumLogicEvents; ++i) QVERIFY(!document.addFromPalette("everyFrame").isEmpty());
         QVERIFY(document.addFromPalette("everyFrame").isEmpty());
         QVERIFY(document.error().contains("128"));
+    }
+    // Variables.
+
+    void variablesAreAddedSavedAndUndone() {
+        QTemporaryDir directory;
+        LogicDocument document;
+        openWithScene(directory, document);
+        QSignalSpy spy(&document, &LogicDocument::programChanged);
+        QVERIFY(document.addVariable("lives"));
+        QCOMPARE(spy.count(), 1);
+        QVERIFY(document.error().isEmpty());
+        QCOMPARE(saved(directory).variables.size(), qsizetype(2));
+        QCOMPARE(saved(directory).variables.last().name, QString("lives"));
+        document.undo();
+        QCOMPARE(saved(directory).variables.size(), qsizetype(1));
+    }
+
+    void aBadNameIsRefusedAndExplained_data() {
+        QTest::addColumn<QString>("name");
+        QTest::addColumn<QString>("expected");
+        QTest::newRow("empty") << "" << "Type a name";
+        QTest::newRow("spaces") << "my score" << "letters";
+        QTest::newRow("digit first") << "2x" << "letter";
+        QTest::newRow("taken") << "score" << "already";
+        QTest::newRow("taken in another case") << "SCORE" << "already";
+    }
+
+    void aBadNameIsRefusedAndExplained() {
+        QFETCH(QString, name);
+        QFETCH(QString, expected);
+        QTemporaryDir directory;
+        LogicDocument document;
+        openWithScene(directory, document);
+        QVERIFY(!document.addVariable(name));
+        QVERIFY2(document.error().contains(expected), qPrintable(document.error()));
+        QCOMPARE(document.program().variables.size(), qsizetype(1));
+    }
+
+    void aNewBlockStartsWithTheFirstVariable() {
+        QTemporaryDir directory;
+        LogicDocument document;
+        openWithScene(directory, document);
+        document.addFromPalette("everyFrame");
+        const auto block = document.addFromPalette("changeVariable");
+        QCOMPARE(roleOf(document, block, LogicDocument::VariableRole), QString("score"));
+        QVERIFY(roleOf(document, block, LogicDocument::ProblemRole).isEmpty());
+    }
+
+    void aBlockCanChooseAVariable() {
+        QTemporaryDir directory;
+        LogicDocument document;
+        openWithScene(directory, document);
+        document.addVariable("lives");
+        document.addFromPalette("everyFrame");
+        const auto block = document.addFromPalette("setVariable");
+        QVERIFY(document.setField(block, "variable", "lives"));
+        QCOMPARE(saved(directory).events.first().children.first().variable, QString("lives"));
+    }
+
+    void renamingAVariableUpdatesEveryBlockAndSaysSo() {
+        QTemporaryDir directory;
+        LogicDocument document;
+        openWithScene(directory, document);
+        document.addFromPalette("everyFrame");
+        const auto wrapper = document.addFromPalette("ifVariable");
+        document.setSelectedId(wrapper);
+        const auto nested = document.addFromPalette("changeVariable");
+        QSignalSpy renamed(&document, &LogicDocument::variableRenamed);
+        QVERIFY(document.renameVariable("score", "points"));
+        QCOMPARE(renamed.count(), 1);
+        QCOMPARE(renamed.first().at(0).toString(), QString("score"));
+        QCOMPARE(renamed.first().at(1).toString(), QString("points"));
+        const auto program = saved(directory);
+        QCOMPARE(program.variables.first().name, QString("points"));
+        QCOMPARE(program.events.first().children.first().variable, QString("points"));
+        QCOMPARE(program.events.first().children.first().children.first().variable, QString("points"));
+        QCOMPARE(roleOf(document, nested, LogicDocument::VariableRole), QString("points"));
+        QVERIFY(document.problemCount() == 0);
+    }
+
+    void renamingToAnExistingNameIsRefused() {
+        QTemporaryDir directory;
+        LogicDocument document;
+        openWithScene(directory, document);
+        document.addVariable("lives");
+        QVERIFY(!document.renameVariable("lives", "score"));
+        QVERIFY2(document.error().contains("already"), qPrintable(document.error()));
+        QCOMPARE(document.program().variables.last().name, QString("lives"));
+    }
+
+    void renamingCanChangeOnlyTheCase() {
+        QTemporaryDir directory;
+        LogicDocument document;
+        openWithScene(directory, document);
+        QVERIFY(document.renameVariable("score", "Score"));
+        QCOMPARE(document.program().variables.first().name, QString("Score"));
+    }
+
+    void undoingARenamePutsTheOldNameBackEverywhere() {
+        QTemporaryDir directory;
+        LogicDocument document;
+        openWithScene(directory, document);
+        QVERIFY(document.renameVariable("score", "points"));
+        QSignalSpy renamed(&document, &LogicDocument::variableRenamed);
+        document.undo();
+        QCOMPARE(document.program().variables.first().name, QString("score"));
+        QCOMPARE(renamed.count(), 1);
+        QCOMPARE(renamed.first().at(0).toString(), QString("points"));
+        QCOMPARE(renamed.first().at(1).toString(), QString("score"));
+    }
+
+    void initialValuesAreCheckedAndSaved() {
+        QTemporaryDir directory;
+        LogicDocument document;
+        openWithScene(directory, document);
+        QVERIFY(document.setVariableInitial("score", 25));
+        QCOMPARE(saved(directory).variables.first().initial, 25);
+        QVERIFY(!document.setVariableInitial("score", 1.5));
+        QVERIFY2(document.error().contains("whole number"), qPrintable(document.error()));
+        QVERIFY(!document.setVariableInitial("score", 2000000000.0));
+        QVERIFY2(document.error().contains("1000000000"), qPrintable(document.error()));
+        QVERIFY(document.setVariableInitial("score", -3));
+        QCOMPARE(saved(directory).variables.first().initial, -3);
+    }
+
+    void usesListEveryBlockAndText() {
+        QTemporaryDir directory;
+        LogicDocument document;
+        openWithScene(directory, document);
+        document.setScene(sceneWithText("Score: {score}"));
+        document.addFromPalette("whileButtonHeld");
+        document.addFromPalette("changeVariable");
+        const auto uses = document.variableUses("score");
+        QCOMPARE(uses.size(), qsizetype(2));
+        const auto block = uses.at(0).toMap();
+        QCOMPARE(block.value("kind").toString(), QString("block"));
+        QCOMPARE(block.value("title").toString(), QString("Change variable"));
+        QVERIFY2(block.value("where").toString().contains("While a button is held"), qPrintable(block.value("where").toString()));
+        const auto text = uses.at(1).toMap();
+        QCOMPARE(text.value("kind").toString(), QString("text"));
+        QVERIFY2(text.value("title").toString().contains("Hud"), qPrintable(text.value("title").toString()));
+        QVERIFY(document.variableUses("nothing").isEmpty());
+    }
+
+    void deletingAVariableInUseIsNotSilent() {
+        QTemporaryDir directory;
+        LogicDocument document;
+        openWithScene(directory, document);
+        document.addFromPalette("everyFrame");
+        const auto block = document.addFromPalette("changeVariable");
+        document.removeVariable("score");
+        QVERIFY(document.program().variables.isEmpty());
+        QVERIFY(document.isLoaded());
+        QVERIFY2(roleOf(document, block, LogicDocument::ProblemRole).contains("score"), qPrintable(roleOf(document, block, LogicDocument::ProblemRole)));
+        QCOMPARE(document.problemCount(), 1);
+        document.undo();
+        QCOMPARE(document.program().variables.first().name, QString("score"));
+        QCOMPARE(document.problemCount(), 0);
+    }
+
+    void aNewBlockWithNoVariablesAsksForOne() {
+        QTemporaryDir directory;
+        LogicDocument document;
+        QVERIFY(document.open(logicPath(directory)));
+        document.setScene(twoItemScene());
+        document.addFromPalette("everyFrame");
+        const auto block = document.addFromPalette("changeVariable");
+        QVERIFY2(roleOf(document, block, LogicDocument::ProblemRole).contains("no variable chosen"), qPrintable(roleOf(document, block, LogicDocument::ProblemRole)));
+    }
+
+    void openingASchemaOneFileWritesNothing() {
+        QTemporaryDir directory;
+        const QByteArray old = R"json({"schemaVersion": 1, "events": [{"id": "e", "type": "everyFrame", "actions": [{"id": "b", "type": "addScore", "value": 1}]}]})json";
+        QFile file(logicPath(directory));
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write(old);
+        file.close();
+        LogicDocument document;
+        QVERIFY(document.open(logicPath(directory)));
+        QCOMPARE(document.program().variables.first().name, QString("score"));
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        QCOMPARE(file.readAll(), old);
     }
 };
 
