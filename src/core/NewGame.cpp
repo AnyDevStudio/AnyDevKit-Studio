@@ -39,8 +39,65 @@ QString withFullStop(QString text) {
 
 }
 
-QString validateGameName(const QString& name) {
-    if (name.isEmpty()) return "Give your game a name.";
+QList<ProjectTypeInfo> projectTypes() {
+    return {
+        {ProjectType::Game2D, "2d", "2D game", "A starter scene with a square the controller moves.", "game", true, {}},
+        {ProjectType::App, "app", "App", "A starter screen with a title and button shapes.", "app", true, {}},
+        {ProjectType::CodeOnly, "code", "Code only", "A plain adk init project you write in C++.", "project", true, {}},
+        {ProjectType::Game3D, "3d", "3D game", "Studio has no 3D editor or 3D runtime yet.", "game", false, "Coming later"},
+    };
+}
+
+ProjectType defaultProjectType() {
+    return ProjectType::Game2D;
+}
+
+std::optional<ProjectType> projectTypeFromId(const QString& id) {
+    for (const auto& type : projectTypes()) {
+        if (type.id == id) return type.type;
+    }
+    return std::nullopt;
+}
+
+QString projectTypeNoun(ProjectType type) {
+    for (const auto& known : projectTypes()) {
+        if (known.type == type) return known.noun;
+    }
+    return "game";
+}
+
+QList<NewGameStep> newGameSteps(ProjectType type) {
+    switch (type) {
+    case ProjectType::Game2D:
+    case ProjectType::App:
+        return {NewGameStep::AdkInit, NewGameStep::AddSceneRuntime};
+    case ProjectType::CodeOnly:
+        return {NewGameStep::AdkInit};
+    case ProjectType::Game3D:
+        break;
+    }
+    return {};
+}
+
+std::optional<Scene> starterSceneFor(ProjectType type) {
+    switch (type) {
+    case ProjectType::Game2D:
+        return starterScene();
+    case ProjectType::App:
+        return appStarterScene();
+    case ProjectType::CodeOnly:
+    case ProjectType::Game3D:
+        break;
+    }
+    return std::nullopt;
+}
+
+QString openingTab(ProjectType type) {
+    return type == ProjectType::CodeOnly ? "build" : "scene";
+}
+
+QString validateGameName(const QString& name, const QString& noun) {
+    if (name.isEmpty()) return QString("Give your %1 a name.").arg(noun);
     if (name.size() > MaximumNameLength) return QString("That name is %1 characters long. Use %2 or fewer.").arg(name.size()).arg(MaximumNameLength);
     if (!std::ranges::all_of(name, isNameCharacter)) return "Use only English letters, digits and underscores in the name, with no spaces.";
     if (isAsciiDigit(name.front())) return "A name cannot start with a digit. Start it with a letter.";
@@ -67,18 +124,21 @@ QString validateDependencyRoot(const QString& dependencyRoot) {
     return QString("%1 has no ps5/sysroot. Choose the folder made by adk setup, or run adk setup with --target ps5 first.").arg(dependencyRoot);
 }
 
-QString validateParentDirectory(const QString& parentDirectory) {
-    if (parentDirectory.isEmpty()) return "Choose the folder to create the game in.";
+QString validateParentDirectory(const QString& parentDirectory, const QString& noun) {
+    if (parentDirectory.isEmpty()) return QString("Choose the folder to create the %1 in.").arg(noun);
     if (QDir::isRelativePath(parentDirectory)) return QString("%1 is not a full path. Choose a folder or type its full path.").arg(parentDirectory);
     const QFileInfo info(parentDirectory);
     if (!info.exists()) return QString("%1 does not exist. Create it or choose another folder.").arg(parentDirectory);
-    if (!info.isDir()) return QString("%1 is not a folder. Choose a folder to create the game in.").arg(parentDirectory);
+    if (!info.isDir()) return QString("%1 is not a folder. Choose a folder to create the %2 in.").arg(parentDirectory, noun);
     if (!info.isWritable()) return QString("You cannot write to %1. Choose a folder you can write to.").arg(parentDirectory);
     return {};
 }
 
 QString validateNewGame(const NewGameRequest& request) {
-    for (const auto& problem : {validateGameName(request.name), validateParentDirectory(request.parentDirectory), validateSdkRoot(request.sdkRoot), validateDependencyRoot(request.dependencyRoot)}) {
+    // Refused here too, so nothing but the form's disabled card stands between a type and adk init.
+    if (newGameSteps(request.type).isEmpty()) return "3D games are coming later, so Studio cannot make one yet. Choose another project type.";
+    const auto noun = projectTypeNoun(request.type);
+    for (const auto& problem : {validateGameName(request.name, noun), validateParentDirectory(request.parentDirectory, noun), validateSdkRoot(request.sdkRoot), validateDependencyRoot(request.dependencyRoot)}) {
         if (!problem.isEmpty()) return problem;
     }
     const auto directory = newGameDirectory(request);
@@ -100,7 +160,7 @@ BuildStep adkInitStep(const NewGameRequest& request) {
     };
 }
 
-QString describeAdkInitFailure(const QStringList& output, const QString& runnerMessage) {
+QString describeAdkInitFailure(const QStringList& output, const QString& runnerMessage, const QString& noun) {
     QString reason;
     for (auto line = output.crbegin(); line != output.crend() && reason.isEmpty(); ++line) reason = line->trimmed();
     if (reason.startsWith("adk: ")) reason = reason.mid(5);
@@ -108,7 +168,7 @@ QString describeAdkInitFailure(const QStringList& output, const QString& runnerM
         reason = runnerMessage;
         reason.remove(" The log has the details.");
     }
-    return QString("The game could not be created. %1 Check the name and folders, then try again.").arg(withFullStop(reason));
+    return QString("The %1 could not be created. %2 Check the name and folders, then try again.").arg(noun, withFullStop(reason));
 }
 
 }

@@ -277,32 +277,6 @@ QByteArray itemLine(const SceneItem& item, const QStringList& imageSources, int 
     return line;
 }
 
-Scene starterScene() {
-    SceneItem player;
-    player.id = "item-1";
-    player.type = RectangleType;
-    player.name = "Player";
-    player.x = 120;
-    player.y = 300;
-    player.width = 160;
-    player.height = 160;
-    player.controllable = true;
-
-    SceneItem title;
-    title.id = "item-2";
-    title.type = TextType;
-    title.name = "Title";
-    title.x = 400;
-    title.y = 96;
-    title.scale = 12;
-    title.text = "Hello PS5";
-    title.color = "#F3F1E2";
-
-    Scene scene;
-    scene.items = {player, title};
-    return scene;
-}
-
 struct RuntimeFile {
     QString relativePath;
     QByteArray contents;
@@ -659,7 +633,87 @@ bool writeGeneratedScene(const QString& projectRoot, const Scene& scene, const Q
     return true;
 }
 
-bool installSceneRuntime(const QString& runtimeDirectory, const QString& projectRoot, const QString& projectName, QString& error) {
+Scene starterScene() {
+    SceneItem player;
+    player.id = "item-1";
+    player.type = RectangleType;
+    player.name = "Player";
+    player.x = 120;
+    player.y = 300;
+    player.width = 160;
+    player.height = 160;
+    player.controllable = true;
+
+    SceneItem title;
+    title.id = "item-2";
+    title.type = TextType;
+    title.name = "Title";
+    title.x = 400;
+    title.y = 96;
+    title.scale = 12;
+    title.text = "Hello PS5";
+    title.color = "#F3F1E2";
+
+    Scene scene;
+    scene.items = {player, title};
+    return scene;
+}
+
+Scene appStarterScene() {
+    const auto textItem = [](const QString& id, const QString& name, double x, double y, int scale, const QString& text, const QString& color) {
+        SceneItem item;
+        item.id = id;
+        item.type = TextType;
+        item.name = name;
+        item.x = x;
+        item.y = y;
+        item.scale = scale;
+        item.text = text;
+        item.color = color;
+        return item;
+    };
+    const auto rectangle = [](const QString& id, const QString& name, double x, double y, double width, double height, const QString& color) {
+        SceneItem item;
+        item.id = id;
+        item.type = RectangleType;
+        item.name = name;
+        item.x = x;
+        item.y = y;
+        item.width = width;
+        item.height = height;
+        item.color = color;
+        return item;
+    };
+
+    constexpr double StageWidth = 1920;
+    constexpr double HeaderHeight = 200;
+    constexpr double ButtonWidth = 560;
+    constexpr double ButtonHeight = 120;
+    constexpr double ButtonGap = 28;
+    constexpr double ButtonsTop = 432;
+    constexpr int LabelScale = 6;
+    constexpr int TitleScale = 10;
+
+    Scene scene;
+    scene.items << rectangle("item-1", "Header", 0, 0, StageWidth, HeaderHeight, "#1C2549");
+    scene.items << textItem("item-2", "Title", 128, (HeaderHeight - 7 * TitleScale) / 2, TitleScale, "Home", "#F3F1E2");
+
+    struct Button { QString name; QString fill; QString ink; };
+    const QList<Button> buttons{{"Start", "#FFD23F", "#151C3A"}, {"Settings", "#2A3463", "#F3F1E2"}, {"About", "#2A3463", "#F3F1E2"}};
+    for (qsizetype index = 0; index < buttons.size(); ++index) {
+        const auto& button = buttons[index];
+        const double y = ButtonsTop + index * (ButtonHeight + ButtonGap);
+        const double x = (StageWidth - ButtonWidth) / 2;
+        // Each character is a 5x7 cell that advances 6, so the label's drawn size is known exactly.
+        const double labelWidth = (button.name.size() * 6 - 1) * LabelScale;
+        const double labelHeight = 7 * LabelScale;
+        scene.items << rectangle(QString("item-%1").arg(3 + index * 2), button.name + " button", x, y, ButtonWidth, ButtonHeight, button.fill);
+        scene.items << textItem(QString("item-%1").arg(4 + index * 2), button.name + " label", x + (ButtonWidth - labelWidth) / 2, y + (ButtonHeight - labelHeight) / 2, LabelScale, button.name, button.ink);
+    }
+    return scene;
+}
+
+bool installSceneRuntime(const QString& runtimeDirectory, const QString& projectRoot, const QString& projectName, QString& error, const Scene& starter) {
     error.clear();
     const auto fail = [&](const QString& message) {
         error = message;
@@ -732,7 +786,7 @@ bool installSceneRuntime(const QString& runtimeDirectory, const QString& project
 
     if (needsStarterScene) {
         QString problem;
-        if (!saveScene(scenePath, starterScene(), problem)) return fail(problem + recovery);
+        if (!saveScene(scenePath, starter, problem)) return fail(problem + recovery);
     }
     return true;
 }

@@ -1166,6 +1166,65 @@ private slots:
         QCOMPARE(types, QStringList({"rectangle", "text"}));
     }
 
+    void installsTheStarterSceneItIsGiven() {
+        QTemporaryDir runtime;
+        QTemporaryDir project;
+        writeText(runtime.path() + "/a.txt", "a");
+        QString error;
+        QVERIFY2(installSceneRuntime(runtime.path(), project.path(), "Demo", error, appStarterScene()), qPrintable(error));
+        const auto loaded = loadScene(project.path() + "/scene.json");
+        QVERIFY2(loaded.scene.has_value(), qPrintable(loaded.error));
+        QCOMPARE(generateSceneHeader(*loaded.scene), generateSceneHeader(appStarterScene()));
+    }
+
+    void appStarterSceneIsAHeaderAndLabeledButtons() {
+        const auto scene = appStarterScene();
+        QVERIFY2(validateScene(scene).isEmpty(), qPrintable(validateScene(scene)));
+
+        const auto drawnWidth = [](const SceneItem& text) { return double((text.text.size() * 6 - 1) * text.scale); };
+        const auto drawnHeight = [](const SceneItem& text) { return double(7 * text.scale); };
+        QStringList ids;
+        QList<SceneItem> rectangles;
+        QList<SceneItem> texts;
+        for (const auto& item : scene.items) {
+            QVERIFY2(!item.controllable, qPrintable(item.name + " must not move with the controller."));
+            QVERIFY2(!ids.contains(item.id), qPrintable(item.id));
+            ids << item.id;
+            QVERIFY2(!item.name.isEmpty(), qPrintable(item.id));
+            if (item.type == "rectangle") rectangles << item;
+            else if (item.type == "text") texts << item;
+            else QFAIL(qPrintable("An app starts with only shapes and text, not " + item.type));
+            const auto width = item.type == "text" ? drawnWidth(item) : item.width;
+            const auto height = item.type == "text" ? drawnHeight(item) : item.height;
+            QVERIFY2(item.x >= 0 && item.y >= 0 && item.x + width <= 1920 && item.y + height <= 1080, qPrintable(item.name + " is off the stage."));
+        }
+
+        // The header title is the topmost text and stays inside the television safe area.
+        const auto title = *std::ranges::min_element(texts, {}, &SceneItem::y);
+        QVERIFY(title.x >= 96);
+        QVERIFY(title.y >= 54);
+        QVERIFY2(title.y + drawnHeight(title) <= 240, "The title belongs at the top.");
+
+        // Every other text is a label centered on a rectangle of its own.
+        QList<QString> labelled;
+        int buttons = 0;
+        for (const auto& label : texts) {
+            if (label.id == title.id) continue;
+            const auto owner = std::ranges::find_if(rectangles, [&](const SceneItem& rectangle) {
+                return label.x >= rectangle.x && label.y >= rectangle.y
+                    && label.x + drawnWidth(label) <= rectangle.x + rectangle.width
+                    && label.y + drawnHeight(label) <= rectangle.y + rectangle.height;
+            });
+            QVERIFY2(owner != rectangles.end(), qPrintable(label.text + " is not on a button."));
+            QVERIFY2(qAbs(label.x + drawnWidth(label) / 2 - (owner->x + owner->width / 2)) <= 1, qPrintable(label.text + " is not centered across its button."));
+            QVERIFY2(qAbs(label.y + drawnHeight(label) / 2 - (owner->y + owner->height / 2)) <= 1, qPrintable(label.text + " is not centered down its button."));
+            QVERIFY2(!labelled.contains(owner->id), qPrintable(owner->name + " has two labels."));
+            labelled << owner->id;
+            ++buttons;
+        }
+        QVERIFY2(buttons >= 2, "An app starts with a few buttons.");
+    }
+
     void leavesAnExistingSceneAlone() {
         QTemporaryDir runtime;
         QTemporaryDir project;

@@ -65,6 +65,8 @@ QStringList particlePaletteNames();
 // Gives `item` the preset's beginner settings and its usual area, keeping its name, id and position.
 void applyParticlePreset(SceneItem& item, const QString& preset);
 QString validateScene(const Scene& scene); // empty string when valid
+Scene starterScene(); // a 2D game: a player the controller moves and a title
+Scene appStarterScene(); // an app: a header title and labeled buttons, nothing moves
 QStringList sceneImageSources(const Scene& scene); // each image's source once, in the order first used
 // Empty when the scene is invalid or `images` does not hold exactly the scene's sources, in that order.
 QByteArray generateSceneHeader(const Scene& scene, const QList<SceneImageData>& images = {});
@@ -72,6 +74,7 @@ QByteArray generateImageSource(const QList<SceneImageData>& images); // src/Gene
 QString imageSizeProblem(int width, int height, qint64 bytesSoFar); // empty when the image fits the limits
 QString imageFileProblem(const QString& projectRoot, const QString& source); // empty when it is a regular file we may read
 bool writeGeneratedScene(const QString& projectRoot, const Scene& scene, const QList<SceneImageData>& images, QString& error);
-bool installSceneRuntime(const QString& runtimeDirectory, const QString& projectRoot, const QString& projectName, QString& error);
+// A project that already has a scene.json keeps it, so `starter` is only written when there is none.
+bool installSceneRuntime(const QString& runtimeDirectory, const QString& projectRoot, const QString& projectName, QString& error, const Scene& starter = starterScene());
 
 }

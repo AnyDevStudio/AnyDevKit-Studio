@@ -2,6 +2,7 @@
 #include "CodeEditors.h"
 #include "NewGame.h"
 #include "Project.h"
+#include "Scene.h"
 
 #include <QDir>
 #include <QFile>
@@ -404,6 +405,109 @@ private slots:
         QCOMPARE(adkInitStep({"Demo", "/games/", "/sdk/", "/deps/"}).arguments.last(), QString("/games/Demo"));
         QCOMPARE(adkInitStep({"Demo", "/games", "/sdk/", "/deps/"}).program, adkExecutable(QString("/sdk")));
         QCOMPARE(adkInitStep({"Demo", "/games", "/sdk/", "/deps/"}).arguments.at(3), QString("/deps"));
+    }
+
+    void projectTypesAreOfferedInOrder() {
+        QStringList ids;
+        QStringList titles;
+        for (const auto& type : projectTypes()) {
+            ids << type.id;
+            titles << type.title;
+            QVERIFY2(!type.description.isEmpty(), qPrintable(type.id));
+            QVERIFY2(!type.description.contains('\n'), qPrintable(type.description));
+            QVERIFY2(type.description.size() <= 56, qPrintable("Too long for one line on the card at the minimum window: " + type.description));
+            QVERIFY2(type.description.endsWith('.'), qPrintable(type.description));
+            QVERIFY2(!type.noun.isEmpty(), qPrintable(type.id));
+        }
+        QCOMPARE(ids, QStringList({"2d", "app", "code", "3d"}));
+        QCOMPARE(titles, QStringList({"2D game", "App", "Code only", "3D game"}));
+        QCOMPARE(projectTypes().first().type, ProjectType::Game2D);
+        QCOMPARE(defaultProjectType(), ProjectType::Game2D);
+    }
+
+    void onlyThreeDIsNotAvailableYet() {
+        for (const auto& type : projectTypes()) {
+            QCOMPARE(type.available, type.type != ProjectType::Game3D);
+            if (type.available) QVERIFY2(type.note.isEmpty(), qPrintable(type.id));
+        }
+        const auto threeD = projectTypes().last();
+        QVERIFY2(threeD.note.contains("later", Qt::CaseInsensitive), qPrintable(threeD.note));
+        QVERIFY2(threeD.description.contains("no 3D", Qt::CaseInsensitive), qPrintable(threeD.description));
+    }
+
+    void projectTypeIdsTurnBackIntoTypes() {
+        for (const auto& type : projectTypes()) QCOMPARE(projectTypeFromId(type.id), std::optional(type.type));
+        QCOMPARE(projectTypeFromId("nope"), std::optional<ProjectType>{});
+        QCOMPARE(projectTypeFromId(""), std::optional<ProjectType>{});
+    }
+
+    void eachTypeRunsOnlyItsSteps() {
+        QCOMPARE(newGameSteps(ProjectType::Game2D), QList<NewGameStep>({NewGameStep::AdkInit, NewGameStep::AddSceneRuntime}));
+        QCOMPARE(newGameSteps(ProjectType::App), QList<NewGameStep>({NewGameStep::AdkInit, NewGameStep::AddSceneRuntime}));
+        QCOMPARE(newGameSteps(ProjectType::CodeOnly), QList<NewGameStep>({NewGameStep::AdkInit}));
+        QVERIFY(newGameSteps(ProjectType::Game3D).isEmpty());
+    }
+
+    void eachTypeOpensOnItsTab() {
+        QCOMPARE(openingTab(ProjectType::Game2D), QString("scene"));
+        QCOMPARE(openingTab(ProjectType::App), QString("scene"));
+        QCOMPARE(openingTab(ProjectType::CodeOnly), QString("build"));
+    }
+
+    void onlyTypesWithARuntimeHaveAValidStarterScene() {
+        for (const auto& type : projectTypes()) {
+            const auto scene = starterSceneFor(type.type);
+            QCOMPARE(scene.has_value(), newGameSteps(type.type).contains(NewGameStep::AddSceneRuntime));
+            if (!scene) continue;
+            const auto problem = validateScene(*scene);
+            QVERIFY2(problem.isEmpty(), qPrintable(type.id + ": " + problem));
+            QVERIFY2(!generateSceneHeader(*scene).isEmpty(), qPrintable(type.id));
+        }
+        QVERIFY(!starterSceneFor(ProjectType::CodeOnly).has_value());
+        QVERIFY(!starterSceneFor(ProjectType::Game3D).has_value());
+    }
+
+    void twoDGameKeepsTheExistingStarterScene() {
+        const auto scene = starterSceneFor(ProjectType::Game2D);
+        QVERIFY(scene.has_value());
+        QCOMPARE(generateSceneHeader(*scene), generateSceneHeader(starterScene()));
+        const auto controllable = std::ranges::count_if(scene->items, &SceneItem::controllable);
+        QCOMPARE(controllable, 1);
+    }
+
+    void threeDGameIsRefusedBeforeAnythingRuns() {
+        NewGameFolders folders;
+        folders.request.type = ProjectType::Game3D;
+        const auto problem = validateNewGame(folders.request);
+        QVERIFY2(problem.contains("later", Qt::CaseInsensitive), qPrintable(problem));
+    }
+
+    void otherTypesAreAccepted() {
+        for (const auto type : {ProjectType::Game2D, ProjectType::App, ProjectType::CodeOnly}) {
+            NewGameFolders folders;
+            folders.request.type = type;
+            const auto problem = validateNewGame(folders.request);
+            QVERIFY2(problem.isEmpty(), qPrintable(problem));
+        }
+    }
+
+    void everyTypeStartsWithTheSameAdkInit() {
+        const NewGameRequest game{"Demo", "/games", "/sdk", "/deps"};
+        for (const auto type : {ProjectType::App, ProjectType::CodeOnly}) {
+            auto request = game;
+            request.type = type;
+            QCOMPARE(adkInitStep(request).program, adkInitStep(game).program);
+            QCOMPARE(adkInitStep(request).arguments, adkInitStep(game).arguments);
+        }
+    }
+
+    void messagesNameWhatIsBeingMade() {
+        QCOMPARE(validateGameName(""), QString("Give your game a name."));
+        QCOMPARE(validateGameName("", "app"), QString("Give your app a name."));
+        QCOMPARE(validateParentDirectory(""), QString("Choose the folder to create the game in."));
+        QCOMPARE(validateParentDirectory("", "project"), QString("Choose the folder to create the project in."));
+        QVERIFY(describeAdkInitFailure({"adk: nope"}, "x").startsWith("The game could not be created."));
+        QVERIFY(describeAdkInitFailure({"adk: nope"}, "x", "app").startsWith("The app could not be created."));
     }
 
     void sdkRootMustHoldAdk() {
