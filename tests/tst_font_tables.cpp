@@ -19,7 +19,7 @@ struct Table {
 };
 
 const char* const RuntimeTable = STUDIO_SOURCE_DIR "/runtime/SceneGame/src/Graphics/Font.cpp.in";
-const char* const EditorTable = STUDIO_SOURCE_DIR "/src/app/PixelText.cpp";
+const char* const EditorTable = STUDIO_SOURCE_DIR "/src/app/PixelFont.h";
 
 constexpr int FirstPrintable = 0x20;
 constexpr int LastPrintable = 0x7E;

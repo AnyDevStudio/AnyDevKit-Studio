@@ -55,6 +55,7 @@ qt_add_qml_module(AnyDevKitStudio
         ReducedMotion.h
         PixelText.cpp
         PixelText.h
+        PixelFont.h
         ParticlePreview.cpp
         ParticlePreview.h
     RESOURCES

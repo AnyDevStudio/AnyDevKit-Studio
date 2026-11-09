@@ -79,10 +79,12 @@ reports are welcome in the issues.
 
 The Studio application is licensed under the [MIT License](LICENSE). The bundled Archivo Black and
 IBM Plex fonts are under the SIL Open Font License, included next to them in `src/app/assets/fonts`.
+The 5x7 pixel font in `src/app/PixelFont.h` is original to this project and under the MIT License.
 
 `runtime/SceneGame`, the game code Studio adds to a project, is derived from AnyDevKit's `adk init`
 template and is licensed under the [GNU General Public License v2.0 only](runtime/SceneGame/LICENSES/AnyDevKit-template-GPL-2.0.txt).
-That also applies to games that include it. Studio runs AnyDevKit as an external tool.
+That also applies to games that include it. Its glyph table in `src/Graphics/Font.cpp.in` is a copy of
+Studio's MIT pixel font. Studio runs AnyDevKit as an external tool.
 
 This is an independent project, not affiliated with or endorsed by Sony Interactive Entertainment.
 PlayStation and PS5 are trademarks of their respective owner. Packages made with AnyDevKit are
