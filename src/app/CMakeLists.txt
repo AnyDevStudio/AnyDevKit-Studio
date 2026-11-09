@@ -7,6 +7,8 @@ set_source_files_properties(qml/Theme.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 qt_add_qml_module(AnyDevKitStudio
     URI AnyDevKitStudio
     VERSION 1.0
+    # Keeps the module folder from taking the executable's name on Linux.
+    OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/qml/AnyDevKitStudio
     QML_FILES
         qml/Main.qml
         qml/Theme.qml

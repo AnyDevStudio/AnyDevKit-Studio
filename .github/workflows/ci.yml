@@ -27,9 +27,14 @@ jobs:
           persist-credentials: false
       # jurplel/install-qt-action v4
       - uses: jurplel/install-qt-action@b344308e4483fc892e0d27b3cd1b173ebdd95f06
+        if: runner.os != 'macOS'
         with:
           version: '6.8.*'
           cache: true
+      # Qt 6.8 still links the AGL framework, which current Xcode no longer ships.
+      - name: Install Qt with Homebrew
+        if: runner.os == 'macOS'
+        run: brew install qtbase qtdeclarative qtsvg
       - name: Configure
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
       - name: Build
