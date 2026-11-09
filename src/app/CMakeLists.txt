@@ -27,6 +27,7 @@ qt_add_qml_module(AnyDevKitStudio
         qml/PkgKeysPanel.qml
         qml/SceneStage.qml
         qml/SceneView.qml
+        qml/SceneStrip.qml
         qml/SceneInspector.qml
         qml/TilePalette.qml
         qml/LayerPanel.qml
