@@ -647,13 +647,13 @@ private slots:
         QTemporaryDir project;
         QString error;
         QVERIFY2(installSceneRuntime(":/runtime/SceneGame", project.path(), "Res Game", error), qPrintable(error));
-        QCOMPARE(readBytes(project.path() + "/CMakeLists.txt"), QByteArray("project(@NAME@)\n").replace("@NAME@", "Res Game"));
-        QCOMPARE(readBytes(project.path() + "/src/Main.cpp"), QByteArray("// Res Game main\n"));
+        QCOMPARE(readBytes(project.path() + "/CMakeLists.txt").replace("\r\n", "\n"), QByteArray("project(@NAME@)\n").replace("@NAME@", "Res Game"));
+        QCOMPARE(readBytes(project.path() + "/src/Main.cpp").replace("\r\n", "\n"), QByteArray("// Res Game main\n"));
         QVERIFY(QFileInfo(project.path() + "/src/Main.cpp").isWritable());
 
         // Installing again must be able to replace what the first run wrote.
         QVERIFY2(installSceneRuntime(":/runtime/SceneGame/", project.path(), "Again", error), qPrintable(error));
-        QCOMPARE(readBytes(project.path() + "/src/Main.cpp"), QByteArray("// Again main\n"));
+        QCOMPARE(readBytes(project.path() + "/src/Main.cpp").replace("\r\n", "\n"), QByteArray("// Again main\n"));
     }
 
     void acceptsATrailingSlashOnTheRuntimeFolder() {
