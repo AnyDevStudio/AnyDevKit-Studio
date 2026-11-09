@@ -778,7 +778,7 @@ private slots:
         QVERIFY(!pkgSteps.isEmpty());
         QVERIFY(!ffpfscSteps.isEmpty());
         const auto shown = describeBuildStep(pkgSteps.last());
-        QVERIFY2(shown.startsWith("adk package --target ps5 --format pkg"), qPrintable(shown));
+        QVERIFY2((shown.startsWith("adk package --target ps5 --format pkg") || shown.startsWith("adk.exe package --target ps5 --format pkg")), qPrintable(shown));
         QVERIFY2(!shown.contains(keys.passcode), qPrintable(shown));
         QVERIFY2(!shown.contains(keys.imageSeed), qPrintable(shown));
         QVERIFY2(shown.contains("--passcode <hidden>"), qPrintable(shown));
