@@ -41,6 +41,14 @@ jobs:
         run: cmake --build build --config Release --parallel
       - name: Test
         run: ctest --test-dir build --build-config Release --output-on-failure
+      - name: Show test output
+        if: failure()
+        run: |
+          for test in $(find build -type f \( -name 'tst_*.exe' -o \( -name 'tst_*' -perm -u+x \) \) | grep -v autogen); do
+            echo "== $test"
+            "$test" -o -,txt 2>&1 | grep -v '^PASS' || true
+            echo "exit: ${PIPESTATUS[0]}"
+          done
       - name: Start the application
         env:
           QT_QPA_PLATFORM: offscreen
