@@ -48,8 +48,9 @@ Window {
                 root.setupActive = false
             }
             onUseExistingFolders: {
-                root.startOnNewGame = true
+                // First, because the next line ends setupActive's binding and swaps the view at once.
                 root.startOnTools = true
+                root.startOnNewGame = true
                 root.setupActive = false
             }
         }
