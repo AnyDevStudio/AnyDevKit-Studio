@@ -1,9 +1,12 @@
 #include "Scene/SceneState.hpp"
 #include <algorithm>
+#include <cstdint>
+#include <limits>
 
 namespace {
 
 constexpr double UnitsPerSecond = 600.0;
+constexpr float LogicWorldLimit = 1000000.0f;
 
 // An item larger than the stage cannot fit, so it may only slide while still covering the stage.
 float clampAxis(float value, float stage, float size) {
@@ -15,14 +18,18 @@ float clampAxis(float value, float stage, float size) {
 
 SceneState::SceneState(int width, int height) : stageWidth(static_cast<float>(width)), stageHeight(static_cast<float>(height)) {
     auto position = positions.begin();
+    auto color = colors.begin();
     for (const auto& item : GeneratedScene::Items) {
         *position = {item.x, item.y};
+        *color++ = {item.red, item.green, item.blue};
         if (item.controllable) clampToStage(item, *position);
         ++position;
     }
+    visible.fill(true);
+    GeneratedLogic::OnStart(*this);
 }
 
-void SceneState::Update(double seconds, Position direction) {
+void SceneState::Update(double seconds, Position direction, std::uint32_t buttons) {
     const auto distance = static_cast<float>(UnitsPerSecond * seconds);
     auto position = positions.begin();
     for (const auto& item : GeneratedScene::Items) {
@@ -33,11 +40,64 @@ void SceneState::Update(double seconds, Position direction) {
         }
         ++position;
     }
+    heldButtons = buttons;
+    GeneratedLogic::OnFrame(*this, logicMemory);
 }
 
 const SceneState::Positions& SceneState::Current() const { return positions; }
+const SceneState::Colors& SceneState::CurrentColors() const { return colors; }
+const SceneState::Visibility& SceneState::CurrentVisibility() const { return visible; }
+
+void SceneState::MoveBy(std::size_t item, float x, float y) {
+    auto position = positions[item];
+    position[0] += x;
+    position[1] += y;
+    limitPosition(item, position);
+    positions[item] = position;
+}
+
+void SceneState::SetPosition(std::size_t item, float x, float y) {
+    Position position{x, y};
+    limitPosition(item, position);
+    positions[item] = position;
+}
+
+void SceneState::SetVisible(std::size_t item, bool value) { visible[item] = value; }
+
+void SceneState::SetColor(std::size_t item, float red, float green, float blue) { colors[item] = {red, green, blue}; }
+
+void SceneState::AddScore(std::int32_t amount) {
+    const auto total = static_cast<std::int64_t>(score) + amount;
+    const auto lowest = static_cast<std::int64_t>(std::numeric_limits<std::int32_t>::min());
+    const auto highest = static_cast<std::int64_t>(std::numeric_limits<std::int32_t>::max());
+    score = static_cast<std::int32_t>(std::clamp(total, lowest, highest));
+}
+
+void SceneState::SetScore(std::int32_t value) { score = value; }
+
+std::int32_t SceneState::Score() const { return score; }
+
+bool SceneState::Touching(std::size_t first, std::size_t second) const {
+    if (!visible[first] || !visible[second]) return false;
+    const auto& a = GeneratedScene::Items[first];
+    const auto& b = GeneratedScene::Items[second];
+    const auto [ax, ay] = positions[first];
+    const auto [bx, by] = positions[second];
+    return ax < bx + b.width && bx < ax + a.width && ay < by + b.height && by < ay + a.height;
+}
+
+bool SceneState::Held(std::uint32_t button) const { return (heldButtons & button) != 0; }
 
 void SceneState::clampToStage(const GeneratedScene::Item& item, Position& position) const {
     position[0] = clampAxis(position[0], stageWidth, item.width);
     position[1] = clampAxis(position[1], stageHeight, item.height);
+}
+
+void SceneState::limitPosition(std::size_t item, Position& position) const {
+    if (GeneratedScene::Items[item].controllable) {
+        clampToStage(GeneratedScene::Items[item], position);
+        return;
+    }
+    position[0] = std::clamp(position[0], -LogicWorldLimit, LogicWorldLimit);
+    position[1] = std::clamp(position[1], -LogicWorldLimit, LogicWorldLimit);
 }

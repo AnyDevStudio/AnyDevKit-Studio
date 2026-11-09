@@ -27,5 +27,14 @@ qt_add_executable(tst_gamepage tst_gamepage.cpp)
 target_link_libraries(tst_gamepage PRIVATE studio_gamepage Qt6::Test)
 add_test(NAME tst_gamepage COMMAND tst_gamepage)
 
+qt_add_executable(tst_blocks tst_blocks.cpp)
+target_link_libraries(tst_blocks PRIVATE studio_core Qt6::Test)
+target_compile_definitions(tst_blocks PRIVATE
+    STUDIO_TEST_CXX="${CMAKE_CXX_COMPILER}"
+    STUDIO_TEST_SYSROOT="${CMAKE_OSX_SYSROOT}"
+    STUDIO_TEST_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
+)
+add_test(NAME tst_blocks COMMAND tst_blocks)
+
 # qt_standard_project_setup makes Windows executables GUI apps, which hides test output.
-set_target_properties(tst_core tst_scene tst_scene_document tst_gamepage PROPERTIES WIN32_EXECUTABLE FALSE)
+set_target_properties(tst_core tst_scene tst_scene_document tst_gamepage tst_blocks PROPERTIES WIN32_EXECUTABLE FALSE)

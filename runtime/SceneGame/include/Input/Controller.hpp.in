@@ -1,13 +1,18 @@
 #ifndef @NAME@_Input_Controller_hpp
 #define @NAME@_Input_Controller_hpp
 #include <array>
+#include <cstdint>
 
 // Reads the initial user's pad. Every failure is treated as "no input" so the game keeps drawing.
 class Controller final {
 public:
+    struct Input {
+        // Unit direction from the D-pad or left stick, or {0, 0} when idle or unavailable. +y points down.
+        std::array<float, 2> Direction{};
+        std::uint32_t Buttons = 0; // bits from Input/Buttons.hpp, 0 when unavailable
+    };
     Controller();
-    // Unit direction from the D-pad or left stick, or {0, 0} when idle or unavailable. +y points down.
-    std::array<float, 2> Direction() const;
+    Input Read() const; // reads the pad once, so the direction and the buttons come from one moment
 
 private:
     int pad = -1;

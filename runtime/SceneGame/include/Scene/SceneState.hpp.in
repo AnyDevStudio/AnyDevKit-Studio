@@ -1,20 +1,47 @@
 #ifndef @NAME@_Scene_SceneState_hpp
 #define @NAME@_Scene_SceneState_hpp
+#include "GeneratedLogic.hpp"
 #include "GeneratedScene.hpp"
 #include <array>
+#include <cstddef>
+#include <cstdint>
 
-// Current position of every item in GeneratedScene::Items, indexed the same way.
+// Current state of every item in GeneratedScene::Items, indexed the same way, and the game's score.
+// The block logic in GeneratedLogic.hpp changes it through the Logic section below.
 class SceneState final {
 public:
     using Position = std::array<float, 2>;
     using Positions = std::array<Position, GeneratedScene::Items.size()>;
-    SceneState(int width, int height);
-    void Update(double seconds, Position direction);
+    using Color = std::array<float, 3>;
+    using Colors = std::array<Color, GeneratedScene::Items.size()>;
+    using Visibility = std::array<bool, GeneratedScene::Items.size()>;
+    SceneState(int width, int height); // also runs the "When the game starts" blocks
+    void Update(double seconds, Position direction, std::uint32_t buttons);
     const Positions& Current() const;
+    const Colors& CurrentColors() const;
+    const Visibility& CurrentVisibility() const;
+
+    // Logic: called by the generated code. No item stays outside its limits: a controllable item
+    // stays inside the stage, and any other item within LogicWorldLimit of the stage's origin.
+    void MoveBy(std::size_t item, float x, float y);
+    void SetPosition(std::size_t item, float x, float y);
+    void SetVisible(std::size_t item, bool visible);
+    void SetColor(std::size_t item, float red, float green, float blue);
+    void AddScore(std::int32_t amount); // stops at the largest or smallest score instead of overflowing
+    void SetScore(std::int32_t value);
+    std::int32_t Score() const;
+    bool Touching(std::size_t first, std::size_t second) const; // hidden items touch nothing
+    bool Held(std::uint32_t button) const;
 
 private:
     void clampToStage(const GeneratedScene::Item& item, Position& position) const;
+    void limitPosition(std::size_t item, Position& position) const;
     Positions positions{};
+    Colors colors{};
+    Visibility visible{};
+    GeneratedLogic::Memory logicMemory{};
+    std::uint32_t heldButtons = 0;
+    std::int32_t score = 0;
     float stageWidth;
     float stageHeight;
 };
