@@ -1,6 +1,8 @@
 #include "SceneDocument.h"
 
 #include <QFile>
+#include <QFileInfo>
+#include <QUrl>
 
 #include <algorithm>
 #include <cmath>
@@ -14,6 +16,9 @@ constexpr double StageHeight = 1080;
 constexpr double MinimumSize = 8;
 constexpr int MaximumItems = 256;
 constexpr int MaximumUndoSteps = 200;
+// A new picture never covers more than this, so the rest of the scene stays reachable.
+constexpr double LargestNewImageWidth = StageWidth / 2;
+constexpr double LargestNewImageHeight = StageHeight / 2;
 
 double drawnWidth(const SceneItem& item) {
     return item.type == "text" ? static_cast<double>(item.text.size() * 6 - 1) * item.scale : item.width;
@@ -46,6 +51,9 @@ QVariant SceneDocument::data(const QModelIndex& index, int role) const {
     case TextRole: return item.text;
     case ScaleRole: return item.scale;
     case ControllableRole: return item.controllable;
+    case SourceRole: return item.source;
+    case ImageUrlRole: return item.type == "image" && !imageProblems.contains(item.source) ? QUrl::fromLocalFile(projectRoot() + '/' + item.source) : QUrl();
+    case ImageProblemRole: return imageProblems.value(item.source);
     default: return {};
     }
 }
@@ -63,6 +71,9 @@ QHash<int, QByteArray> SceneDocument::roleNames() const {
         {TextRole, "itemText"},
         {ScaleRole, "itemScale"},
         {ControllableRole, "itemControllable"},
+        {SourceRole, "itemSource"},
+        {ImageUrlRole, "itemImageUrl"},
+        {ImageProblemRole, "itemImageProblem"},
     };
 }
 
@@ -78,6 +89,7 @@ bool SceneDocument::open(const QString& newPath) {
     path = newPath;
     document = *result.scene;
     loaded = true;
+    refreshImageProblems();
     endResetModel();
     setError({});
     emit loadedChanged();
@@ -95,13 +107,16 @@ void SceneDocument::close() {
     changing = false;
     changedDuringChange = false;
     selection = -1;
+    imageProblems.clear();
     endResetModel();
     setError({});
+    setNotice({}, false);
     emit loadedChanged();
     emit countChanged();
     emit backgroundChanged();
     emit selectionChanged();
     emit undoChanged();
+    emit imagesChanged();
 }
 
 void SceneDocument::setError(const QString& text) {
@@ -117,11 +132,34 @@ QString SceneDocument::background() const { return document.background; }
 int SceneDocument::selectedIndex() const { return selection; }
 bool SceneDocument::canUndo() const { return !history.isEmpty(); }
 QString SceneDocument::error() const { return message; }
+QString SceneDocument::notice() const { return noticeText; }
+bool SceneDocument::noticeIsProblem() const { return noticeProblem; }
+QString SceneDocument::projectRoot() const { return path.isEmpty() ? QString() : QFileInfo(path).absolutePath(); }
+
+QString SceneDocument::imageWarning() const {
+    if (imageProblems.isEmpty()) return {};
+    if (imageProblems.size() == 1) return imageProblems.cbegin().value();
+    auto sources = imageProblems.keys();
+    sources.sort();
+    return QString("%1 images cannot be shown: %2. Put the files back in the project's assets folder, or select each image and choose Replace image.").arg(sources.size()).arg(sources.join(", "));
+}
+
+QString SceneDocument::roomProblem() const {
+    return document.items.size() >= MaximumItems ? QString("A scene can hold at most %1 items.").arg(MaximumItems) : QString();
+}
+
+void SceneDocument::setNotice(const QString& text, bool problem) {
+    if (text == noticeText && problem == noticeProblem) return;
+    noticeText = text;
+    noticeProblem = problem;
+    emit noticeChanged();
+}
 
 void SceneDocument::setSelectedIndex(int index) {
     const auto next = isValidIndex(index) ? index : -1;
     if (next == selection) return;
     selection = next;
+    setNotice({}, false);
     emit selectionChanged();
 }
 
@@ -139,6 +177,8 @@ QVariantMap SceneDocument::selected() const {
         {"text", item.text},
         {"scale", item.scale},
         {"controllable", item.controllable},
+        {"source", item.source},
+        {"imageProblem", imageProblems.value(item.source)},
     };
 }
 
@@ -158,8 +198,10 @@ bool SceneDocument::commit(const Scene& candidate) {
         setError(problem);
         return false;
     }
+    setNotice({}, false);
     pushUndo();
     document = candidate;
+    refreshImageProblems();
     QString failure;
     setError(saveScene(path, document, failure) ? QString() : failure);
     return true;
@@ -183,10 +225,35 @@ QString SceneDocument::nextItemId() const {
     }
 }
 
+bool SceneDocument::refreshImageProblems() {
+    QHash<QString, QString> found;
+    const auto root = projectRoot();
+    for (const auto& source : sceneImageSources(document)) {
+        const auto problem = imageFileProblem(root, source);
+        if (!problem.isEmpty()) found.insert(source, problem);
+    }
+    if (found == imageProblems) return false;
+    imageProblems = found;
+    emit imagesChanged();
+    return true;
+}
+
+void SceneDocument::clearNotice() { setNotice({}, false); }
+
+void SceneDocument::recheckImages() {
+    if (!loaded) return;
+    const auto before = imageProblems;
+    if (!refreshImageProblems()) return;
+    for (int row = 0; row < document.items.size(); ++row) {
+        const auto& source = document.items[row].source;
+        if (before.value(source) != imageProblems.value(source)) notifyItem(row);
+    }
+}
+
 int SceneDocument::addItem(const QString& type, double centerX, double centerY) {
     if (!loaded || changing) return -1;
-    if (document.items.size() >= MaximumItems) {
-        setError(QString("A scene can hold at most %1 items.").arg(MaximumItems));
+    if (const auto problem = roomProblem(); !problem.isEmpty()) {
+        setError(problem);
         return -1;
     }
 
@@ -205,8 +272,57 @@ int SceneDocument::addItem(const QString& type, double centerX, double centerY) 
     }
     item.x = centerX - drawnWidth(item) / 2;
     item.y = centerY - drawnHeight(item) / 2;
+    return insertItem(item);
+}
+
+int SceneDocument::addImage(const QString& source, int pixelWidth, int pixelHeight, const QString& name, double centerX, double centerY) {
+    if (!loaded || changing || pixelWidth < 1 || pixelHeight < 1) return -1;
+    if (const auto problem = roomProblem(); !problem.isEmpty()) {
+        setError(problem);
+        return -1;
+    }
+
+    SceneItem item;
+    item.id = nextItemId();
+    item.type = "image";
+    item.name = name;
+    item.source = source;
+    const auto scale = std::min({1.0, LargestNewImageWidth / pixelWidth, LargestNewImageHeight / pixelHeight});
+    item.width = std::max(MinimumSize, std::round(pixelWidth * scale));
+    item.height = std::max(MinimumSize, std::round(pixelHeight * scale));
+    item.x = centerX - item.width / 2;
+    item.y = centerY - item.height / 2;
+    return insertItem(item);
+}
+
+bool SceneDocument::replaceImage(int index, const QString& source, int pixelWidth, int pixelHeight) {
+    if (!isValidIndex(index) || changing || pixelWidth < 1 || pixelHeight < 1 || document.items[index].type != "image") return false;
+    auto item = document.items[index];
+    const auto centerX = item.x + item.width / 2;
+    const auto centerY = item.y + item.height / 2;
+    const auto newAspect = static_cast<double>(pixelWidth) / pixelHeight;
+    if (std::abs(item.width / item.height / newAspect - 1) > 0.005) {
+        // The same area under the new shape, so swapping pictures back and forth does not shrink them.
+        auto height = std::sqrt(item.width * item.height / newAspect);
+        auto width = height * newAspect;
+        const auto fit = std::min({1.0, StageWidth / width, StageHeight / height});
+        item.width = std::max(MinimumSize, std::round(width * fit));
+        item.height = std::max(MinimumSize, std::round(height * fit));
+    }
+    item.source = source;
+    item.x = centerX - item.width / 2;
+    item.y = centerY - item.height / 2;
     placeInsideStage(item);
 
+    auto candidate = document;
+    candidate.items[index] = item;
+    if (!commit(candidate)) return false;
+    notifyItem(index);
+    return true;
+}
+
+int SceneDocument::insertItem(SceneItem item) {
+    placeInsideStage(item);
     auto candidate = document;
     candidate.items.append(item);
     const auto row = static_cast<int>(document.items.size());
@@ -226,6 +342,7 @@ int SceneDocument::addItem(const QString& type, double centerX, double centerY) 
 
 void SceneDocument::beginChange() {
     if (!loaded || changing) return;
+    setNotice({}, false);
     changing = true;
     changedDuringChange = false;
     pushUndo();
@@ -264,11 +381,22 @@ void SceneDocument::nudgeItem(int index, double deltaX, double deltaY) {
     if (isValidIndex(index)) moveItem(index, document.items[index].x + deltaX, document.items[index].y + deltaY);
 }
 
-void SceneDocument::resizeItem(int index, double width, double height) {
-    if (!isValidIndex(index) || document.items[index].type != "rectangle") return;
+void SceneDocument::resizeItem(int index, double width, double height, bool keepAspect) {
+    if (!isValidIndex(index)) return;
     auto item = document.items[index];
-    item.width = std::round(std::clamp(width, MinimumSize, std::max(MinimumSize, StageWidth - item.x)));
-    item.height = std::round(std::clamp(height, MinimumSize, std::max(MinimumSize, StageHeight - item.y)));
+    if (item.type != "rectangle" && item.type != "image") return;
+    if (keepAspect) {
+        // During a drag the shape the drag started with, since the current size is already rounded.
+        const auto& start = changing && index < history.last().items.size() ? history.last().items[index] : item;
+        const auto largest = std::min((StageWidth - item.x) / start.width, (StageHeight - item.y) / start.height);
+        const auto smallest = std::max(MinimumSize / start.width, MinimumSize / start.height);
+        const auto scale = std::clamp(std::max(width / start.width, height / start.height), smallest, std::max(smallest, largest));
+        item.width = std::round(start.width * scale);
+        item.height = std::round(start.height * scale);
+    } else {
+        item.width = std::round(std::clamp(width, MinimumSize, std::max(MinimumSize, StageWidth - item.x)));
+        item.height = std::round(std::clamp(height, MinimumSize, std::max(MinimumSize, StageHeight - item.y)));
+    }
     if (changing) {
         document.items[index] = item;
         changedDuringChange = true;
@@ -338,8 +466,10 @@ void SceneDocument::removeItem(int index) {
 
 void SceneDocument::undo() {
     if (changing || history.isEmpty()) return;
+    setNotice({}, false);
     beginResetModel();
     document = history.takeLast();
+    refreshImageProblems();
     endResetModel();
     if (!isValidIndex(selection)) selection = -1;
     QString failure;

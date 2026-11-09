@@ -1,6 +1,8 @@
 #include "SceneDocument.h"
 
+#include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QtTest>
@@ -23,6 +25,14 @@ void openEmpty(const QTemporaryDir& directory, SceneDocument& document) {
 
 Scene savedScene(const QTemporaryDir& directory) {
     return *loadScene(scenePath(directory)).scene;
+}
+
+// The document only checks that an image file exists; decoding it happens in src/export.
+void createFile(const QString& path) {
+    QVERIFY(QDir().mkpath(QFileInfo(path).absolutePath()));
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write("image bytes");
 }
 
 }
@@ -245,6 +255,302 @@ private slots:
         QCOMPARE(document.selected().value("type").toString(), QString("rectangle"));
         document.setSelectedIndex(-1);
         QVERIFY(document.selected().isEmpty());
+    }
+
+    void aNewImageKeepsItsAspectAndFitsTheStage() {
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        QCOMPARE(document.addImage("assets/big.png", 4000, 2000, "Big", 960, 540), 0);
+        QCOMPARE(document.selectedIndex(), 0);
+        const auto item = savedScene(directory).items.first();
+        QCOMPARE(item.type, QString("image"));
+        QCOMPARE(item.name, QString("Big"));
+        QCOMPARE(item.source, QString("assets/big.png"));
+        QCOMPARE(item.width, 960.0);
+        QCOMPARE(item.height, 480.0);
+        QCOMPARE(item.x + item.width / 2, 960.0);
+        QCOMPARE(item.y + item.height / 2, 540.0);
+    }
+
+    void aTallImageFitsByItsHeight() {
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        document.addImage("assets/tall.png", 1000, 3000, "Tall", 960, 540);
+        QCOMPARE(document.scene().items[0].width, 180.0);
+        QCOMPARE(document.scene().items[0].height, 540.0);
+    }
+
+    void aSmallImageKeepsItsPixelSize() {
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        document.addImage("assets/icon.png", 64, 32, "Icon", 300, 300);
+        QCOMPARE(document.scene().items[0].width, 64.0);
+        QCOMPARE(document.scene().items[0].height, 32.0);
+    }
+
+    void aSliverOfAnImageStillGetsAVisibleSize() {
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        QCOMPARE(document.addImage("assets/line.png", 4000, 1, "Line", 960, 540), 0);
+        QCOMPARE(document.scene().items[0].width, 960.0);
+        QCOMPARE(document.scene().items[0].height, 8.0);
+    }
+
+    void imagesDroppedAtTheEdgeStayOnStage() {
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        document.addImage("assets/big.png", 800, 400, "Big", 1919, 1079);
+        const auto item = document.scene().items[0];
+        QCOMPARE(item.x + item.width, 1920.0);
+        QCOMPARE(item.y + item.height, 1080.0);
+    }
+
+    void refusesImagesFromOutsideTheAssetsFolder() {
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        for (const auto* source : {"../secret.png", "/etc/logo.png", "assets/../../x.png", "assets/photo.jpg"}) {
+            QCOMPARE(document.addImage(source, 10, 10, "X", 100, 100), -1);
+            QVERIFY(!document.error().isEmpty());
+        }
+        QCOMPARE(document.rowCount(), 0);
+    }
+
+    void refusesImagesPastTheItemLimit() {
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        for (int i = 0; i < 256; ++i) QCOMPARE(document.addImage("assets/a.png", 10, 10, "A", 100, 100), i);
+        QVERIFY(!document.roomProblem().isEmpty());
+        QCOMPARE(document.addImage("assets/a.png", 10, 10, "A", 100, 100), -1);
+        QVERIFY(document.error().contains("256"));
+    }
+
+    void imagesExposeTheirSourceToTheStage() {
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        createFile(directory.path() + "/assets/logo.png");
+        document.addImage("assets/logo.png", 10, 10, "Logo", 100, 100);
+        document.addItem("rectangle", 500, 500);
+        QVERIFY(document.roleNames().values().contains("itemSource"));
+        QCOMPARE(document.data(document.index(0), SceneDocument::SourceRole).toString(), QString("assets/logo.png"));
+        QCOMPARE(document.data(document.index(0), SceneDocument::ImageUrlRole).toUrl(), QUrl::fromLocalFile(directory.path() + "/assets/logo.png"));
+        QVERIFY(document.data(document.index(1), SceneDocument::SourceRole).toString().isEmpty());
+        document.setSelectedIndex(0);
+        QCOMPARE(document.selected().value("source").toString(), QString("assets/logo.png"));
+    }
+
+    void anImageDragIsOneUndoAndSavesWhenFinished() {
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        document.addImage("assets/a.png", 400, 200, "A", 960, 540);
+        const auto startX = document.scene().items[0].x;
+        document.beginChange();
+        document.moveItem(0, 100, 100);
+        document.moveItem(0, 120, 110);
+        QCOMPARE(savedScene(directory).items[0].x, startX);
+        document.endChange();
+        QCOMPARE(savedScene(directory).items[0].x, 120.0);
+        QCOMPARE(savedScene(directory).items[0].source, QString("assets/a.png"));
+        document.undo();
+        QCOMPARE(document.scene().items[0].x, startX);
+    }
+
+    void resizingAnImageHoldsItsAspect() {
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        document.addImage("assets/a.png", 400, 200, "A", 960, 540);
+        document.moveItem(0, 100, 100);
+        document.resizeItem(0, 800, 100, true);
+        QCOMPARE(document.scene().items[0].width, 800.0);
+        QCOMPARE(document.scene().items[0].height, 400.0);
+        QCOMPARE(savedScene(directory).items[0].width, 800.0);
+    }
+
+    void resizingAnImageFreelyChangesItsShape() {
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        document.addImage("assets/a.png", 400, 200, "A", 960, 540);
+        document.moveItem(0, 100, 100);
+        document.resizeItem(0, 300, 300);
+        QCOMPARE(document.scene().items[0].width, 300.0);
+        QCOMPARE(document.scene().items[0].height, 300.0);
+    }
+
+    void aDragHoldsTheAspectItStartedWith() {
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        document.addImage("assets/a.png", 300, 200, "A", 960, 540);
+        document.moveItem(0, 0, 0);
+        document.beginChange();
+        for (double width = 300; width > 9; width -= 7) document.resizeItem(0, width, 1, true);
+        for (double width = 9; width < 900; width += 11) document.resizeItem(0, width, 1, true);
+        document.resizeItem(0, 900, 1, true);
+        document.endChange();
+        QCOMPARE(document.scene().items[0].width, 900.0);
+        QCOMPARE(document.scene().items[0].height, 600.0);
+    }
+
+    void holdingTheAspectStaysOnStageAndAboveTheMinimum() {
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        document.addImage("assets/a.png", 400, 200, "A", 960, 540);
+        document.moveItem(0, 800, 700);
+        document.resizeItem(0, 90000, 90000, true);
+        auto item = document.scene().items[0];
+        QCOMPARE(item.y + item.height, 1080.0);
+        QCOMPARE(item.width, 760.0);
+        document.resizeItem(0, 1, 1, true);
+        item = document.scene().items[0];
+        QCOMPARE(item.height, 8.0);
+        QCOMPARE(item.width, 16.0);
+    }
+
+    void replacingAnImageKeepsItsAreaAndCenter() {
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        document.addImage("assets/a.png", 400, 200, "A", 960, 540);
+        QVERIFY(document.replaceImage(0, "assets/b.png", 100, 100));
+        const auto item = document.scene().items[0];
+        QCOMPARE(item.source, QString("assets/b.png"));
+        QCOMPARE(item.name, QString("A"));
+        QCOMPARE(item.width, 283.0);
+        QCOMPARE(item.height, 283.0);
+        QVERIFY(qAbs(item.x + item.width / 2 - 960) <= 1);
+        QVERIFY(qAbs(item.y + item.height / 2 - 540) <= 1);
+        QCOMPARE(savedScene(directory).items[0].source, QString("assets/b.png"));
+        document.undo();
+        QCOMPARE(document.scene().items[0].source, QString("assets/a.png"));
+        QCOMPARE(document.scene().items[0].width, 400.0);
+    }
+
+    void replacingWithTheSameShapeKeepsTheExactSize() {
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        document.addImage("assets/a.png", 400, 200, "A", 960, 540);
+        QVERIFY(document.replaceImage(0, "assets/b.png", 800, 400));
+        QCOMPARE(document.scene().items[0].width, 400.0);
+        QCOMPARE(document.scene().items[0].height, 200.0);
+    }
+
+    void replacingStaysOnStage() {
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        document.addImage("assets/a.png", 500, 500, "A", 960, 540);
+        QVERIFY(document.setItemValue(0, "width", 1900));
+        QVERIFY(document.setItemValue(0, "height", 1000));
+        QVERIFY(document.replaceImage(0, "assets/wide.png", 4000, 100));
+        const auto item = document.scene().items[0];
+        QVERIFY(item.width <= 1920 && item.height <= 1080);
+        QVERIFY(item.x >= 0 && item.x + item.width <= 1920);
+    }
+
+    void replacingRefusesOtherItemsAndBadSources() {
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        document.addItem("rectangle", 500, 500);
+        QVERIFY(!document.replaceImage(0, "assets/b.png", 10, 10));
+        document.addImage("assets/a.png", 10, 10, "A", 100, 100);
+        QVERIFY(!document.replaceImage(1, "../b.png", 10, 10));
+        QVERIFY(!document.replaceImage(9, "assets/b.png", 10, 10));
+        QCOMPARE(document.scene().items[1].source, QString("assets/a.png"));
+    }
+
+    void aMissingImageFileIsReportedNotFailed() {
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        document.addImage("assets/gone.png", 100, 50, "Gone", 500, 500);
+        QCOMPARE(document.rowCount(), 1);
+        const auto index = document.index(0);
+        QVERIFY(document.data(index, SceneDocument::ImageProblemRole).toString().contains("assets/gone.png"));
+        QVERIFY(document.data(index, SceneDocument::ImageUrlRole).toUrl().isEmpty());
+        QVERIFY(document.imageWarning().contains("assets/gone.png"));
+        QVERIFY(document.selected().value("imageProblem").toString().contains("assets/gone.png"));
+    }
+
+    void noticesTheFileComingBackAndGoingAway() {
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        document.addImage("assets/logo.png", 100, 50, "Logo", 500, 500);
+        QVERIFY(!document.imageWarning().isEmpty());
+
+        QSignalSpy changed(&document, &SceneDocument::dataChanged);
+        createFile(directory.path() + "/assets/logo.png");
+        document.recheckImages();
+        QCOMPARE(changed.size(), 1);
+        QVERIFY(document.imageWarning().isEmpty());
+        QVERIFY(!document.data(document.index(0), SceneDocument::ImageUrlRole).toUrl().isEmpty());
+
+        document.recheckImages();
+        QCOMPARE(changed.size(), 1);
+
+        QVERIFY(QFile::remove(directory.path() + "/assets/logo.png"));
+        document.recheckImages();
+        QCOMPARE(changed.size(), 2);
+        QVERIFY(document.imageWarning().contains("assets/logo.png"));
+    }
+
+    void aSceneOpenedWithAMissingFileWarnsStraightAway() {
+        QTemporaryDir directory;
+        Scene scene;
+        SceneItem item;
+        item.id = "item-1";
+        item.type = "image";
+        item.width = 10;
+        item.height = 10;
+        item.source = "assets/lost.png";
+        scene.items = {item};
+        QString error;
+        QVERIFY2(saveScene(scenePath(directory), scene, error), qPrintable(error));
+        SceneDocument document;
+        QVERIFY(document.open(scenePath(directory)));
+        QVERIFY(document.imageWarning().contains("assets/lost.png"));
+    }
+
+    void aLinkedImageFileIsNotShown() {
+        QTemporaryDir directory;
+        QTemporaryDir outside;
+        createFile(outside.path() + "/secret.png");
+        QVERIFY(QDir(directory.path()).mkpath("assets"));
+        QVERIFY(QFile::link(outside.path() + "/secret.png", directory.path() + "/assets/link.png"));
+        SceneDocument document;
+        openEmpty(directory, document);
+        document.addImage("assets/link.png", 10, 10, "Link", 100, 100);
+        QVERIFY(document.data(document.index(0), SceneDocument::ImageUrlRole).toUrl().isEmpty());
+        QVERIFY(document.data(document.index(0), SceneDocument::ImageProblemRole).toString().contains("link"));
+    }
+
+    void aNoticeLastsUntilTheNextChange() {
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        document.addItem("rectangle", 500, 500);
+        QSignalSpy changed(&document, &SceneDocument::noticeChanged);
+        document.setNotice("Scaled down", false);
+        QCOMPARE(document.notice(), QString("Scaled down"));
+        QVERIFY(!document.noticeIsProblem());
+        document.setNotice("Could not read", true);
+        QVERIFY(document.noticeIsProblem());
+        QVERIFY(changed.size() >= 2);
+        document.moveItem(0, 40, 50);
+        QVERIFY(document.notice().isEmpty());
     }
 
     void closeForgetsTheScene() {

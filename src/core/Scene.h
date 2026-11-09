@@ -9,6 +9,9 @@
 
 namespace Studio {
 
+// The largest an image may be on each side. The editor scales bigger pictures down to this.
+inline constexpr int MaximumImageDimension = 4096;
+
 struct SceneItem {
     QString id;
     QString type; // "rectangle", "text" or "image"
