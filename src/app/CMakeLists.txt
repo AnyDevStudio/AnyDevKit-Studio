@@ -24,6 +24,9 @@ qt_add_qml_module(AnyDevKitStudio
         qml/SceneStage.qml
         qml/SceneView.qml
         qml/SceneInspector.qml
+        qml/ImagePicker.qml
+        qml/ImageGlyph.qml
+        qml/ImagePlaceholder.qml
         qml/GamePageView.qml
         qml/ConsolePreview.qml
         qml/Field.qml

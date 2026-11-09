@@ -2,6 +2,7 @@
 
 #include "Blocks.h"
 #include "SceneExport.h"
+#include "SceneImageImport.h"
 
 #include <QClipboard>
 #include <QDesktopServices>
@@ -88,6 +89,41 @@ void StudioController::addSceneEditor() {
         return;
     }
     sceneDocument.open(project->root + "/scene.json");
+    refreshFiles();
+    emit projectChanged();
+}
+
+void StudioController::addSceneImage(const QUrl& file, double centerX, double centerY) {
+    if (!project || !sceneDocument.isLoaded()) return;
+    if (const auto room = sceneDocument.roomProblem(); !room.isEmpty()) {
+        sceneDocument.setNotice(room, true);
+        return;
+    }
+    ImportedSceneImage image;
+    QString problem;
+    if (!importSceneImage(project->root, sceneDocument.scene(), file.toLocalFile(), image, problem)) {
+        sceneDocument.setNotice(problem, true);
+        return;
+    }
+    if (sceneDocument.addImage(image.source, image.width, image.height, image.name, centerX, centerY) < 0) return;
+    sceneDocument.setNotice(image.notice, false);
+    refreshFiles();
+    emit projectChanged();
+}
+
+void StudioController::replaceSceneImage(int index, const QUrl& file) {
+    if (!project || !sceneDocument.isLoaded() || index < 0 || index >= sceneDocument.count()) return;
+    // The picture being replaced no longer counts towards the scene's image memory.
+    auto others = sceneDocument.scene();
+    others.items.removeAt(index);
+    ImportedSceneImage image;
+    QString problem;
+    if (!importSceneImage(project->root, others, file.toLocalFile(), image, problem)) {
+        sceneDocument.setNotice(problem, true);
+        return;
+    }
+    if (!sceneDocument.replaceImage(index, image.source, image.width, image.height)) return;
+    sceneDocument.setNotice(image.notice, false);
     refreshFiles();
     emit projectChanged();
 }

@@ -53,9 +53,9 @@ constexpr auto ImageFolderPrefix = "assets/";
 constexpr auto GeneratedHeaderPath = "src/GeneratedScene.hpp";
 constexpr auto GeneratedImageSourcePath = "src/GeneratedImages.cpp";
 constexpr auto GeneratedImageFolder = "src/GeneratedImages";
-// Limits for decoded images: the T# width and height fields allow more, but one scene has to fit
-// in GPU memory next to everything else, and every byte also ends up in the game's executable.
-constexpr int MaximumImageDimension = 4096;
+// Limits for decoded images (MaximumImageDimension is in Scene.h): the T# width and height fields
+// allow more, but one scene has to fit in GPU memory next to everything else, and every byte also
+// ends up in the game's executable.
 constexpr qint64 MaximumTotalImageBytes = 256 * 1024 * 1024;
 constexpr auto BackupFolderName = ".studio-backup";
 

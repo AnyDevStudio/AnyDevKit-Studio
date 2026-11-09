@@ -12,6 +12,8 @@ namespace Studio {
 // A scene with particles draws at most this many flat quads, background and every item included.
 // The PixelFireworks demo held about 119 FPS with 16,000 quads in AnyPS5, so that is the budget.
 inline constexpr int MaximumSceneBlocks = 16000;
+// The largest an image may be on each side. The editor scales bigger pictures down to this.
+inline constexpr int MaximumImageDimension = 4096;
 
 struct SceneItem {
     QString id;

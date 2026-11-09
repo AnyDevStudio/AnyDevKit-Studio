@@ -9,7 +9,21 @@ Item {
 
     readonly property alias stage: stage
 
+    signal imageFileDropped(url file, real centerX, real centerY)
+
     function takeFocus() { stage.forceActiveFocus() }
+
+    function imageFiles(urls) {
+        return Array.from(urls).filter((file) => /^file:.*\.(png|jpe?g|webp)$/i.test(String(file)))
+    }
+
+    Timer {
+        interval: 2500
+        repeat: true
+        running: area_.visible
+        triggeredOnStart: true
+        onTriggered: area_.scene.recheckImages()
+    }
 
     Rectangle {
         anchors.centerIn: stage
@@ -70,6 +84,9 @@ Item {
 
                 required property int index
                 required property string itemType
+                required property string itemSource
+                required property url itemImageUrl
+                required property string itemImageProblem
                 required property real itemX
                 required property real itemY
                 required property real itemWidth
@@ -80,6 +97,7 @@ Item {
 
                 readonly property bool selected: area_.scene.selectedIndex === index
                 readonly property bool isParticles: itemType === "particles"
+                readonly property bool isImage: itemType === "image"
 
                 x: itemX * stage.unit
                 y: itemY * stage.unit
@@ -123,12 +141,30 @@ Item {
                 }
 
                 // Particles have no solid shape to click on, and Snow or Rain cover the whole stage,
-                // so they are picked and dragged by this small mark instead of by their area.
+                // so they are picked and dragged by this small mark instead of by their area_.
                 PixelBurst {
                     anchors.centerIn: parent
                     cell: 4
                     visible: stageItem.isParticles
                     color: stageItem.selected || emitterGrab.containsMouse ? Theme.signal : Qt.rgba(1, 1, 1, 0.55)
+                }
+
+                Image {
+                    id: picture
+
+                    anchors.fill: parent
+                    visible: stageItem.isImage && status !== Image.Error
+                    source: stageItem.itemImageUrl
+                    fillMode: Image.Stretch
+                    asynchronous: true
+                    mipmap: true
+                }
+
+                ImagePlaceholder {
+                    anchors.fill: parent
+                    visible: stageItem.isImage && (stageItem.itemImageProblem.length > 0 || picture.status === Image.Error)
+                    message: stageItem.itemImageProblem.length > 0 ? "Image file missing" : "Image cannot be read"
+                    fileName: stageItem.itemSource.split("/").pop()
                 }
 
                 MouseArea {
@@ -185,7 +221,7 @@ Item {
                     color: Theme.signal
                     border.width: 2
                     border.color: Theme.ink
-                    visible: stageItem.selected && (stageItem.itemType === "rectangle" || stageItem.isParticles)
+                    visible: stageItem.selected && (stageItem.itemType === "rectangle" || stageItem.isParticles || stageItem.isImage)
 
                     MouseArea {
                         anchors.fill: parent
@@ -197,7 +233,8 @@ Item {
                         onPositionChanged: (mouse) => {
                             if (!pressed) return
                             const point = mapToItem(stage, mouse.x, mouse.y)
-                            area_.scene.resizeItem(stageItem.index, point.x / stage.unit - stageItem.itemX, point.y / stage.unit - stageItem.itemY)
+                            const keepAspect = stageItem.isImage && !(mouse.modifiers & Qt.ShiftModifier)
+                            area_.scene.resizeItem(stageItem.index, point.x / stage.unit - stageItem.itemX, point.y / stage.unit - stageItem.itemY, keepAspect)
                         }
                         onReleased: area_.scene.endChange()
                     }
@@ -214,10 +251,100 @@ Item {
         Text {
             anchors.centerIn: parent
             visible: area_.scene.count === 0
-            text: "Drag a shape or text here"
+            text: "Drag a shape, text or image here"
             color: Qt.rgba(1, 1, 1, 0.6)
             font.family: Theme.body
             font.pixelSize: 18
+        }
+
+        DropArea {
+            id: fileDrop
+
+            anchors.fill: parent
+            onEntered: (drag) => { drag.accepted = area_.imageFiles(drag.urls).length > 0 }
+            onDropped: (drop) => {
+                const files = area_.imageFiles(drop.urls)
+                if (files.length === 0) return
+                drop.accept(Qt.CopyAction)
+                // Several files land in a small cascade, so none hides another.
+                files.forEach((file, order) => area_.imageFileDropped(file, (drop.x + order * 28) / stage.unit, (drop.y + order * 28) / stage.unit))
+                stage.forceActiveFocus()
+            }
+        }
+
+        Rectangle {
+            anchors.fill: parent
+            color: Qt.rgba(1, 0.82, 0.25, 0.14)
+            border.width: 3
+            border.color: Theme.signal
+            opacity: fileDrop.containsDrag ? 1 : 0
+            visible: opacity > 0
+            z: 1500
+
+            Behavior on opacity {
+                NumberAnimation { duration: Theme.ms(120); easing.type: Easing.OutCubic }
+            }
+
+            Text {
+                anchors.centerIn: parent
+                text: "Drop to add this image"
+                color: Theme.paper
+                font.family: Theme.body
+                font.weight: Font.DemiBold
+                font.pixelSize: 18
+            }
+        }
+    }
+
+    Rectangle {
+        id: banner
+
+        // A notice about the last action, and any images the scene cannot show right now.
+        readonly property string message: [area_.scene.notice, area_.scene.imageWarning].filter((text) => text.length > 0).join("\n")
+        readonly property bool isProblem: area_.scene.noticeIsProblem || area_.scene.imageWarning.length > 0
+
+        onMessageChanged: if (area_.scene.notice.length > 0 && !area_.scene.noticeIsProblem) noticeTimer.restart()
+
+        Timer {
+            id: noticeTimer
+
+            interval: 7000
+            onTriggered: area_.scene.clearNotice()
+        }
+
+        anchors.horizontalCenter: stage.horizontalCenter
+        // Below the stage when there is room, so it does not cover the scene.
+        y: Math.min(stage.y + stage.height + 12, area_.height - height - 4)
+        width: bannerText.width + 36
+        height: bannerText.height + 22
+        radius: 20
+        color: Theme.panel
+        border.width: 1
+        border.color: isProblem ? Theme.bad : Theme.line
+        opacity: message.length > 0 ? 1 : 0
+        scale: message.length > 0 ? 1 : 0.96
+        visible: opacity > 0
+        z: 2100
+
+        Behavior on opacity {
+            NumberAnimation { duration: Theme.ms(150); easing.type: Easing.OutCubic }
+        }
+        Behavior on scale {
+            SpringAnimation { spring: 6; damping: 0.5; duration: Theme.ms(220) }
+        }
+
+        Text {
+            id: bannerText
+
+            anchors.centerIn: parent
+            width: Math.min(implicitWidth, stage.width - 84)
+            text: banner.message
+            color: banner.isProblem ? Theme.bad : Theme.paper
+            wrapMode: Text.WordWrap
+            horizontalAlignment: Text.AlignHCenter
+            font.family: Theme.body
+            font.pixelSize: 14
+            lineHeight: 1.2
         }
     }
 }

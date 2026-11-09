@@ -1,9 +1,12 @@
 #include "SceneExport.h"
+#include "SceneImageImport.h"
 
 #include <QColor>
 #include <QDir>
 #include <QFile>
 #include <QImage>
+#include <QImageReader>
+#include <QImageWriter>
 #include <QTemporaryDir>
 #include <QtTest>
 
@@ -160,6 +163,233 @@ private slots:
         QVERIFY(!exportScene(root, scene, error));
         QVERIFY2(error.contains("missing.png"), qPrintable(error));
         QVERIFY(!QFile::exists(root + "/src/GeneratedScene.hpp"));
+    }
+
+    void importConvertsAPngIntoTheAssetsFolder() {
+        QTemporaryDir project, desktop;
+        QImage image(20, 10, QImage::Format_RGBA8888);
+        image.fill(QColor(255, 0, 0, 128));
+        writePng(desktop.path() + "/Logo.png", image);
+
+        ImportedSceneImage imported;
+        QString error;
+        QVERIFY2(importSceneImage(project.path(), {}, desktop.path() + "/Logo.png", imported, error), qPrintable(error));
+        QCOMPARE(imported.source, QString("assets/logo.png"));
+        QCOMPARE(imported.name, QString("Logo"));
+        QCOMPARE(imported.width, 20);
+        QCOMPARE(imported.height, 10);
+        QVERIFY(imported.notice.isEmpty());
+
+        const QImage saved(project.path() + "/assets/logo.png");
+        QCOMPARE(saved.size(), QSize(20, 10));
+        QVERIFY(saved.hasAlphaChannel());
+        QCOMPARE(saved.pixelColor(0, 0).alpha(), 128);
+    }
+
+    void importTurnsAJpegIntoAPng() {
+        QTemporaryDir project, desktop;
+        QImage image(8, 8, QImage::Format_RGB32);
+        image.fill(Qt::blue);
+        QVERIFY(image.save(desktop.path() + "/Sky.JPG", "JPEG"));
+
+        ImportedSceneImage imported;
+        QString error;
+        QVERIFY2(importSceneImage(project.path(), {}, desktop.path() + "/Sky.JPG", imported, error), qPrintable(error));
+        QCOMPARE(imported.source, QString("assets/sky.png"));
+        QByteArray expected("\x89PNG", 4);
+        QCOMPARE(readBytes(project.path() + "/assets/sky.png").left(4), expected);
+    }
+
+    void importFollowsAJpegsRotation() {
+        QTemporaryDir project, desktop;
+        QImage image(40, 20, QImage::Format_RGB32);
+        image.fill(Qt::green);
+        QImageWriter writer(desktop.path() + "/phone.jpg", "jpeg");
+        writer.setTransformation(QImageIOHandler::TransformationRotate90);
+        QVERIFY2(writer.write(image), qPrintable(writer.errorString()));
+
+        ImportedSceneImage imported;
+        QString error;
+        QVERIFY2(importSceneImage(project.path(), {}, desktop.path() + "/phone.jpg", imported, error), qPrintable(error));
+        QCOMPARE(imported.width, 20);
+        QCOMPARE(imported.height, 40);
+    }
+
+    void importGivesEveryFileASafeUniqueName() {
+        QTemporaryDir project, desktop;
+        QImage first(4, 4, QImage::Format_RGBA8888);
+        first.fill(Qt::red);
+        QImage second(4, 4, QImage::Format_RGBA8888);
+        second.fill(Qt::green);
+
+        const struct {
+            const char* file;
+            const char* expected;
+        } cases[] = {
+            {"My Photo (1)!.png", "assets/my-photo-1.png"},
+            {"G\xC3\xB6rsel 2.png", "assets/g-rsel-2.png"},
+            {"\xE5\x9B\xBE.png", "assets/image.png"},
+            {".hidden.png", "assets/hidden.png"},
+            {"con.png", "assets/image-con.png"},
+        };
+        auto colorIndex = 0;
+        for (const auto& entry : cases) {
+            auto image = first.copy();
+            image.setPixelColor(0, 0, QColor(colorIndex++, 0, 0));
+            const auto path = desktop.path() + '/' + QString::fromUtf8(entry.file);
+            writePng(path, image);
+            ImportedSceneImage imported;
+            QString error;
+            QVERIFY2(importSceneImage(project.path(), {}, path, imported, error), qPrintable(error));
+            QCOMPARE(imported.source, QString(entry.expected));
+            QVERIFY(QFile::exists(project.path() + '/' + imported.source));
+        }
+
+        writePng(desktop.path() + "/one/logo.png", first);
+        writePng(desktop.path() + "/two/logo.png", second);
+        ImportedSceneImage imported;
+        QString error;
+        QVERIFY2(importSceneImage(project.path(), {}, desktop.path() + "/one/logo.png", imported, error), qPrintable(error));
+        QCOMPARE(imported.source, QString("assets/logo.png"));
+        QVERIFY2(importSceneImage(project.path(), {}, desktop.path() + "/two/logo.png", imported, error), qPrintable(error));
+        QCOMPARE(imported.source, QString("assets/logo-2.png"));
+    }
+
+    void importingTheSamePictureTwiceReusesTheFile() {
+        QTemporaryDir project, desktop;
+        QImage image(4, 4, QImage::Format_RGBA8888);
+        image.fill(Qt::red);
+        writePng(desktop.path() + "/logo.png", image);
+        ImportedSceneImage imported;
+        QString error;
+        QVERIFY2(importSceneImage(project.path(), {}, desktop.path() + "/logo.png", imported, error), qPrintable(error));
+        QVERIFY2(importSceneImage(project.path(), {}, desktop.path() + "/logo.png", imported, error), qPrintable(error));
+        QCOMPARE(imported.source, QString("assets/logo.png"));
+        QCOMPARE(QDir(project.path() + "/assets").entryList(QDir::Files).size(), 1);
+    }
+
+    void importScalesDownPastTheLimitAndSaysSo() {
+        QTemporaryDir project, desktop;
+        QImage wide(5000, 1000, QImage::Format_RGBA8888);
+        wide.fill(QColor(0, 255, 0, 255));
+        for (int x = 0; x < 2500; ++x) wide.setPixelColor(x, 500, QColor(0, 0, 0, 0));
+        writePng(desktop.path() + "/wide.png", wide);
+
+        ImportedSceneImage imported;
+        QString error;
+        QVERIFY2(importSceneImage(project.path(), {}, desktop.path() + "/wide.png", imported, error), qPrintable(error));
+        QCOMPARE(imported.width, 4096);
+        QCOMPARE(imported.height, 819);
+        QVERIFY2(imported.notice.contains("4096"), qPrintable(imported.notice));
+        QVERIFY2(imported.notice.contains("wide.png"), qPrintable(imported.notice));
+        const QImage saved(project.path() + "/assets/wide.png");
+        QCOMPARE(saved.size(), QSize(4096, 819));
+
+        Scene scene;
+        scene.items = {imageItem("a", imported.source)};
+        QList<SceneImageData> images;
+        QVERIFY2(decodeSceneImages(project.path(), scene, images, error), qPrintable(error));
+    }
+
+    void importAcceptsImagesExactlyAtTheLimit() {
+        QTemporaryDir project, desktop;
+        QImage image(4096, 16, QImage::Format_RGB32);
+        image.fill(Qt::red);
+        writePng(desktop.path() + "/limit.png", image);
+        ImportedSceneImage imported;
+        QString error;
+        QVERIFY2(importSceneImage(project.path(), {}, desktop.path() + "/limit.png", imported, error), qPrintable(error));
+        QCOMPARE(imported.width, 4096);
+        QVERIFY(imported.notice.isEmpty());
+    }
+
+    void importExplainsFilesItCannotUse() {
+        QTemporaryDir project, desktop;
+        QFile text(desktop.path() + "/notes.png");
+        QVERIFY(text.open(QIODevice::WriteOnly));
+        text.write("just some words");
+        text.close();
+        QImage image(2, 2, QImage::Format_RGB32);
+        image.fill(Qt::red);
+        QVERIFY(image.save(desktop.path() + "/old.bmp", "BMP"));
+
+        const struct {
+            QString path;
+            const char* expected;
+        } cases[] = {
+            {desktop.path() + "/notes.png", "notes.png"},
+            {desktop.path() + "/old.bmp", "PNG, JPEG or WebP"},
+            {desktop.path() + "/missing.png", "missing.png"},
+            {desktop.path(), "file"},
+        };
+        for (const auto& entry : cases) {
+            ImportedSceneImage imported;
+            QString error;
+            QVERIFY2(!importSceneImage(project.path(), {}, entry.path, imported, error), qPrintable(entry.path));
+            QVERIFY2(error.contains(QLatin1String(entry.expected)), qPrintable(error));
+        }
+        QVERIFY(!QDir(project.path() + "/assets").exists() || QDir(project.path() + "/assets").isEmpty());
+    }
+
+    void importHandlesWebpOrExplainsWhyNot() {
+        QTemporaryDir project, desktop;
+        const auto path = desktop.path() + "/photo.webp";
+        ImportedSceneImage imported;
+        QString error;
+        if (QImageReader::supportedImageFormats().contains("webp")) {
+            QImage image(6, 3, QImage::Format_RGBA8888);
+            image.fill(QColor(9, 80, 200));
+            QVERIFY(image.save(path, "WEBP"));
+            QVERIFY2(importSceneImage(project.path(), {}, path, imported, error), qPrintable(error));
+            QCOMPARE(imported.source, QString("assets/photo.png"));
+            QCOMPARE(imported.width, 6);
+        } else {
+            QFile file(path);
+            QVERIFY(file.open(QIODevice::WriteOnly));
+            file.write(QByteArray("RIFF\x10\x00\x00\x00WEBPVP8 ", 16));
+            file.close();
+            QVERIFY(!importSceneImage(project.path(), {}, path, imported, error));
+            QVERIFY2(error.contains("WebP"), qPrintable(error));
+            QVERIFY2(error.contains("PNG"), qPrintable(error));
+        }
+    }
+
+    void importRefusesToWriteThroughALinkedAssetsFolder() {
+        QTemporaryDir project, desktop, elsewhere;
+        QVERIFY(QFile::link(elsewhere.path(), project.path() + "/assets"));
+        QImage image(4, 4, QImage::Format_RGB32);
+        image.fill(Qt::red);
+        writePng(desktop.path() + "/logo.png", image);
+        ImportedSceneImage imported;
+        QString error;
+        QVERIFY(!importSceneImage(project.path(), {}, desktop.path() + "/logo.png", imported, error));
+        QVERIFY2(error.contains("link"), qPrintable(error));
+        QVERIFY(QDir(elsewhere.path()).isEmpty());
+    }
+
+    void importRefusesImagesPastTheScenesMemoryLimit() {
+        QTemporaryDir project, desktop;
+        QImage large(4096, 4096, QImage::Format_RGB32);
+        large.fill(Qt::red);
+        Scene scene;
+        for (int index = 0; index < 4; ++index) {
+            const auto source = QString("assets/full-%1.png").arg(index);
+            writePng(project.path() + '/' + source, large);
+            scene.items.append(imageItem(QString("item-%1").arg(index), source));
+        }
+        QImage more(2, 2, QImage::Format_RGB32);
+        more.fill(Qt::green);
+        writePng(desktop.path() + "/more.png", more);
+        ImportedSceneImage imported;
+        QString error;
+        QVERIFY(!importSceneImage(project.path(), scene, desktop.path() + "/more.png", imported, error));
+        QVERIFY2(error.contains("MB"), qPrintable(error));
+        QVERIFY(!QFile::exists(project.path() + "/assets/more.png"));
+
+        // A file the scene already uses is one texture, so importing it again costs nothing.
+        writePng(desktop.path() + "/full-0.png", large);
+        QVERIFY2(importSceneImage(project.path(), scene, desktop.path() + "/full-0.png", imported, error), qPrintable(error));
+        QCOMPARE(imported.source, QString("assets/full-0.png"));
     }
 
     void exportsASceneWithoutImages() {

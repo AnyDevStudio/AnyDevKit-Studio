@@ -3,6 +3,7 @@
 #include "Scene.h"
 
 #include <QAbstractListModel>
+#include <QHash>
 #include <QVariantMap>
 
 namespace Studio {
@@ -17,6 +18,9 @@ class SceneDocument : public QAbstractListModel {
     Q_PROPERTY(QVariantMap selected READ selected NOTIFY selectionChanged)
     Q_PROPERTY(bool canUndo READ canUndo NOTIFY undoChanged)
     Q_PROPERTY(QString error READ error NOTIFY errorChanged)
+    Q_PROPERTY(QString notice READ notice NOTIFY noticeChanged)
+    Q_PROPERTY(bool noticeIsProblem READ noticeIsProblem NOTIFY noticeChanged)
+    Q_PROPERTY(QString imageWarning READ imageWarning NOTIFY imagesChanged)
 
 public:
     enum Role {
@@ -32,6 +36,9 @@ public:
         ScaleRole,
         ControllableRole,
         ParticlesRole, // a map with every particles setting, for the stage preview
+        SourceRole,
+        ImageUrlRole,
+        ImageProblemRole,
     };
 
     explicit SceneDocument(QObject* parent = nullptr);
@@ -53,17 +60,31 @@ public:
     QVariantMap selected() const;
     bool canUndo() const;
     QString error() const;
+    QString notice() const;
+    bool noticeIsProblem() const;
+    QString imageWarning() const;
+    QString roomProblem() const;
+    void setNotice(const QString& text, bool problem);
+
+    // `source` is a file already inside the project; StudioController imports it first because
+    // decoding needs Qt Gui, which this library stays free of.
+    int addImage(const QString& source, int pixelWidth, int pixelHeight, const QString& name, double centerX, double centerY);
+    bool replaceImage(int index, const QString& source, int pixelWidth, int pixelHeight);
+    QString projectRoot() const;
 
     Q_INVOKABLE int addItem(const QString& type, double centerX, double centerY);
     Q_INVOKABLE void beginChange();
     Q_INVOKABLE void endChange();
     Q_INVOKABLE void moveItem(int index, double x, double y);
     Q_INVOKABLE void nudgeItem(int index, double deltaX, double deltaY);
-    Q_INVOKABLE void resizeItem(int index, double width, double height);
+    Q_INVOKABLE void resizeItem(int index, double width, double height, bool keepAspect = false);
     Q_INVOKABLE bool setItemValue(int index, const QString& property, const QVariant& value);
     Q_INVOKABLE void setBackground(const QString& color);
     Q_INVOKABLE void removeItem(int index);
     Q_INVOKABLE void undo();
+    // Looks again at the image files on disk, so the stage follows files that went missing or came back.
+    Q_INVOKABLE void recheckImages();
+    Q_INVOKABLE void clearNotice();
 
 signals:
     void loadedChanged();
@@ -72,6 +93,8 @@ signals:
     void selectionChanged();
     void undoChanged();
     void errorChanged();
+    void noticeChanged();
+    void imagesChanged();
 
 private:
     bool isValidIndex(int index) const;
@@ -79,6 +102,8 @@ private:
     bool commit(const Scene& candidate);
     void notifyItem(int index);
     void placeInsideStage(SceneItem& item) const;
+    int insertItem(SceneItem item);
+    bool refreshImageProblems();
     QString nextItemId() const;
 
     QString path;
@@ -89,6 +114,9 @@ private:
     bool changedDuringChange = false;
     int selection = -1;
     QString message;
+    QString noticeText;
+    bool noticeProblem = false;
+    QHash<QString, QString> imageProblems; // by source, only images that cannot be used
 };
 
 }

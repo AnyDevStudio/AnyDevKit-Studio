@@ -45,8 +45,10 @@ Window {
         ProjectView { studio: root.studio }
     }
 
+    // Behind the content, so a drop area inside it (the scene stage) gets the first chance at a file.
     DropArea {
         anchors.fill: parent
+        z: -1
         enabled: !root.studio.building && !root.studio.creatingGame
         onDropped: (drop) => {
             if (drop.hasUrls) root.studio.openFolder(drop.urls[0])

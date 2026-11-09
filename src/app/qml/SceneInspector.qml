@@ -9,10 +9,13 @@ Flickable {
 
     required property SceneDocument scene
 
+    signal replaceImageRequested()
+
     readonly property var item: scene.selected
     readonly property bool hasItem: item.type !== undefined
     readonly property bool isText: item.type === "text"
     readonly property bool isParticles: item.type === "particles"
+    readonly property bool isImage: item.type === "image"
 
     function set(name, value) { scene.setItemValue(scene.selectedIndex, name, value) }
 
@@ -146,9 +149,49 @@ Flickable {
             onPicked: (value) => inspector.set("palette", value)
         }
 
+        ColumnLayout {
+            Layout.fillWidth: true
+            visible: inspector.isImage
+            spacing: 6
+
+            Text {
+                text: "Image file"
+                color: Theme.muted
+                font.family: Theme.body
+                font.pixelSize: 14
+            }
+
+            Text {
+                Layout.fillWidth: true
+                text: inspector.isImage ? inspector.item.source : ""
+                color: Theme.paper
+                elide: Text.ElideMiddle
+                font.family: Theme.mono
+                font.pixelSize: 13
+            }
+
+            Text {
+                Layout.fillWidth: true
+                visible: text.length > 0
+                text: inspector.isImage ? inspector.item.imageProblem : ""
+                color: Theme.bad
+                wrapMode: Text.WordWrap
+                font.family: Theme.body
+                font.pixelSize: 14
+            }
+
+            PillButton {
+                Layout.fillWidth: true
+                Layout.topMargin: 4
+                primary: inspector.isImage && inspector.item.imageProblem.length > 0
+                text: "Replace image"
+                onClicked: inspector.replaceImageRequested()
+            }
+        }
+
         ColorRow {
             Layout.fillWidth: true
-            visible: inspector.hasItem && (!inspector.isParticles || inspector.item.palette === "color")
+            visible: inspector.hasItem && !inspector.isImage && (!inspector.isParticles || inspector.item.palette === "color")
             value: inspector.hasItem ? inspector.item.color : ""
             onPicked: (color) => inspector.set("color", color)
         }
