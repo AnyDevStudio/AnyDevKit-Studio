@@ -73,7 +73,15 @@ Window {
 
     Component {
         id: projectView
-        ProjectView { studio: root.studio }
+
+        ProjectView {
+            studio: root.studio
+            // A project is open, so these first-run shortcuts are spent. Closing it later shows the welcome screen.
+            Component.onCompleted: {
+                root.startOnNewGame = false
+                root.startOnTools = false
+            }
+        }
     }
 
     // Behind the content, so a drop area inside it (the scene stage) gets the first chance at a file.
