@@ -1,6 +1,10 @@
 add_library(studio_core STATIC
     Blocks.cpp
     Blocks.h
+    LogicDocument.cpp
+    LogicDocument.h
+    LogicLayout.cpp
+    LogicLayout.h
     Project.cpp
     Project.h
     BuildRunner.cpp

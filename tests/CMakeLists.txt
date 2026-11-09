@@ -36,6 +36,10 @@ target_compile_definitions(tst_blocks PRIVATE
 )
 add_test(NAME tst_blocks COMMAND tst_blocks)
 
+qt_add_executable(tst_logic_document tst_logic_document.cpp)
+target_link_libraries(tst_logic_document PRIVATE studio_core Qt6::Test)
+add_test(NAME tst_logic_document COMMAND tst_logic_document)
+
 qt_add_executable(tst_scene_export tst_scene_export.cpp)
 target_link_libraries(tst_scene_export PRIVATE studio_export Qt6::Test)
 add_test(NAME tst_scene_export COMMAND tst_scene_export)
@@ -46,4 +50,4 @@ target_compile_definitions(tst_font_tables PRIVATE STUDIO_SOURCE_DIR="${PROJECT_
 add_test(NAME tst_font_tables COMMAND tst_font_tables)
 
 # qt_standard_project_setup makes Windows executables GUI apps, which hides test output.
-set_target_properties(tst_core tst_scene tst_scene_document tst_gamepage tst_blocks tst_scene_export tst_font_tables PROPERTIES WIN32_EXECUTABLE FALSE)
+set_target_properties(tst_core tst_scene tst_scene_document tst_gamepage tst_blocks tst_logic_document tst_scene_export tst_font_tables PROPERTIES WIN32_EXECUTABLE FALSE)
