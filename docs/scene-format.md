@@ -75,6 +75,8 @@ Rules:
   hold image items, and neither can hold particles items. A scene holds at most 256 items, drawn in
   list order, later items on top.
 - `id` values are unique, non-empty strings. `name` is only for the editor.
+- Hiding an item with the eye in the Layers panel only hides it on the stage while editing. It is not
+  saved here and the game does not see it. The Logic tab's show and hide blocks control the game.
 - Colors are `#RRGGBB`. `image` items have no color.
 - Positions and sizes are numbers. `rectangle`, `image` and `particles` need `width` and `height` above 0.
 - `text` holds 1 to 64 printable ASCII characters (U+0020 to U+007E). Its `scale` is a whole number

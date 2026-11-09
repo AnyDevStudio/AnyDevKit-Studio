@@ -35,6 +35,27 @@ void createFile(const QString& path) {
     file.write("image bytes");
 }
 
+// The items' ids back to front, the order they are drawn in.
+QStringList itemIds(const Scene& scene) {
+    QStringList ids;
+    for (const auto& item : scene.items) ids.append(item.id);
+    return ids;
+}
+
+QStringList itemIds(const SceneDocument& document) {
+    return itemIds(document.scene());
+}
+
+// item-1, item-2, item-3 and so on, spaced out so they do not overlap.
+void addRectangles(SceneDocument& document, int count) {
+    for (int i = 0; i < count; ++i) QVERIFY(document.addItem("rectangle", 200 + i * 240, 200) >= 0);
+}
+
+QByteArray fileBytes(const QString& path) {
+    QFile file(path);
+    return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
+}
+
 }
 
 class SceneDocumentTests : public QObject {
@@ -657,6 +678,461 @@ private slots:
         QVERIFY(changed.size() >= 2);
         document.moveItem(0, 40, 50);
         QVERIFY(document.notice().isEmpty());
+    }
+
+    void reorderingMovesAnItemAndKeepsItSelected() {
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        addRectangles(document, 3);
+        document.setSelectedIndex(0);
+        QVERIFY(document.reorderItem(0, 2));
+        QCOMPARE(itemIds(document), QStringList({"item-2", "item-3", "item-1"}));
+        QCOMPARE(document.selectedIndex(), 2);
+        QCOMPARE(itemIds(savedScene(directory)), itemIds(document));
+    }
+
+    void reorderingFollowsTheSelectionOfAnotherItem() {
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        addRectangles(document, 3);
+        document.setSelectedIndex(1);
+        QVERIFY(document.reorderItem(0, 2));
+        QCOMPARE(document.scene().items[document.selectedIndex()].id, QString("item-2"));
+    }
+
+    void reorderingIsOneUndoStepAndUndoKeepsTheSelection() {
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        addRectangles(document, 3);
+        document.setSelectedIndex(0);
+        const auto before = itemIds(document);
+        QVERIFY(document.reorderItem(0, 2));
+        document.undo();
+        QCOMPARE(itemIds(document), before);
+        QCOMPARE(itemIds(savedScene(directory)), before);
+        QCOMPARE(document.scene().items[document.selectedIndex()].id, QString("item-1"));
+        QCOMPARE(document.rowCount(), 3);
+    }
+
+    void undoFollowsAnItemItsChangeMoved() {
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        addRectangles(document, 3);
+        QVERIFY(document.reorderItem(2, 0));
+        QVERIFY(document.setItemValue(0, "name", "Moved"));
+        document.setSelectedIndex(0);
+        document.undo();
+        document.undo();
+        QCOMPARE(itemIds(document), QStringList({"item-1", "item-2", "item-3"}));
+        QCOMPARE(document.selectedIndex(), 2);
+        QCOMPARE(document.scene().items[document.selectedIndex()].id, QString("item-3"));
+    }
+
+    void reorderingTellsViewsAboutTheMoveNotAReset() {
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        addRectangles(document, 3);
+        QSignalSpy moved(&document, &QAbstractItemModel::rowsMoved);
+        QSignalSpy reset(&document, &QAbstractItemModel::modelReset);
+        QVERIFY(document.reorderItem(0, 2));
+        QVERIFY(document.reorderItem(2, 0));
+        QCOMPARE(moved.size(), 2);
+        QCOMPARE(reset.size(), 0);
+    }
+
+    void reorderingNowhereIsRefusedAndAddsNoUndoStep() {
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        addRectangles(document, 2);
+        QVERIFY(!document.reorderItem(0, 0));
+        QVERIFY(!document.reorderItem(0, 5));
+        QVERIFY(!document.reorderItem(-1, 1));
+        document.undo();
+        QCOMPARE(document.rowCount(), 1);
+    }
+
+    void reorderingIsRefusedDuringADrag() {
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        addRectangles(document, 2);
+        document.beginChange();
+        QVERIFY(!document.reorderItem(0, 1));
+        QCOMPARE(document.duplicateItem(0), -1);
+        document.endChange();
+        QCOMPARE(itemIds(document), QStringList({"item-1", "item-2"}));
+    }
+
+    void forwardAndBackwardMoveOneStepAndStopAtTheEnds() {
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        addRectangles(document, 3);
+        QVERIFY(document.bringItemForward(0));
+        QCOMPARE(itemIds(document), QStringList({"item-2", "item-1", "item-3"}));
+        QVERIFY(document.sendItemBackward(1));
+        QCOMPARE(itemIds(document), QStringList({"item-1", "item-2", "item-3"}));
+        QVERIFY(!document.sendItemBackward(0));
+        QVERIFY(!document.bringItemForward(2));
+        document.undo();
+        document.undo();
+        document.undo();
+        QCOMPARE(document.rowCount(), 2);
+    }
+
+    void toFrontAndToBackGoAllTheWay() {
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        addRectangles(document, 4);
+        QVERIFY(document.bringItemToFront(1));
+        QCOMPARE(itemIds(document), QStringList({"item-1", "item-3", "item-4", "item-2"}));
+        QVERIFY(document.sendItemToBack(2));
+        QCOMPARE(itemIds(document), QStringList({"item-4", "item-1", "item-3", "item-2"}));
+        QVERIFY(!document.bringItemToFront(3));
+        QVERIFY(!document.sendItemToBack(0));
+    }
+
+    // The panel lists front-most first, so its rows are the reverse of the items. Gap 0 is above
+    // the top row and the highest gap is below the bottom row.
+    void droppingBetweenRowsPlacesTheItemThere_data() {
+        QTest::addColumn<int>("index");
+        QTest::addColumn<int>("gap");
+        QTest::addColumn<QStringList>("expected");
+
+        QTest::newRow("back to front") << 0 << 0 << QStringList({"item-2", "item-3", "item-4", "item-1"});
+        QTest::newRow("front to back") << 3 << 4 << QStringList({"item-4", "item-1", "item-2", "item-3"});
+        QTest::newRow("up one row") << 1 << 1 << QStringList({"item-1", "item-3", "item-2", "item-4"});
+        QTest::newRow("down one row") << 2 << 3 << QStringList({"item-1", "item-3", "item-2", "item-4"});
+        QTest::newRow("past the bottom clamps") << 2 << 99 << QStringList({"item-3", "item-1", "item-2", "item-4"});
+        QTest::newRow("past the top clamps") << 1 << -5 << QStringList({"item-1", "item-3", "item-4", "item-2"});
+    }
+
+    void droppingBetweenRowsPlacesTheItemThere() {
+        QFETCH(int, index);
+        QFETCH(int, gap);
+        QFETCH(QStringList, expected);
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        addRectangles(document, 4);
+        QVERIFY(document.reorderItemToGap(index, gap));
+        QCOMPARE(itemIds(document), expected);
+        QCOMPARE(itemIds(savedScene(directory)), expected);
+    }
+
+    void droppingAnItemNextToItselfDoesNothing() {
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        addRectangles(document, 4);
+        // item-2 is index 1, so panel row 2: gaps 2 and 3 are the ones touching it.
+        QVERIFY(!document.reorderItemToGap(1, 2));
+        QVERIFY(!document.reorderItemToGap(1, 3));
+        QCOMPARE(itemIds(document), QStringList({"item-1", "item-2", "item-3", "item-4"}));
+        document.undo();
+        QCOMPARE(document.rowCount(), 3);
+    }
+
+    void aDuplicateSitsJustAboveItsSourceAndIsSelected() {
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        addRectangles(document, 2);
+        QVERIFY(document.setItemValue(0, "name", "Player"));
+        QVERIFY(document.setItemValue(0, "color", "#112233"));
+        QSignalSpy inserted(&document, &QAbstractItemModel::rowsInserted);
+        const auto row = document.duplicateItem(0);
+        QCOMPARE(row, 1);
+        QCOMPARE(inserted.size(), 1);
+        QCOMPARE(document.selectedIndex(), 1);
+        QCOMPARE(document.rowCount(), 3);
+
+        const auto source = document.scene().items[0];
+        const auto copy = document.scene().items[1];
+        QCOMPARE(copy.name, QString("Player copy"));
+        QCOMPARE(copy.color, source.color);
+        QCOMPARE(copy.type, source.type);
+        QCOMPARE(copy.width, source.width);
+        QCOMPARE(copy.x, source.x + 32);
+        QCOMPARE(copy.y, source.y + 32);
+        QVERIFY(copy.id != source.id);
+        QCOMPARE(document.selected().value("name").toString(), QString("Player copy"));
+        QCOMPARE(itemIds(savedScene(directory)), itemIds(document));
+    }
+
+    void aDuplicateIsOneUndoStep() {
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        addRectangles(document, 2);
+        const auto before = itemIds(document);
+        QVERIFY(document.duplicateItem(0) >= 0);
+        document.undo();
+        QCOMPARE(itemIds(document), before);
+        QCOMPARE(itemIds(savedScene(directory)), before);
+        QCOMPARE(document.selectedIndex(), -1);
+    }
+
+    void duplicatingKeepsEveryIdUniqueAcrossUndo() {
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        addRectangles(document, 1);
+        for (int i = 0; i < 6; ++i) QVERIFY(document.duplicateItem(document.selectedIndex()) >= 0);
+        document.undo();
+        QVERIFY(document.duplicateItem(document.rowCount() - 1) >= 0);
+        auto ids = itemIds(document);
+        const auto count = ids.size();
+        ids.removeDuplicates();
+        QCOMPARE(ids.size(), count);
+    }
+
+    void copyNamesCountUpInsteadOfStacking_data() {
+        QTest::addColumn<QString>("source");
+        QTest::addColumn<QStringList>("expected");
+        QTest::newRow("plain") << "Coin" << QStringList({"Coin copy", "Coin copy 2", "Coin copy 3"});
+        QTest::newRow("already a copy") << "Coin copy" << QStringList({"Coin copy 2", "Coin copy 3", "Coin copy 4"});
+        QTest::newRow("a numbered copy") << "Coin copy 7" << QStringList({"Coin copy 8", "Coin copy 9", "Coin copy 10"});
+        QTest::newRow("a name that merely ends in copy") << "Photocopy" << QStringList({"Photocopy copy", "Photocopy copy 2", "Photocopy copy 3"});
+    }
+
+    void copyNamesCountUpInsteadOfStacking() {
+        QFETCH(QString, source);
+        QFETCH(QStringList, expected);
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        addRectangles(document, 1);
+        QVERIFY(document.setItemValue(0, "name", source));
+        QStringList names;
+        for (int i = 0; i < 3; ++i) {
+            const auto row = document.duplicateItem(i);
+            names.append(document.scene().items[row].name);
+        }
+        QCOMPARE(names, expected);
+    }
+
+    void anUnnamedItemCopiesUnderItsId() {
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        addRectangles(document, 1);
+        QVERIFY(document.setItemValue(0, "name", ""));
+        const auto row = document.duplicateItem(0);
+        QCOMPARE(document.scene().items[row].name, QString("item-1 copy"));
+    }
+
+    void aCopyOfALongNameStillFitsTheNameField() {
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        addRectangles(document, 1);
+        const QString longName(64, 'N');
+        QVERIFY(document.setItemValue(0, "name", longName));
+        for (int i = 0; i < 12; ++i) {
+            const auto row = document.duplicateItem(0);
+            QVERIFY(document.scene().items[row].name.size() <= 64);
+        }
+        QVERIFY(document.scene().items[1].name.endsWith(" copy 12"));
+        QStringList names;
+        for (const auto& item : document.scene().items) names.append(item.name);
+        auto unique = names;
+        unique.removeDuplicates();
+        QCOMPARE(unique.size(), names.size());
+    }
+
+    void aDuplicateAtTheStageEdgeStaysOnStageAndStillOffset_data() {
+        QTest::addColumn<double>("x");
+        QTest::addColumn<double>("y");
+        QTest::addColumn<double>("expectedX");
+        QTest::addColumn<double>("expectedY");
+        // A 200 by 200 rectangle: the copy steps back rather than landing exactly on top of the source.
+        QTest::newRow("bottom right") << 1720.0 << 880.0 << 1688.0 << 848.0;
+        QTest::newRow("right edge only") << 1700.0 << 100.0 << 1668.0 << 132.0;
+        QTest::newRow("bottom edge only") << 100.0 << 860.0 << 132.0 << 828.0;
+        QTest::newRow("top left") << 0.0 << 0.0 << 32.0 << 32.0;
+    }
+
+    void aDuplicateAtTheStageEdgeStaysOnStageAndStillOffset() {
+        QFETCH(double, x);
+        QFETCH(double, y);
+        QFETCH(double, expectedX);
+        QFETCH(double, expectedY);
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        addRectangles(document, 1);
+        document.moveItem(0, x, y);
+        const auto row = document.duplicateItem(0);
+        const auto copy = document.scene().items[row];
+        QCOMPARE(copy.x, expectedX);
+        QCOMPARE(copy.y, expectedY);
+        QVERIFY(copy.x + copy.width <= 1920);
+        QVERIFY(copy.y + copy.height <= 1080);
+    }
+
+    void refusesToDuplicatePastTheLimitAndSaysSo() {
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        for (int i = 0; i < 256; ++i) document.addItem("rectangle", 100, 100);
+        document.setSelectedIndex(5);
+        const auto before = fileBytes(scenePath(directory));
+        QCOMPARE(document.duplicateItem(5), -1);
+        QCOMPARE(document.rowCount(), 256);
+        QVERIFY(document.noticeIsProblem());
+        QVERIFY(document.notice().contains("256"));
+        QCOMPARE(document.selectedIndex(), 5);
+        QCOMPARE(fileBytes(scenePath(directory)), before);
+    }
+
+    void refusesToDuplicatePastTheParticleBudgetAndSaysSo() {
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        document.addItem("particles", 500, 500);
+        QVERIFY(document.setItemValue(0, "amount", 8000));
+        QCOMPARE(document.duplicateItem(0), -1);
+        QCOMPARE(document.rowCount(), 1);
+        QVERIFY(document.noticeIsProblem());
+        QVERIFY(document.notice().contains("16000"));
+    }
+
+    void aDuplicateCopiesEveryKindOfItem() {
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        createFile(directory.path() + "/assets/logo.png");
+        document.addImage("assets/logo.png", 100, 50, "Logo", 500, 500);
+        document.addItem("text", 500, 500);
+        QVERIFY(document.setItemValue(1, "text", "Score"));
+        document.addItem("particles", 500, 500);
+        QVERIFY(document.duplicateItem(2) >= 0);
+        QVERIFY(document.duplicateItem(1) >= 0);
+        QVERIFY(document.duplicateItem(0) >= 0);
+        QStringList types;
+        for (const auto& item : document.scene().items) types.append(item.type);
+        QCOMPARE(types, QStringList({"image", "image", "text", "text", "particles", "particles"}));
+        QCOMPARE(document.scene().items[1].source, QString("assets/logo.png"));
+        QCOMPARE(document.scene().items[3].text, QString("Score"));
+    }
+
+    void hidingIsNotSavedAndNotUndoable() {
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        addRectangles(document, 1);
+        const auto before = fileBytes(scenePath(directory));
+
+        QSignalSpy changed(&document, &QAbstractItemModel::dataChanged);
+        QVERIFY(!document.isItemHidden(0));
+        document.setItemHidden(0, true);
+        QVERIFY(document.isItemHidden(0));
+        QCOMPARE(changed.size(), 1);
+        QVERIFY(document.data(document.index(0), SceneDocument::HiddenRole).toBool());
+        QCOMPARE(fileBytes(scenePath(directory)), before);
+
+        document.setItemHidden(0, false);
+        QVERIFY(!document.isItemHidden(0));
+        QVERIFY(!document.data(document.index(0), SceneDocument::HiddenRole).toBool());
+        QCOMPARE(fileBytes(scenePath(directory)), before);
+
+        // The only undo step is still the add, so one undo empties the scene.
+        document.undo();
+        QCOMPARE(document.rowCount(), 0);
+    }
+
+    void hidingAlreadyHiddenChangesNothing() {
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        addRectangles(document, 1);
+        document.setItemHidden(0, true);
+        QSignalSpy changed(&document, &QAbstractItemModel::dataChanged);
+        document.setItemHidden(0, true);
+        QCOMPARE(changed.size(), 0);
+    }
+
+    void hiddenFollowsTheItemWhenItMoves() {
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        addRectangles(document, 3);
+        document.setItemHidden(0, true);
+        QVERIFY(document.reorderItem(0, 2));
+        QVERIFY(!document.isItemHidden(0));
+        QVERIFY(document.isItemHidden(2));
+        document.undo();
+        QVERIFY(document.isItemHidden(0));
+        QVERIFY(!document.isItemHidden(2));
+    }
+
+    void hiddenSurvivesDeleteAndUndo() {
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        addRectangles(document, 2);
+        document.setItemHidden(1, true);
+        document.removeItem(1);
+        document.undo();
+        QVERIFY(document.isItemHidden(1));
+        QVERIFY(!document.isItemHidden(0));
+    }
+
+    // Ids are reused once free, so a new item must not take over the hidden state of a removed one.
+    void aNewItemNeverInheritsAHiddenState() {
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        addRectangles(document, 2);
+        document.setItemHidden(1, true);
+        document.removeItem(1);
+        const auto row = document.addItem("rectangle", 900, 900);
+        QVERIFY(!document.isItemHidden(row));
+        document.undo();
+        document.undo();
+        QCOMPARE(document.rowCount(), 2);
+        QVERIFY(document.isItemHidden(1));
+    }
+
+    void aCopyOfAHiddenItemStartsVisible() {
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        addRectangles(document, 1);
+        document.setItemHidden(0, true);
+        const auto row = document.duplicateItem(0);
+        QVERIFY(!document.isItemHidden(row));
+        QVERIFY(document.isItemHidden(0));
+    }
+
+    void reopeningForgetsWhatWasHidden() {
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        addRectangles(document, 1);
+        document.setItemHidden(0, true);
+        QVERIFY(document.open(scenePath(directory)));
+        QVERIFY(!document.isItemHidden(0));
+    }
+
+    void renamingGoesThroughUndoAndAutosave() {
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        addRectangles(document, 1);
+        const auto before = document.scene().items[0].name;
+        QVERIFY(document.setItemValue(0, "name", "Hero"));
+        QCOMPARE(savedScene(directory).items[0].name, QString("Hero"));
+        document.undo();
+        QCOMPARE(document.scene().items[0].name, before);
     }
 
     void closeForgetsTheScene() {

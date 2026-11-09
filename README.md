@@ -27,7 +27,7 @@ Drag shapes and text onto the stage, press one button, and the same scene runs a
 | One button build | Configure, compile and create a PS5 package with a live log | Working |
 | Your code editor | Open code in VS Code, Visual Studio, Cursor, Xcode, CLion, Sublime Text, Zed or Qt Creator | Working |
 | Game page | Set the name, icon and home screen background | Working |
-| Drag and drop scene | Place shapes, text and images on a 16:9 stage, resize, undo, autosave | Working |
+| Drag and drop scene | Place shapes, text and images on a 16:9 stage, resize, reorder and duplicate in a layers list, hide while editing, undo, autosave | Working |
 | Logic blocks | Snap together events and actions without writing code | Working in Studio, builds for PS5 |
 | Particles | Fireworks, fountains, sparks, snow and rain | Working in Studio, builds for PS5 |
 | Game runtime | Draws the scene on AGC, the PS5 graphics API, with controller movement | Shapes and text run in AnyPS5, not yet on a console |

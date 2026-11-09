@@ -59,6 +59,7 @@ StudioController::StudioController(QObject* parent) : QObject(parent) {
     connect(&sceneDocument, &QAbstractItemModel::modelReset, this, refreshLogicScene);
     connect(&sceneDocument, &QAbstractItemModel::rowsInserted, this, refreshLogicScene);
     connect(&sceneDocument, &QAbstractItemModel::rowsRemoved, this, refreshLogicScene);
+    connect(&sceneDocument, &QAbstractItemModel::rowsMoved, this, refreshLogicScene);
     connect(&sceneDocument, &QAbstractItemModel::dataChanged, this, refreshLogicScene);
 
     connect(this, &StudioController::buildChanged, &gamePageDocument, [this] { gamePageDocument.setBuilding(runner.isRunning()); });

@@ -26,6 +26,8 @@ qt_add_qml_module(AnyDevKitStudio
         qml/SceneStage.qml
         qml/SceneView.qml
         qml/SceneInspector.qml
+        qml/LayerPanel.qml
+        qml/LayerIcon.qml
         qml/ImagePicker.qml
         qml/ImageGlyph.qml
         qml/ImagePlaceholder.qml

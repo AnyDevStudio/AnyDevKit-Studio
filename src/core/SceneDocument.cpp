@@ -2,6 +2,7 @@
 
 #include <QFile>
 #include <QFileInfo>
+#include <QRegularExpression>
 #include <QUrl>
 
 #include <algorithm>
@@ -16,6 +17,8 @@ constexpr double StageHeight = 1080;
 constexpr double MinimumSize = 8;
 constexpr int MaximumItems = 256;
 constexpr int MaximumUndoSteps = 200;
+constexpr double DuplicateOffset = 32;
+constexpr qsizetype MaximumNameLength = 64; // the Name field's limit, so a copy's name stays editable
 // A new picture never covers more than this, so the rest of the scene stays reachable.
 constexpr double LargestNewImageWidth = StageWidth / 2;
 constexpr double LargestNewImageHeight = StageHeight / 2;
@@ -26,6 +29,29 @@ double drawnWidth(const SceneItem& item) {
 
 double drawnHeight(const SceneItem& item) {
     return item.type == "text" ? 7.0 * item.scale : item.height;
+}
+
+// One step along, or one step back where going on would leave the stage, so a copy never lands
+// exactly on top of an original that sits against an edge.
+double offsetForCopy(double position, double size, double stageSize) {
+    const auto stepped = position + DuplicateOffset;
+    return stepped + size <= stageSize ? stepped : position - DuplicateOffset;
+}
+
+// "Coin", "Coin copy" and "Coin copy 7" all count up from "Coin", so copies do not stack up words.
+QString copyName(const SceneItem& source, const QList<SceneItem>& items) {
+    static const QRegularExpression existingCopy(" copy(?: (\\d+))?$");
+    auto base = source.name.isEmpty() ? source.id : source.name;
+    int number = 1;
+    if (const auto match = existingCopy.match(base); match.hasMatch()) {
+        number = match.captured(1).isEmpty() ? 2 : match.captured(1).toInt() + 1;
+        base.chop(match.capturedLength());
+    }
+    for (;; ++number) {
+        const auto ending = number == 1 ? QString(" copy") : QString(" copy %1").arg(number);
+        const auto name = base.left(MaximumNameLength - ending.size()) + ending;
+        if (std::ranges::none_of(items, [&](const SceneItem& item) { return item.name == name; })) return name;
+    }
 }
 
 }
@@ -66,6 +92,7 @@ QVariant SceneDocument::data(const QModelIndex& index, int role) const {
     case SourceRole: return item.source;
     case ImageUrlRole: return item.type == "image" && !imageProblems.contains(item.source) ? QUrl::fromLocalFile(projectRoot() + '/' + item.source) : QUrl();
     case ImageProblemRole: return imageProblems.value(item.source);
+    case HiddenRole: return hiddenItems.contains(item.id);
     default: return {};
     }
 }
@@ -87,6 +114,7 @@ QHash<int, QByteArray> SceneDocument::roleNames() const {
         {SourceRole, "itemSource"},
         {ImageUrlRole, "itemImageUrl"},
         {ImageProblemRole, "itemImageProblem"},
+        {HiddenRole, "itemHidden"},
     };
 }
 
@@ -121,6 +149,7 @@ void SceneDocument::close() {
     changedDuringChange = false;
     selection = -1;
     imageProblems.clear();
+    hiddenItems.clear();
     endResetModel();
     setError({});
     setNotice({}, false);
@@ -239,10 +268,19 @@ void SceneDocument::placeInsideStage(SceneItem& item) const {
     item.y = std::round(std::clamp(item.y, 0.0, std::max(0.0, StageHeight - drawnHeight(item))));
 }
 
+int SceneDocument::indexOfItem(const QString& id) const {
+    if (id.isEmpty()) return -1;
+    for (int row = 0; row < document.items.size(); ++row) {
+        if (document.items[row].id == id) return row;
+    }
+    return -1;
+}
+
 QString SceneDocument::nextItemId() const {
     for (int number = 1;; ++number) {
         const auto id = QString("item-%1").arg(number);
-        if (std::ranges::none_of(document.items, [&](const SceneItem& item) { return item.id == id; })) return id;
+        // A hidden id may come back through undo, so a new item must not pick up its hidden state.
+        if (!hiddenItems.contains(id) && std::ranges::none_of(document.items, [&](const SceneItem& item) { return item.id == id; })) return id;
     }
 }
 
@@ -513,14 +551,83 @@ void SceneDocument::removeItem(int index) {
     emit selectionChanged();
 }
 
+bool SceneDocument::reorderItem(int index, int newIndex) {
+    if (!isValidIndex(index) || !isValidIndex(newIndex) || index == newIndex || changing) return false;
+    const auto selectedId = isValidIndex(selection) ? document.items[selection].id : QString();
+    auto candidate = document;
+    candidate.items.move(index, newIndex);
+    if (const auto problem = validateScene(candidate); !problem.isEmpty()) {
+        setError(problem);
+        return false;
+    }
+    beginMoveRows({}, index, index, {}, newIndex > index ? newIndex + 1 : newIndex);
+    commit(candidate);
+    endMoveRows();
+    selection = indexOfItem(selectedId);
+    emit selectionChanged();
+    return true;
+}
+
+bool SceneDocument::reorderItemToGap(int index, int gap) {
+    if (!isValidIndex(index)) return false;
+    const auto insertBefore = count() - std::clamp(gap, 0, count());
+    return reorderItem(index, insertBefore > index ? insertBefore - 1 : insertBefore);
+}
+
+bool SceneDocument::bringItemForward(int index) { return reorderItem(index, index + 1); }
+bool SceneDocument::sendItemBackward(int index) { return reorderItem(index, index - 1); }
+bool SceneDocument::bringItemToFront(int index) { return reorderItem(index, count() - 1); }
+bool SceneDocument::sendItemToBack(int index) { return reorderItem(index, 0); }
+
+int SceneDocument::duplicateItem(int index) {
+    if (!isValidIndex(index) || changing) return -1;
+    if (const auto problem = roomProblem(); !problem.isEmpty()) {
+        setNotice(problem + " Delete an item to make room for the copy.", true);
+        return -1;
+    }
+    auto copy = document.items[index];
+    copy.name = copyName(copy, document.items);
+    copy.id = nextItemId();
+    copy.x = offsetForCopy(copy.x, drawnWidth(copy), StageWidth);
+    copy.y = offsetForCopy(copy.y, drawnHeight(copy), StageHeight);
+    placeInsideStage(copy);
+
+    auto candidate = document;
+    const auto row = index + 1;
+    candidate.items.insert(row, copy);
+    if (const auto problem = validateScene(candidate); !problem.isEmpty()) {
+        setNotice(problem, true);
+        return -1;
+    }
+    beginInsertRows({}, row, row);
+    commit(candidate);
+    endInsertRows();
+    emit countChanged();
+    selection = row;
+    emit selectionChanged();
+    return row;
+}
+
+void SceneDocument::setItemHidden(int index, bool hidden) {
+    if (!isValidIndex(index) || changing || hidden == isItemHidden(index)) return;
+    if (hidden) hiddenItems.insert(document.items[index].id);
+    else hiddenItems.remove(document.items[index].id);
+    notifyItem(index);
+}
+
+bool SceneDocument::isItemHidden(int index) const {
+    return isValidIndex(index) && hiddenItems.contains(document.items[index].id);
+}
+
 void SceneDocument::undo() {
     if (changing || history.isEmpty()) return;
     setNotice({}, false);
+    const auto selectedId = isValidIndex(selection) ? document.items[selection].id : QString();
     beginResetModel();
     document = history.takeLast();
+    selection = indexOfItem(selectedId);
     refreshImageProblems();
     endResetModel();
-    if (!isValidIndex(selection)) selection = -1;
     QString failure;
     setError(saveScene(path, document, failure) ? QString() : failure);
     emit undoChanged();

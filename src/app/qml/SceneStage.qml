@@ -39,7 +39,8 @@ Item {
 
         readonly property real unit: width / 1920
 
-        anchors.centerIn: parent
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.top: parent.top
         width: Math.min(parent.width, parent.height * 16 / 9)
         height: width * 9 / 16
         color: area_.scene.background
@@ -94,6 +95,7 @@ Item {
                 required property color itemColor
                 required property string itemText
                 required property var itemParticles
+                required property bool itemHidden
 
                 readonly property bool selected: area_.scene.selectedIndex === index
                 readonly property bool isParticles: itemType === "particles"
@@ -101,8 +103,11 @@ Item {
 
                 x: itemX * stage.unit
                 y: itemY * stage.unit
+                z: index // a reorder swaps delegates in place, so paint order comes from the row
                 width: itemWidth * stage.unit
                 height: itemHeight * stage.unit
+                // Hidden while editing only. Being invisible also stops it being clicked.
+                visible: !itemHidden
 
                 Rectangle {
                     anchors.fill: parent
@@ -134,7 +139,7 @@ Item {
 
                         // Particles only run while the Scene tab is showing and motion is allowed.
                         FrameAnimation {
-                            running: !Theme.reducedMotion && area_.visible
+                            running: !Theme.reducedMotion && area_.visible && !stageItem.itemHidden
                             onTriggered: preview.advance(frameTime)
                         }
                     }
