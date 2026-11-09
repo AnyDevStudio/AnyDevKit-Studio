@@ -13,7 +13,7 @@ jobs:
     # Homebrew only ships Qt for the current macOS, and the app needs at least the macOS it was
     # built on. Name the version so a new macos-latest cannot raise that minimum by surprise.
     runs-on: macos-26
-    timeout-minutes: 45
+    timeout-minutes: 90
     defaults:
       run:
         shell: bash
@@ -53,7 +53,7 @@ jobs:
 
   windows:
     runs-on: windows-2022
-    timeout-minutes: 45
+    timeout-minutes: 90
     defaults:
       run:
         shell: bash
@@ -99,7 +99,7 @@ jobs:
 
   linux:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 90
     defaults:
       run:
         shell: bash
