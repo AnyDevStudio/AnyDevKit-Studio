@@ -33,7 +33,7 @@ Drag shapes and text onto the stage, press one button, and the same scene runs a
 | Game runtime | Draws the scene on AGC, the PS5 graphics API, with controller movement | Shapes and text run in AnyPS5, not yet on a console |
 | Image drawing | Textured images in the game | Builds for PS5, not yet seen running |
 | Sound | Music and effects | Planned |
-| Guided setup | Check your tools, then download AnyDevKit and the PS5 libraries from inside Studio | Working, tested with a local release fixture on macOS |
+| Guided setup | Check your tools, then download AnyDevKit and the PS5 libraries from inside Studio | Working, run against the published release on Apple Silicon macOS |
 | Preview | Run the project on the developer's computer without a console | Planned |
 
 ## Build from source
