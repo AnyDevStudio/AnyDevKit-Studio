@@ -790,6 +790,17 @@ private slots:
         QCOMPARE(document.program().variables.first().name, QString("Score"));
     }
 
+    void aRenameThatWouldMakeATextTooLongIsRefused() {
+        QTemporaryDir directory;
+        LogicDocument document;
+        openWithScene(directory, document);
+        document.setScene(sceneWithText(QString("x").repeated(56) + "{score}")); // 63 characters
+        QVERIFY(!document.renameVariable("score", "a_longer_name"));
+        QVERIFY2(document.error().contains("too long"), qPrintable(document.error()));
+        QCOMPARE(document.program().variables.first().name, QString("score"));
+        QVERIFY2(document.renameVariable("score", "score2"), qPrintable(document.error())); // 64 fits
+    }
+
     void undoingARenamePutsTheOldNameBackEverywhere() {
         QTemporaryDir directory;
         LogicDocument document;

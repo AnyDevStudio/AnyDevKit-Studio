@@ -674,6 +674,16 @@ bool LogicDocument::renameVariable(const QString& name, const QString& newName) 
         setError(problem);
         return false;
     }
+    // The new name can be longer, and a text that shows it still has to fit its 64 characters.
+    auto renamedScene = scene;
+    for (auto& item : renamedScene.items) {
+        if (item.type == "text") item.text = renameVariableInText(item.text, name, newName);
+    }
+    if (const auto textProblem = validateScene(renamedScene); !textProblem.isEmpty()) {
+        setError(QString("Renaming to %1 would make a text item too long. %2 Choose a shorter name, or shorten the text in the Scene tab.").arg(newName, textProblem));
+        return false;
+    }
+
     auto candidate = document;
     const auto entry = std::ranges::find(candidate.variables, name, &LogicVariable::name);
     if (entry == candidate.variables.end()) return false;

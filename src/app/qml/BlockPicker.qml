@@ -65,6 +65,7 @@ T.Button {
         padding: 6
         modal: false
         focus: true
+        margins: 8 // a picker near the window's edge opens fully inside it
         closePolicy: T.Popup.CloseOnEscape | T.Popup.CloseOnPressOutside
         implicitHeight: Math.min(column.implicitHeight + 2 * padding, 320)
 

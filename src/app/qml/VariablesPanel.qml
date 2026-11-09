@@ -112,6 +112,12 @@ ColumnLayout {
                     Layout.fillWidth: true
                     spacing: 6
 
+                    // Typing ends the fields' bindings, so a change from undo or a rename is copied in.
+                    onVariableChanged: {
+                        if (!nameField.activeFocus) nameField.text = variable.name
+                        if (!initialField.activeFocus) initialField.text = String(variable.initial)
+                    }
+
                     RowField {
                         id: nameField
 
