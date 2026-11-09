@@ -53,6 +53,8 @@ ColumnLayout {
         id: field
 
         property string placeholder
+        // Lets the Build button save what is typed here, since a click on it does not take the focus.
+        property var commitEdit: function () { field.editingFinished() }
 
         implicitHeight: panel.rowHeight
         leftPadding: 10
