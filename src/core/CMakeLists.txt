@@ -1,4 +1,6 @@
 add_library(studio_core STATIC
+    Blocks.cpp
+    Blocks.h
     Project.cpp
     Project.h
     BuildRunner.cpp
