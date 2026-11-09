@@ -81,10 +81,12 @@ Item {
                 anchors.fill: parent
                 anchors.leftMargin: 28
                 anchors.rightMargin: 28
-                spacing: 24
+                spacing: view.width < 1100 ? 12 : 24
 
                 ColumnLayout {
                     Layout.fillWidth: true
+                    // Room for the start of the name even when the window is at its smallest.
+                    Layout.minimumWidth: 96
                     spacing: 2
 
                     Text {
@@ -94,6 +96,8 @@ Item {
                         elide: Text.ElideRight
                         font.family: Theme.display
                         font.pixelSize: 36
+                        fontSizeMode: Text.HorizontalFit
+                        minimumPixelSize: 20
                     }
 
                     Text {
