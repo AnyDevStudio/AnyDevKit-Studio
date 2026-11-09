@@ -83,7 +83,7 @@ SaveService::Mailbox* SaveService::Mail() { return started ? &mailbox : nullptr;
 bool SaveService::ready() {
     if (serviceReady) return true;
     if (!ok(sceSysmoduleLoadModuleInternal(SaveDataModule))) return false;
-    if (sceUserServiceInitialize(nullptr) < 0) {} // already running when the controller has started it
+    static_cast<void>(sceUserServiceInitialize(nullptr)); // already running once the controller has started it
     if (!ok(sceUserServiceGetInitialUser(&userId))) return false;
     if (!ok(sceSaveDataInitialize3(nullptr))) return false;
     resource = sceSaveDataCreateTransactionResource(TransactionResourceBytes);

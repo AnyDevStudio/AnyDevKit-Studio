@@ -202,6 +202,30 @@ private slots:
         QVERIFY(!parseWav(wrongSize.left(20), decoded, why));
     }
 
+    void refusesASampleRateThatWouldMakeAnImpossiblyLongSound() {
+        DecodedSound decoded;
+        QString why;
+        QVERIFY(!parseWav(wavBytes(1, 1, 1, 16, samples16({1, 2, 3, 4})), decoded, why));
+        QVERIFY2(why.contains("sample rate"), qPrintable(why));
+    }
+
+    void aSoundLongerThanTheLimitConvertsToNothing() {
+        DecodedSound decoded;
+        decoded.sampleRate = 8000;
+        decoded.channels = 1;
+        decoded.samples = QList<qint16>(qsizetype(MaximumTotalPcmBytes / GamePcmBytesPerFrame / GamePcmSampleRate * 8000 + 8000), 100);
+        QVERIFY(gamePcmBytes(decoded) > MaximumTotalPcmBytes);
+        QVERIFY(convertToGamePcm(decoded).isEmpty());
+
+        QTemporaryDir directory;
+        QTemporaryDir outside;
+        writeFile(outside.path() + "/huge.wav", encodeWav(decoded));
+        ImportedSound imported;
+        QString error;
+        QVERIFY(!importWavSound(directory.path(), {}, outside.path() + "/huge.wav", imported, error));
+        QVERIFY2(error.contains("too long"), qPrintable(error));
+    }
+
     void pcmIsLittleEndianStereoAt48k() {
         DecodedSound decoded;
         decoded.sampleRate = 48000;

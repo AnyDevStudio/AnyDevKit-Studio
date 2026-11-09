@@ -188,7 +188,7 @@ bool parseWav(const QByteArray& bytes, DecodedSound& sound, QString& why) {
     if (!haveData) return failParse(why, "it holds no sound data");
     if (format != WaveFormatPcm && format != WaveFormatFloat) return failParse(why, "it is compressed. Export it again as uncompressed PCM");
     if (channels != 1 && channels != 2) return failParse(why, QString("it has %1 channels, and only mono or stereo can be used").arg(channels));
-    if (sampleRate <= 0) return failParse(why, "its sample rate is not valid");
+    if (sampleRate < MinimumSoundSampleRate || sampleRate > MaximumSoundSampleRate) return failParse(why, QString("its sample rate of %1 Hz cannot be used. Export it at a common rate, such as 44100 or 48000 Hz").arg(sampleRate));
     const auto bytesPerSample = bitsPerSample / 8;
     const auto supported = format == WaveFormatFloat ? bitsPerSample == 32 : (bitsPerSample == 8 || bitsPerSample == 16 || bitsPerSample == 24 || bitsPerSample == 32);
     if (!supported) return failParse(why, QString("it uses %1-bit samples, which cannot be used. Use 8, 16, 24 or 32-bit PCM").arg(bitsPerSample));
@@ -229,6 +229,12 @@ QByteArray encodeWav(const DecodedSound& sound) {
     return wav;
 }
 
+qint64 gamePcmBytes(const DecodedSound& sound) {
+    if (sound.channels < 1 || sound.channels > 2 || sound.sampleRate <= 0 || sound.samples.isEmpty()) return 0;
+    const auto inputFrames = sound.samples.size() / sound.channels;
+    return std::max<qint64>(1, std::llround(double(inputFrames) * GamePcmSampleRate / double(sound.sampleRate))) * GamePcmBytesPerFrame;
+}
+
 QByteArray convertToGamePcm(const DecodedSound& sound) {
     if (sound.channels < 1 || sound.channels > 2 || sound.sampleRate <= 0) return {};
     const auto inputFrames = sound.samples.size() / sound.channels;
@@ -239,7 +245,9 @@ QByteArray convertToGamePcm(const DecodedSound& sound) {
         return int(sound.samples[qBound<qsizetype>(0, frame, inputFrames - 1) * sound.channels + source]);
     };
 
-    const auto outputFrames = std::max<qint64>(1, qint64(std::llround(double(inputFrames) * GamePcmSampleRate / double(sound.sampleRate))));
+    const auto outputBytes = gamePcmBytes(sound);
+    if (outputBytes > MaximumTotalPcmBytes) return {};
+    const auto outputFrames = outputBytes / GamePcmBytesPerFrame;
     QByteArray pcm;
     pcm.resize(outputFrames * GamePcmBytesPerFrame);
     auto* out = reinterpret_cast<uchar*>(pcm.data());
@@ -333,9 +341,9 @@ bool exportSounds(const QString& projectRoot, const QList<ProjectSound>& sounds,
         DecodedSound decoded;
         QString why;
         if (!parseWav(file.readAll(), decoded, why)) return fail(QString("The sound %1 could not be used because %2.").arg(sound.source, why));
-        auto pcm = convertToGamePcm(decoded);
-        total += pcm.size();
+        total += gamePcmBytes(decoded);
         if (total > MaximumTotalPcmBytes) return fail(QString("The project's sounds add up to more than %1 MB of game memory. Shorten or remove some sounds and try again.").arg(MaximumTotalPcmBytes / (1024 * 1024)));
+        auto pcm = convertToGamePcm(decoded);
         pcms.append({sound.source, std::move(pcm)});
     }
 
@@ -430,6 +438,10 @@ bool importWavSound(const QString& projectRoot, const QList<ProjectSound>& exist
     QString why;
     if (!parseWav(bytes, decoded, why)) {
         error = QString("%1 could not be imported because %2.").arg(info.fileName(), why);
+        return false;
+    }
+    if (gamePcmBytes(decoded) > MaximumTotalPcmBytes) {
+        error = QString("%1 is too long to use in a game. Shorten it or lower its quality and try again.").arg(info.fileName());
         return false;
     }
     return storeImportedSound(projectRoot, existing, info.completeBaseName(), bytes, imported, error);

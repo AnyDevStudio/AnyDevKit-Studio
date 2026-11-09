@@ -21,6 +21,8 @@ inline constexpr qint64 MaximumTotalPcmBytes = 256 * 1024 * 1024;  // about 23 m
 inline constexpr int GamePcmSampleRate = 48000;
 inline constexpr int GamePcmChannels = 2;
 inline constexpr int GamePcmBytesPerFrame = 4;
+inline constexpr int MinimumSoundSampleRate = 1000; // lower is refused: it would resample to an enormous sound
+inline constexpr int MaximumSoundSampleRate = 768000;
 
 bool isSoundName(const QString& name);
 bool isSoundSource(const QString& source); // a plain .wav file directly in assets/sounds
@@ -38,7 +40,9 @@ QByteArray encodeWav(const DecodedSound& sound);                         // a 16
 
 // To the format the game plays: 48 kHz, stereo, signed 16-bit little-endian, interleaved, no header.
 // Mono is copied to both channels. Other rates use linear interpolation.
+// The result is empty when the sound would be longer than MaximumTotalPcmBytes.
 QByteArray convertToGamePcm(const DecodedSound& sound);
+qint64 gamePcmBytes(const DecodedSound& sound); // what convertToGamePcm would produce, without converting
 
 // One sound converted for the game, with the WAV source it came from.
 struct SoundPcm {
