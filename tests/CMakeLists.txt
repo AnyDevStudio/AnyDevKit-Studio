@@ -44,6 +44,8 @@ function(studio_add_sanitized_test name)
 endfunction()
 studio_add_sanitized_test(tst_audio_mixer tst_audio_mixer.cpp)
 studio_add_sanitized_test(tst_save_format tst_save_format.cpp)
+# The 2D platformer physics from the game runtime, always under sanitizers, with a long soak of random worlds.
+studio_add_sanitized_test(tst_physics2d tst_physics2d.cpp)
 if(NOT MSVC)
     add_executable(tst_audio_mixer_tsan tst_audio_mixer.cpp)
     target_compile_features(tst_audio_mixer_tsan PRIVATE cxx_std_20)
