@@ -3,6 +3,7 @@
 
 #include <QCommandLineParser>
 #include <QGuiApplication>
+#include <QIcon>
 #include <QImage>
 #include <QQmlApplicationEngine>
 #include <QQuickStyle>
@@ -14,6 +15,7 @@ int main(int argc, char** argv) {
     QGuiApplication::setOrganizationName("AnyDevStudio");
     QGuiApplication::setApplicationName("AnyDevKit Studio");
     QGuiApplication::setApplicationVersion(QStringLiteral(PROJECT_VERSION_TEXT));
+    QGuiApplication::setWindowIcon(QIcon(":/qt/qml/AnyDevKitStudio/assets/icon/app-icon.png"));
     QQuickStyle::setStyle("Basic");
 
     QCommandLineParser parser;

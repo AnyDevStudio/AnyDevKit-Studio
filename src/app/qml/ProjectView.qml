@@ -1,96 +1,75 @@
 import QtQuick
 import QtQuick.Layouts
+import QtQuick.Templates as T
 
 Item {
     id: view
 
     required property StudioController studio
 
+    property string mode: "scene"
     readonly property string revealLabel: Qt.platform.os === "osx" ? "Show in Finder" : "Show in folder"
 
-    RowLayout {
+    Connections {
+        target: view.studio
+        function onBuildChanged() { if (view.studio.building) view.mode = "build" }
+    }
+
+    component ModeTab: T.Button {
+        id: tab
+
+        required property string target
+
+        implicitWidth: label.implicitWidth + 32
+        implicitHeight: 38
+        onClicked: view.mode = target
+
+        contentItem: Item {
+            Text {
+                id: label
+                anchors.centerIn: parent
+                text: tab.text
+                color: view.mode === tab.target ? Theme.ink : tab.hovered ? Theme.paper : Theme.muted
+                font.family: Theme.body
+                font.weight: Font.DemiBold
+                font.pixelSize: 15
+            }
+        }
+
+        background: Rectangle {
+            radius: height / 2
+            color: view.mode === tab.target ? Theme.paper : "transparent"
+
+            Rectangle {
+                anchors.fill: parent
+                anchors.margins: -3
+                radius: height / 2
+                color: "transparent"
+                border.width: 2
+                border.color: Theme.paper
+                visible: tab.visualFocus
+            }
+        }
+    }
+
+    ColumnLayout {
         anchors.fill: parent
         spacing: 0
 
         Rectangle {
-            Layout.fillHeight: true
-            Layout.preferredWidth: 272
-            color: Theme.panel
-
-            ColumnLayout {
-                anchors.fill: parent
-                anchors.margins: 16
-                spacing: 12
-
-                Text {
-                    text: "Files"
-                    color: Theme.paper
-                    font.family: Theme.body
-                    font.weight: Font.DemiBold
-                    font.pixelSize: 17
-                    Layout.leftMargin: 10
-                }
-
-                FileList {
-                    studio: view.studio
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-                }
-
-                Text {
-                    text: "Open code with"
-                    color: Theme.muted
-                    font.family: Theme.body
-                    font.pixelSize: 14
-                    Layout.leftMargin: 10
-                    Layout.topMargin: 4
-                }
-
-                EditorPicker {
-                    studio: view.studio
-                    Layout.fillWidth: true
-                }
-
-                PillButton {
-                    visible: view.studio.selectedEditorName.length > 0
-                    text: "Open project in " + view.studio.selectedEditorName
-                    Layout.fillWidth: true
-                    onClicked: view.studio.openProjectInEditor()
-                }
-
-                Text {
-                    visible: view.studio.editorError.length > 0
-                    text: view.studio.editorError
-                    color: Theme.bad
-                    wrapMode: Text.WordWrap
-                    font.family: Theme.body
-                    font.pixelSize: 14
-                    Layout.fillWidth: true
-                    Layout.leftMargin: 10
-                }
-
-                PillButton {
-                    text: "Open another project"
-                    enabled: !view.studio.building
-                    Layout.fillWidth: true
-                    onClicked: view.studio.closeProject()
-                }
-            }
-        }
-
-        ColumnLayout {
             Layout.fillWidth: true
-            Layout.fillHeight: true
-            Layout.margins: 36
-            spacing: 26
+            implicitHeight: 96
+            color: Theme.ink
 
             RowLayout {
-                Layout.fillWidth: true
+                anchors.fill: parent
+                anchors.leftMargin: 28
+                anchors.rightMargin: 28
                 spacing: 24
 
                 ColumnLayout {
                     Layout.fillWidth: true
-                    spacing: 12
+                    spacing: 2
 
                     Text {
                         Layout.fillWidth: true
@@ -98,96 +77,209 @@ Item {
                         color: Theme.paper
                         elide: Text.ElideRight
                         font.family: Theme.display
-                        font.pixelSize: Math.min(76, view.width * 0.066)
-                        lineHeight: 0.94
+                        font.pixelSize: 36
                     }
 
-                    RowLayout {
-                        spacing: 28
-
-                        Repeater {
-                            model: [
-                                { label: "Title ID", value: view.studio.titleId },
-                                { label: "Version", value: view.studio.contentVersion },
-                            ]
-
-                            Row {
-                                required property var modelData
-
-                                spacing: 8
-
-                                Text {
-                                    text: parent.modelData.label
-                                    color: Theme.muted
-                                    font.family: Theme.body
-                                    font.pixelSize: 15
-                                }
-
-                                Text {
-                                    text: parent.modelData.value
-                                    color: Theme.paper
-                                    font.family: Theme.body
-                                    font.weight: Font.Medium
-                                    font.pixelSize: 15
-                                }
-                            }
-                        }
+                    Text {
+                        text: view.studio.titleId + "   Version " + view.studio.contentVersion
+                        color: Theme.muted
+                        font.family: Theme.body
+                        font.pixelSize: 14
                     }
+                }
+
+                RowLayout {
+                    spacing: 4
+
+                    ModeTab { target: "scene"; text: "Scene" }
+                    ModeTab { target: "build"; text: "Code and build" }
                 }
 
                 PillButton {
                     primary: true
                     visible: !view.studio.building
                     text: view.studio.buildState === "idle" ? "Build PS5 package" : "Build again"
-                    Layout.alignment: Qt.AlignTop
                     onClicked: view.studio.build()
                 }
 
                 PillButton {
                     visible: view.studio.building
                     text: "Cancel build"
-                    Layout.alignment: Qt.AlignTop
                     onClicked: view.studio.cancelBuild()
                 }
             }
+        }
 
-            StageLane {
-                stages: view.studio.stages
-                Layout.fillWidth: true
+        StackLayout {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            currentIndex: view.mode === "scene" ? 0 : 1
+
+            Item {
+                SceneView {
+                    anchors.fill: parent
+                    visible: view.studio.scene.loaded
+                    scene: view.studio.scene
+                }
+
+                ColumnLayout {
+                    anchors.centerIn: parent
+                    width: Math.min(parent.width - 96, 620)
+                    visible: !view.studio.scene.loaded
+                    spacing: 22
+
+                    Text {
+                        Layout.fillWidth: true
+                        text: "Design this game by dragging."
+                        color: Theme.paper
+                        wrapMode: Text.WordWrap
+                        font.family: Theme.display
+                        font.pixelSize: 52
+                        lineHeight: 0.96
+                    }
+
+                    Text {
+                        Layout.fillWidth: true
+                        text: "Studio adds its game runtime to this project. Files it replaces are copied to .studio-backup first, and your scene builds with the same button."
+                        color: Theme.muted
+                        wrapMode: Text.WordWrap
+                        font.family: Theme.body
+                        font.pixelSize: 18
+                        lineHeight: 1.3
+                    }
+
+                    PillButton {
+                        primary: true
+                        text: "Add the scene editor"
+                        onClicked: view.studio.addSceneEditor()
+                    }
+
+                    Text {
+                        Layout.fillWidth: true
+                        visible: view.studio.scene.error.length > 0
+                        text: view.studio.scene.error
+                        color: Theme.bad
+                        wrapMode: Text.WordWrap
+                        font.family: Theme.body
+                        font.pixelSize: 15
+                    }
+                }
             }
 
             RowLayout {
-                Layout.fillWidth: true
-                spacing: 16
-                visible: view.studio.buildMessage.length > 0
+                spacing: 0
 
-                Text {
+                Rectangle {
+                    Layout.fillHeight: true
+                    Layout.preferredWidth: 272
+                    color: Theme.panel
+
+                    ColumnLayout {
+                        anchors.fill: parent
+                        anchors.margins: 16
+                        spacing: 12
+
+                        Text {
+                            text: "Files"
+                            color: Theme.paper
+                            font.family: Theme.body
+                            font.weight: Font.DemiBold
+                            font.pixelSize: 17
+                            Layout.leftMargin: 10
+                        }
+
+                        FileList {
+                            studio: view.studio
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                        }
+
+                        Text {
+                            text: "Open code with"
+                            color: Theme.muted
+                            font.family: Theme.body
+                            font.pixelSize: 14
+                            Layout.leftMargin: 10
+                            Layout.topMargin: 4
+                        }
+
+                        EditorPicker {
+                            studio: view.studio
+                            Layout.fillWidth: true
+                        }
+
+                        PillButton {
+                            visible: view.studio.selectedEditorName.length > 0
+                            text: "Open project in " + view.studio.selectedEditorName
+                            Layout.fillWidth: true
+                            onClicked: view.studio.openProjectInEditor()
+                        }
+
+                        Text {
+                            visible: view.studio.editorError.length > 0
+                            text: view.studio.editorError
+                            color: Theme.bad
+                            wrapMode: Text.WordWrap
+                            font.family: Theme.body
+                            font.pixelSize: 14
+                            Layout.fillWidth: true
+                            Layout.leftMargin: 10
+                        }
+
+                        PillButton {
+                            text: "Open another project"
+                            enabled: !view.studio.building
+                            Layout.fillWidth: true
+                            onClicked: view.studio.closeProject()
+                        }
+                    }
+                }
+
+                ColumnLayout {
                     Layout.fillWidth: true
-                    text: view.studio.buildState === "done" && view.studio.outputName ? view.studio.outputName + " is ready, " + view.studio.outputSize + "." : view.studio.buildMessage
-                    color: view.studio.buildState === "done" ? Theme.good : view.studio.buildState === "failed" ? Theme.bad : Theme.muted
-                    wrapMode: Text.WordWrap
-                    font.family: Theme.body
-                    font.weight: Font.Medium
-                    font.pixelSize: 17
-                }
+                    Layout.fillHeight: true
+                    Layout.margins: 28
+                    spacing: 22
 
-                PillButton {
-                    visible: view.studio.buildState === "done"
-                    text: view.revealLabel
-                    onClicked: view.studio.revealOutput()
-                }
+                    StageLane {
+                        stages: view.studio.stages
+                        Layout.fillWidth: true
+                    }
 
-                PillButton {
-                    visible: view.studio.buildState === "failed"
-                    text: "Copy log"
-                    onClicked: view.studio.copyLog()
-                }
-            }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 16
+                        visible: view.studio.buildMessage.length > 0
 
-            LogPanel {
-                studio: view.studio
-                Layout.fillWidth: true
-                Layout.fillHeight: true
+                        Text {
+                            Layout.fillWidth: true
+                            text: view.studio.buildState === "done" && view.studio.outputName ? view.studio.outputName + " is ready, " + view.studio.outputSize + "." : view.studio.buildMessage
+                            color: view.studio.buildState === "done" ? Theme.good : view.studio.buildState === "failed" ? Theme.bad : Theme.muted
+                            wrapMode: Text.WordWrap
+                            font.family: Theme.body
+                            font.weight: Font.Medium
+                            font.pixelSize: 17
+                        }
+
+                        PillButton {
+                            visible: view.studio.buildState === "done"
+                            text: view.revealLabel
+                            onClicked: view.studio.revealOutput()
+                        }
+
+                        PillButton {
+                            visible: view.studio.buildState === "failed"
+                            text: "Copy log"
+                            onClicked: view.studio.copyLog()
+                        }
+                    }
+
+                    LogPanel {
+                        studio: view.studio
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                    }
+                }
             }
         }
     }

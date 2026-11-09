@@ -3,6 +3,7 @@
 #include "BuildRunner.h"
 #include "CodeEditors.h"
 #include "Project.h"
+#include "SceneDocument.h"
 
 #include <QObject>
 #include <QStringListModel>
@@ -13,6 +14,13 @@
 #include <optional>
 
 namespace Studio {
+
+struct SceneDocumentForeign {
+    Q_GADGET
+    QML_FOREIGN(Studio::SceneDocument)
+    QML_NAMED_ELEMENT(SceneDocument)
+    QML_UNCREATABLE("Owned by the studio controller")
+};
 
 class StudioController : public QObject {
     Q_OBJECT
@@ -32,6 +40,7 @@ class StudioController : public QObject {
     Q_PROPERTY(QString outputName READ outputName NOTIFY buildChanged)
     Q_PROPERTY(QString outputSize READ outputSize NOTIFY buildChanged)
     Q_PROPERTY(QStringListModel* log READ log CONSTANT)
+    Q_PROPERTY(Studio::SceneDocument* scene READ scene CONSTANT)
     Q_PROPERTY(QVariantList editors READ editors CONSTANT)
     Q_PROPERTY(QString selectedEditor READ selectedEditor WRITE setSelectedEditor NOTIFY editorChanged)
     Q_PROPERTY(QString selectedEditorName READ selectedEditorName NOTIFY editorChanged)
@@ -54,12 +63,14 @@ public:
     QString outputName() const;
     QString outputSize() const;
     QStringListModel* log();
+    SceneDocument* scene();
     QVariantList editors() const;
     QString selectedEditor() const;
     QString selectedEditorName() const;
     QString editorError() const;
     void setSelectedEditor(const QString& id);
 
+    Q_INVOKABLE void addSceneEditor();
     Q_INVOKABLE void openProjectInEditor();
     Q_INVOKABLE bool openFolder(const QUrl& folder);
     Q_INVOKABLE void closeProject();
@@ -81,6 +92,8 @@ signals:
 private:
     const CodeEditor* currentEditor() const;
     void launchEditor(const CodeEditor& editor, const QString& file);
+    void refreshFiles();
+    bool exportScene();
     void resetBuild();
     void setStageState(int index, const QString& state);
     void appendLog(const QStringList& lines);
@@ -90,6 +103,7 @@ private:
     QString lastOpenError;
     BuildRunner runner;
     QStringListModel logModel;
+    SceneDocument sceneDocument;
     QVariantList stageEntries;
     QString state = "idle";
     QString message;

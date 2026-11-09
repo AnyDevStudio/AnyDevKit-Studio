@@ -8,6 +8,7 @@
 #include <QLocale>
 #include <QProcess>
 #include <QProcessEnvironment>
+#include <QSaveFile>
 #include <QSettings>
 
 #include <algorithm>
@@ -56,6 +57,38 @@ QVariantList StudioController::stages() const { return stageEntries; }
 QString StudioController::outputName() const { return project && !size.isEmpty() ? QFileInfo(project->outputPath).fileName() : QString(); }
 QString StudioController::outputSize() const { return size; }
 QStringListModel* StudioController::log() { return &logModel; }
+SceneDocument* StudioController::scene() { return &sceneDocument; }
+
+void StudioController::addSceneEditor() {
+    if (!project || runner.isRunning()) return;
+    QString error;
+    if (!installSceneRuntime(":/runtime/SceneGame", project->root, project->name, error)) {
+        sceneDocument.setError(error);
+        return;
+    }
+    sceneDocument.open(project->root + "/scene.json");
+    refreshFiles();
+    emit projectChanged();
+}
+
+void StudioController::refreshFiles() {
+    fileEntries.clear();
+    if (!project) return;
+    for (const auto& file : listProjectFiles(project->root)) {
+        fileEntries.append(QVariantMap{{"name", file.name}, {"path", file.relativePath}, {"depth", file.depth}, {"isDirectory", file.isDirectory}});
+    }
+}
+
+bool StudioController::exportScene() {
+    if (!sceneDocument.isLoaded()) return true;
+    const auto header = generateSceneHeader(sceneDocument.scene());
+    QSaveFile file(project->root + "/src/GeneratedScene.hpp");
+    if (!header.isEmpty() && file.open(QIODevice::WriteOnly) && file.write(header) == header.size() && file.commit()) return true;
+    state = "failed";
+    message = "The scene could not be written to src/GeneratedScene.hpp. Check the scene for problems and try again.";
+    emit buildChanged();
+    return false;
+}
 
 bool StudioController::openFolder(const QUrl& folder) {
     return openPath(folder.toLocalFile());
@@ -69,10 +102,8 @@ bool StudioController::openPath(const QString& path) {
     if (!result.project) return false;
 
     project = result.project;
-    fileEntries.clear();
-    for (const auto& file : listProjectFiles(project->root)) {
-        fileEntries.append(QVariantMap{{"name", file.name}, {"path", file.relativePath}, {"depth", file.depth}, {"isDirectory", file.isDirectory}});
-    }
+    refreshFiles();
+    sceneDocument.open(project->root + "/scene.json");
     resetBuild();
     emit projectChanged();
     return true;
@@ -82,6 +113,7 @@ void StudioController::closeProject() {
     if (runner.isRunning()) return;
     project.reset();
     fileEntries.clear();
+    sceneDocument.close();
     resetBuild();
     emit projectChanged();
 }
@@ -101,6 +133,10 @@ void StudioController::resetBuild() {
 void StudioController::build() {
     if (!project || runner.isRunning()) return;
     resetBuild();
+    if (!exportScene()) {
+        emit buildFinished(false);
+        return;
+    }
     state = "running";
     runner.start(ps5BuildSteps(*project), project->root, withToolDirectories(QProcessEnvironment::systemEnvironment(), hostToolDirectories()));
     emit buildChanged();
