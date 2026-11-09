@@ -18,6 +18,8 @@ ctest --test-dir build --output-on-failure
 
 - `src/core`: projects and builds. It uses only Qt Core and has no interface code, so it can be
   tested without a window. Behaviour changes here need a test in `tests/tst_core.cpp`.
+- `src/gamepage`: the Game page's `param.json` edits and image work. It uses Qt Gui, so it is separate
+  from `src/core`. Tests are in `tests/tst_gamepage.cpp`.
 - `src/app`: the application and the bridge between C++ and QML.
 - `src/app/qml`: the interface. Colors, fonts and motion timings live in `Theme.qml`.
 - `runtime/SceneGame`: the PS5 game code Studio adds to a project. It compiles the header exported

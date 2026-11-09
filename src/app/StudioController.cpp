@@ -41,6 +41,17 @@ StudioController::StudioController(QObject* parent) : QObject(parent) {
         emit buildChanged();
         emit buildFinished(success);
     });
+
+    connect(this, &StudioController::buildChanged, &gamePageDocument, [this] { gamePageDocument.setBuilding(runner.isRunning()); });
+    connect(&gamePageDocument, &GamePageDocument::titleSaved, this, [this](const QString& title) {
+        if (!project) return;
+        project->titleName = title;
+        emit projectChanged();
+    });
+    connect(&gamePageDocument, &GamePageDocument::filesChanged, this, [this] {
+        refreshFiles();
+        emit projectChanged();
+    });
 }
 
 bool StudioController::hasProject() const { return project.has_value(); }
@@ -58,6 +69,7 @@ QString StudioController::outputName() const { return project && !size.isEmpty()
 QString StudioController::outputSize() const { return size; }
 QStringListModel* StudioController::log() { return &logModel; }
 SceneDocument* StudioController::scene() { return &sceneDocument; }
+GamePageDocument* StudioController::gamePage() { return &gamePageDocument; }
 
 void StudioController::addSceneEditor() {
     if (!project || runner.isRunning()) return;
@@ -104,6 +116,7 @@ bool StudioController::openPath(const QString& path) {
     project = result.project;
     refreshFiles();
     sceneDocument.open(project->root + "/scene.json");
+    gamePageDocument.open(project->root, project->app0Path, project->paramPath, project->titleName);
     resetBuild();
     emit projectChanged();
     return true;
@@ -114,6 +127,7 @@ void StudioController::closeProject() {
     project.reset();
     fileEntries.clear();
     sceneDocument.close();
+    gamePageDocument.close();
     resetBuild();
     emit projectChanged();
 }
@@ -131,7 +145,7 @@ void StudioController::resetBuild() {
 }
 
 void StudioController::build() {
-    if (!project || runner.isRunning()) return;
+    if (!project || runner.isRunning() || gamePageDocument.isBusy()) return;
     resetBuild();
     if (!exportScene()) {
         emit buildFinished(false);

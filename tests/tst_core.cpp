@@ -290,6 +290,15 @@ private slots:
         QVERIFY(QFile::exists(precious));
     }
 
+    void exposesTheGameFilesFolders() {
+        QTemporaryDir directory;
+        writeProject(directory.path());
+        const auto result = loadProject(directory.path());
+        QVERIFY(result.project);
+        QCOMPARE(result.project->app0Path, QDir::cleanPath(directory.path() + "/app0"));
+        QCOMPARE(result.project->paramPath, QDir::cleanPath(directory.path() + "/app0/sce_sys/param.json"));
+    }
+
     void explainsMissingProgram() {
         QTemporaryDir directory;
         BuildRunner runner;

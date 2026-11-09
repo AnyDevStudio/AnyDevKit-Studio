@@ -10,6 +10,10 @@ ColumnLayout {
     property int maximumLength: 64
 
     signal committed(string text)
+    signal edited(string text)
+
+    // Saves what is typed without waiting for the field to lose focus.
+    function commit() { if (input.text !== value) committed(input.text) }
 
     spacing: 6
 
@@ -37,7 +41,8 @@ ColumnLayout {
         font.family: Theme.body
         font.pixelSize: 15
         text: field.value
-        onEditingFinished: if (text !== field.value) field.committed(text)
+        onEditingFinished: field.commit()
+        onTextEdited: field.edited(text)
 
         background: Rectangle {
             radius: 8

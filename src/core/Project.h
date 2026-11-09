@@ -17,6 +17,8 @@ struct Project {
     QString contentVersion;
     QString sdkRoot;
     QString elfPath;
+    QString app0Path;
+    QString paramPath;
     QString outputPath;
     QString workspacePath;
 };
@@ -46,6 +48,8 @@ QString adkExecutable(const Project& project);
 QList<BuildStep> ps5BuildSteps(const Project& project);
 QList<FileEntry> listProjectFiles(const QString& root);
 bool isInsideDirectory(const QString& path, const QString& directory);
+// Why writing to relativePath under root would be unsafe, or an empty string when it is fine.
+QString checkTargetPath(const QString& root, const QString& relativePath);
 QProcessEnvironment withToolDirectories(QProcessEnvironment environment, const QStringList& directories);
 QStringList hostToolDirectories();
 

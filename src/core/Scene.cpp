@@ -217,25 +217,6 @@ struct RuntimeFile {
     QByteArray contents;
 };
 
-// A lexical check is not enough: a link inside the project could lead anywhere, so every part of
-// the path is inspected. isSymLink also catches links whose target is missing, which exists() does not.
-QString checkTargetPath(const QString& root, const QString& relativePath) {
-    if (!isInsideDirectory(root + '/' + relativePath, root)) return QString("%1 is outside the project folder, so it was not installed.").arg(relativePath);
-    const auto parts = relativePath.split('/');
-    auto current = root;
-    for (qsizetype index = 0; index < parts.size(); ++index) {
-        current += '/' + parts[index];
-        const QFileInfo info(current);
-        const auto shown = parts.mid(0, index + 1).join('/');
-        if (info.isSymLink() || info.isJunction()) return QString("%1 is a link, and Studio will not write through it. Replace it with a regular file or folder and try again.").arg(shown);
-        if (!info.exists()) return {};
-        const auto isLast = index == parts.size() - 1;
-        if (isLast && info.isDir()) return QString("%1 is a folder, but Studio needs to write a file there. Move the folder and try again.").arg(shown);
-        if (!isLast && !info.isDir()) return QString("%1 is a file, but Studio needs a folder there. Move the file and try again.").arg(shown);
-    }
-    return {};
-}
-
 bool writeFile(const QString& path, const QByteArray& contents, QString& problem) {
     if (!QDir().mkpath(QFileInfo(path).absolutePath())) {
         problem = "its folder could not be created";

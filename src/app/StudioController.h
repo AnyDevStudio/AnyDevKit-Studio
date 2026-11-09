@@ -2,6 +2,7 @@
 
 #include "BuildRunner.h"
 #include "CodeEditors.h"
+#include "GamePageDocument.h"
 #include "Project.h"
 #include "SceneDocument.h"
 
@@ -19,6 +20,13 @@ struct SceneDocumentForeign {
     Q_GADGET
     QML_FOREIGN(Studio::SceneDocument)
     QML_NAMED_ELEMENT(SceneDocument)
+    QML_UNCREATABLE("Owned by the studio controller")
+};
+
+struct GamePageDocumentForeign {
+    Q_GADGET
+    QML_FOREIGN(Studio::GamePageDocument)
+    QML_NAMED_ELEMENT(GamePageDocument)
     QML_UNCREATABLE("Owned by the studio controller")
 };
 
@@ -41,6 +49,7 @@ class StudioController : public QObject {
     Q_PROPERTY(QString outputSize READ outputSize NOTIFY buildChanged)
     Q_PROPERTY(QStringListModel* log READ log CONSTANT)
     Q_PROPERTY(Studio::SceneDocument* scene READ scene CONSTANT)
+    Q_PROPERTY(Studio::GamePageDocument* gamePage READ gamePage CONSTANT)
     Q_PROPERTY(QVariantList editors READ editors CONSTANT)
     Q_PROPERTY(QString selectedEditor READ selectedEditor WRITE setSelectedEditor NOTIFY editorChanged)
     Q_PROPERTY(QString selectedEditorName READ selectedEditorName NOTIFY editorChanged)
@@ -64,6 +73,7 @@ public:
     QString outputSize() const;
     QStringListModel* log();
     SceneDocument* scene();
+    GamePageDocument* gamePage();
     QVariantList editors() const;
     QString selectedEditor() const;
     QString selectedEditorName() const;
@@ -104,6 +114,7 @@ private:
     BuildRunner runner;
     QStringListModel logModel;
     SceneDocument sceneDocument;
+    GamePageDocument gamePageDocument;
     QVariantList stageEntries;
     QString state = "idle";
     QString message;

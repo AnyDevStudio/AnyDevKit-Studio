@@ -39,6 +39,25 @@ bool isInsideDirectory(const QString& path, const QString& directory) {
     return QDir::cleanPath(path).startsWith(prefix);
 }
 
+// A lexical check is not enough: a link inside the project could lead anywhere, so every part of
+// the path is inspected. isSymLink also catches links whose target is missing, which exists() does not.
+QString checkTargetPath(const QString& root, const QString& relativePath) {
+    if (!isInsideDirectory(root + '/' + relativePath, root)) return QString("%1 is outside the project folder, so it was not installed.").arg(relativePath);
+    const auto parts = relativePath.split('/');
+    auto current = root;
+    for (qsizetype index = 0; index < parts.size(); ++index) {
+        current += '/' + parts[index];
+        const QFileInfo info(current);
+        const auto shown = parts.mid(0, index + 1).join('/');
+        if (info.isSymLink() || info.isJunction()) return QString("%1 is a link, and Studio will not write through it. Replace it with a regular file or folder and try again.").arg(shown);
+        if (!info.exists()) return {};
+        const auto isLast = index == parts.size() - 1;
+        if (isLast && info.isDir()) return QString("%1 is a folder, but Studio needs to write a file there. Move the folder and try again.").arg(shown);
+        if (!isLast && !info.isDir()) return QString("%1 is a file, but Studio needs a folder there. Move the file and try again.").arg(shown);
+    }
+    return {};
+}
+
 ProjectLoadResult loadProject(const QString& directory) {
     const auto root = QDir::cleanPath(QDir(directory).absolutePath());
     const auto config = readObject(root + "/adk.json");
@@ -63,13 +82,12 @@ ProjectLoadResult loadProject(const QString& directory) {
         return QString();
     };
 
-    QString param;
-    for (const auto& [field, target] : {std::pair<const char*, QString*>{"input", &project.elfPath}, {"param", &param}, {"output", &project.outputPath}, {"workspace", &project.workspacePath}}) {
+    for (const auto& [field, target] : {std::pair<const char*, QString*>{"input", &project.elfPath}, {"app0", &project.app0Path}, {"param", &project.paramPath}, {"output", &project.outputPath}, {"workspace", &project.workspacePath}}) {
         const auto error = resolve(field, *target);
         if (!error.isEmpty()) return failure(error);
     }
 
-    const auto metadata = readObject(param);
+    const auto metadata = readObject(project.paramPath);
     if (!metadata) return failure("The application metadata in app0/sce_sys/param.json could not be read.");
     project.titleId = metadata->value("titleId").toString();
     project.contentVersion = metadata->value("contentVersion").toString();

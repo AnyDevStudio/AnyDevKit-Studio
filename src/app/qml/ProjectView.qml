@@ -92,14 +92,19 @@ Item {
                     spacing: 4
 
                     ModeTab { target: "scene"; text: "Scene" }
+                    ModeTab { target: "game"; text: "Game page" }
                     ModeTab { target: "build"; text: "Code and build" }
                 }
 
                 PillButton {
                     primary: true
                     visible: !view.studio.building
+                    enabled: !view.studio.gamePage.busy
                     text: view.studio.buildState === "idle" ? "Build PS5 package" : "Build again"
-                    onClicked: view.studio.build()
+                    onClicked: {
+                        gamePageView.commitPendingName()
+                        view.studio.build()
+                    }
                 }
 
                 PillButton {
@@ -113,7 +118,7 @@ Item {
         StackLayout {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            currentIndex: view.mode === "scene" ? 0 : 1
+            currentIndex: view.mode === "scene" ? 0 : view.mode === "game" ? 1 : 2
 
             Item {
                 SceneView {
@@ -164,6 +169,11 @@ Item {
                         font.pixelSize: 15
                     }
                 }
+            }
+
+            GamePageView {
+                id: gamePageView
+                studio: view.studio
             }
 
             RowLayout {
