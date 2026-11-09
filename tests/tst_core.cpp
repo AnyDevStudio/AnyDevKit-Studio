@@ -130,6 +130,7 @@ private slots:
         writeText(directory.path() + "/build/ps5/x.o");
         writeText(directory.path() + "/dist/ps5/x.ffpfsc");
         writeText(directory.path() + "/.git/config");
+        writeText(directory.path() + "/.studio-backup/20260101-000000/src/Main.cpp");
         const auto files = listProjectFiles(directory.path());
         QStringList paths;
         for (const auto& file : files) paths << file.relativePath;

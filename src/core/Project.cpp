@@ -28,7 +28,7 @@ std::optional<QJsonObject> readObject(const QString& path) {
 }
 
 bool isSkipped(const QString& name) {
-    return name == "build" || name == "dist" || name == ".git" || name == ".adk" || name == ".DS_Store";
+    return name == "build" || name == "dist" || name == ".git" || name == ".adk" || name == ".studio-backup" || name == ".DS_Store";
 }
 
 }
