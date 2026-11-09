@@ -220,6 +220,8 @@ ColumnLayout {
         parent: T.Overlay.overlay
         anchors.centerIn: parent
         width: Math.min(parent ? parent.width - 96 : 520, 520)
+        // A template popup does not size itself, and a height of 0 leaves the card without its background.
+        implicitHeight: implicitContentHeight + topPadding + bottomPadding
         modal: true
         focus: true
         padding: 30
