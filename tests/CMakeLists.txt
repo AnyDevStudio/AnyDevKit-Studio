@@ -5,6 +5,7 @@ add_test(NAME tst_core COMMAND tst_core)
 
 qt_add_executable(tst_scene tst_scene.cpp)
 target_link_libraries(tst_scene PRIVATE studio_core Qt6::Test)
+target_include_directories(tst_scene PRIVATE "${PROJECT_SOURCE_DIR}/runtime/SceneGame/include")
 add_test(NAME tst_scene COMMAND tst_scene)
 
 # Lets tst_scene install a runtime from a real Qt resource path.
@@ -22,6 +23,11 @@ qt_add_resources(tst_scene "scene_runtime_fixture"
 qt_add_executable(tst_scene_document tst_scene_document.cpp)
 target_link_libraries(tst_scene_document PRIVATE studio_core Qt6::Test)
 add_test(NAME tst_scene_document COMMAND tst_scene_document)
+
+# The particle simulation from the game runtime, with no Qt so it can also run under sanitizers.
+add_executable(tst_particles tst_particles.cpp)
+target_include_directories(tst_particles PRIVATE "${PROJECT_SOURCE_DIR}/runtime/SceneGame/include")
+add_test(NAME tst_particles COMMAND tst_particles)
 
 qt_add_executable(tst_gamepage tst_gamepage.cpp)
 target_link_libraries(tst_gamepage PRIVATE studio_gamepage Qt6::Test)
@@ -46,4 +52,4 @@ target_compile_definitions(tst_font_tables PRIVATE STUDIO_SOURCE_DIR="${PROJECT_
 add_test(NAME tst_font_tables COMMAND tst_font_tables)
 
 # qt_standard_project_setup makes Windows executables GUI apps, which hides test output.
-set_target_properties(tst_core tst_scene tst_scene_document tst_gamepage tst_blocks tst_scene_export tst_font_tables PROPERTIES WIN32_EXECUTABLE FALSE)
+set_target_properties(tst_core tst_scene tst_scene_document tst_particles tst_gamepage tst_blocks tst_scene_export tst_font_tables PROPERTIES WIN32_EXECUTABLE FALSE)
