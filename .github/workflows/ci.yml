@@ -46,8 +46,10 @@ jobs:
         run: |
           for test in $(find build -type f \( -name 'tst_*.exe' -o \( -name 'tst_*' -perm -u+x \) \) | grep -v autogen); do
             echo "== $test"
-            "$test" -o -,txt 2>&1 | grep -v '^PASS' || true
-            echo "exit: ${PIPESTATUS[0]}"
+            code=0
+            "$test" -o test-output.txt,txt || code=$?
+            grep -v '^PASS' test-output.txt || true
+            echo "exit: $code"
           done
       - name: Start the application
         env:
