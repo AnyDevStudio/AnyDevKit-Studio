@@ -323,6 +323,10 @@ QString StudioController::projectsFolder() const {
     return QSettings().value(ProjectsFolderSetting, defaultProjectsFolder(QDir::homePath())).toString();
 }
 
+QString StudioController::suggestedProjectName(const QString& parentFolder, const QString& noun) const {
+    return suggestProjectName(parentFolder, noun);
+}
+
 QString StudioController::parentFolderProblem(const QString& path, const QString& noun) const {
     // The default folder is created with the first project.
     return path == defaultProjectsFolder(QDir::homePath()) ? QString() : validateParentDirectory(path, noun);

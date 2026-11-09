@@ -100,6 +100,18 @@ QString defaultProjectsFolder(const QString& homeFolder) {
     return homeFolder + "/Documents/AnyDevKit Projects";
 }
 
+QString suggestProjectName(const QString& parentFolder, const QString& noun) {
+    auto capitalized = noun;
+    if (!capitalized.isEmpty()) capitalized[0] = capitalized[0].toUpper();
+    const auto base = "MyFirst" + capitalized;
+    const QDir parent(parentFolder);
+    if (!parent.exists(base)) return base;
+    for (int number = 1;; ++number) {
+        const auto name = base + QString::number(number);
+        if (!parent.exists(name)) return name;
+    }
+}
+
 QString validateGameName(const QString& name, const QString& noun) {
     if (name.isEmpty()) return QString("Give your %1 a name.").arg(noun);
     if (name.size() > MaximumNameLength) return QString("That name is %1 characters long. Use %2 or fewer.").arg(name.size()).arg(MaximumNameLength);

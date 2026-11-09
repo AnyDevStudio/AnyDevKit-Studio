@@ -118,6 +118,7 @@ public:
     Q_INVOKABLE void copyLog() const;
     Q_INVOKABLE QString gameNameProblem(const QString& name, const QString& noun = "game") const;
     Q_INVOKABLE QString projectsFolder() const;
+    Q_INVOKABLE QString suggestedProjectName(const QString& parentFolder, const QString& noun) const;
     Q_INVOKABLE QString parentFolderProblem(const QString& path, const QString& noun = "game") const;
     Q_INVOKABLE QString sdkFolderProblem(const QString& path) const;
     Q_INVOKABLE QString dependencyFolderProblem(const QString& path) const;

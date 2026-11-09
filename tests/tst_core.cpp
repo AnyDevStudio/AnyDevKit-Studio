@@ -264,6 +264,22 @@ private slots:
         QCOMPARE(defaultProjectsFolder("/home/ada"), QString("/home/ada/Documents/AnyDevKit Projects"));
     }
 
+    void suggestsTheNextFreeProjectName() {
+        QTemporaryDir directory;
+        QCOMPARE(suggestProjectName(directory.path(), "game"), QString("MyFirstGame"));
+        QVERIFY(QDir(directory.path()).mkdir("MyFirstGame"));
+        QCOMPARE(suggestProjectName(directory.path(), "game"), QString("MyFirstGame1"));
+        QVERIFY(QDir(directory.path()).mkdir("MyFirstGame1"));
+        QVERIFY(QDir(directory.path()).mkdir("MyFirstGame2"));
+        QCOMPARE(suggestProjectName(directory.path(), "game"), QString("MyFirstGame3"));
+        QCOMPARE(suggestProjectName(directory.path(), "app"), QString("MyFirstApp"));
+        QCOMPARE(suggestProjectName(directory.path(), "project"), QString("MyFirstProject"));
+    }
+
+    void aMissingFolderStillGetsAProjectName() {
+        QCOMPARE(suggestProjectName("/does/not/exist", "game"), QString("MyFirstGame"));
+    }
+
     void runsStepsAndForwardsOutput() {
         QTemporaryDir directory;
         BuildRunner runner;

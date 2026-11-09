@@ -12,6 +12,7 @@ Item {
     property bool attempted: false
     property bool editingTools: false
     property bool choosingType: true
+    property bool nameEdited: false
     property string selectedType: studio.defaultProjectType
 
     readonly property string gameName: nameField.text
@@ -28,18 +29,27 @@ Item {
     readonly property real cardHeight: Math.max(78, Math.min(96, form.height * 0.15))
     readonly property string destination: nameProblem.length === 0 && gameName.length > 0 && parentProblem.length === 0 && parentField.text.length > 0 ? parentField.text.replace(/\/+$/, "") + "/" + gameName : ""
 
+    onNounChanged: suggestName()
+
     onPageChanged: {
         scroller.contentY = 0
         pageEntrance.restart()
     }
 
+    // Keeps the suggestion current until the user types a name of their own.
+    function suggestName() {
+        if (!nameEdited) nameField.setText(studio.suggestedProjectName(parentField.text, noun))
+    }
+
     function prepare() {
+        nameEdited = false
         attempted = false
         editingTools = false
         choosingType = true
         selectedType = studio.defaultProjectType
         nameField.setText("")
         parentField.setText(studio.projectsFolder())
+        suggestName()
         sdkField.setText(studio.sdkRoot)
         dependencyField.setText(studio.dependencyRoot)
         studio.clearNewGameError()
@@ -239,6 +249,7 @@ Item {
                 hint: "English letters, digits and underscores. It becomes the folder and title."
                 problem: form.nameProblem
                 onAccepted: form.submit()
+                onEdited: form.nameEdited = true
                 onTextChanged: form.studio.clearNewGameError()
             }
 
@@ -256,7 +267,10 @@ Item {
                     hint: form.destination.length > 0 ? "Creates " + form.destination : "The " + form.noun + " gets its own folder inside this one."
                     problem: form.parentProblem
                     onAccepted: form.submit()
-                    onTextChanged: form.studio.clearNewGameError()
+                    onTextChanged: {
+                        form.studio.clearNewGameError()
+                        form.suggestName()
+                    }
                 }
 
                 PillButton {

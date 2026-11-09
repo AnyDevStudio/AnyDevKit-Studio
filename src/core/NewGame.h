@@ -44,6 +44,7 @@ struct NewGameRequest {
 
 // Each check returns the message to show the person, or an empty string when the value is fine.
 QString defaultProjectsFolder(const QString& homeFolder);
+QString suggestProjectName(const QString& parentFolder, const QString& noun);
 QString validateGameName(const QString& name, const QString& noun = "game");
 QString validateSdkRoot(const QString& sdkRoot);
 QString validateDependencyRoot(const QString& dependencyRoot);
