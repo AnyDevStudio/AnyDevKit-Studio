@@ -15,9 +15,10 @@ Drag shapes and text onto the stage, press one button, and the same scene runs a
 |---|---|
 | ![Studio finishing a PS5 build with a live log](docs/screenshots/build.png) | ![The built package running in AnyPS5 on macOS](docs/screenshots/game.png) |
 
-> **Status: early development.** There is no download yet, so build it from source. The full flow
-> has been tested on Apple Silicon macOS, and CI also builds Studio on Windows and Linux. The scene
-> above runs in the AnyPS5 compatibility layer on macOS. It has not yet been run on a real PS5.
+> **Status: alpha.** Packages for macOS, Windows and Linux appear on the Releases page once a version
+> is tagged; until then, build it from source. The full flow has been tested on Apple Silicon macOS,
+> and CI also builds Studio on Windows and Linux. The scene above runs in the AnyPS5 compatibility
+> layer on macOS. Nothing has been run on a real PS5 yet.
 
 ## What it does
 
@@ -36,8 +37,8 @@ Drag shapes and text onto the stage, press one button, and the same scene runs a
 | Platformer physics | Static solids and moving bodies, platformer controls with coyote time, jump buffering and variable jump height, physics blocks | Tested on the host under sanitizers, builds for PS5, not yet played on a console or emulator |
 | Scenes | Add, rename, duplicate and delete scenes, pick the starting scene, Go to scene and Restart blocks | Working in Studio, builds for PS5, not yet seen running |
 | Game runtime | Draws the scene on AGC, the PS5 graphics API, with controller movement | Shapes and text run in AnyPS5, not yet on a console |
-| Image drawing | Textured images in the game | Builds for PS5, not yet seen running |
-| Sound | Import WAV, MP3 or OGG, then play effects and music from blocks | Builds for PS5, not yet heard on a console |
+| Image drawing | Textured images in the game | Runs in AnyPS5 with a pending engine change (the StarHopper background), not yet on a console |
+| Sound | Import WAV (MP3 and OGG too when Studio is built with Qt Multimedia), then play effects and music from blocks | Builds for PS5, not yet heard on a console |
 | Saving | Save and load variables on the console | Builds for PS5, not yet run on a console |
 | Guided setup | Check your tools, then download AnyDevKit and the PS5 libraries from inside Studio | Working, run against the published release on Apple Silicon macOS |
 | Preview | Run the project on the developer's computer without a console | Planned |
@@ -51,7 +52,8 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ```
 
-On macOS with Homebrew: `brew install cmake ninja qtbase qtdeclarative qtsvg`.
+On macOS with Homebrew: `brew install cmake ninja qtbase qtdeclarative qtsvg`. Add `qtmultimedia` to
+also import MP3 and OGG; Studio builds without it and imports WAV only.
 
 Studio also needs what AnyDevKit needs to build a project: the
 [AnyDevKit SDK](https://github.com/boykopovar/AnyDevKit/releases/latest), its dependencies from
