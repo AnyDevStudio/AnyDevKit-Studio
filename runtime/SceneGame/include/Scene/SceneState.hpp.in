@@ -2,9 +2,12 @@
 #define @NAME@_Scene_SceneState_hpp
 #include "GeneratedLogic.hpp"
 #include "GeneratedScene.hpp"
+#include "Scene/Particles.hpp"
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
+#include <span>
 
 // Current state of every item in GeneratedScene::Items, indexed the same way, and the game's score.
 // The block logic in GeneratedLogic.hpp changes it through the Logic section below.
@@ -32,10 +35,27 @@ public:
     std::int32_t Score() const;
     bool Touching(std::size_t first, std::size_t second) const; // hidden items touch nothing
     bool Held(std::uint32_t button) const;
+    // Plays a particles item once, at its current position.
+    void BurstParticles(std::size_t item);
+    // Keeps a one-shot particles item from playing when the game starts, for a block to start it.
+    void AwaitBurst(std::size_t item);
+
+    // Rectangles to draw for a particles item this frame, and none for any other item.
+    std::span<const Particles::Quad> ParticleQuads(std::size_t item) const;
 
 private:
     void clampToStage(const GeneratedScene::Item& item, Position& position) const;
     void limitPosition(std::size_t item, Position& position) const;
+    // Allocated once in the constructor, so the frame loop never touches the heap. A scene with no
+    // particles allocates nothing.
+    struct ParticleWorld {
+        std::array<Particles::Emitter, GeneratedScene::ParticleEffectCount> emitters{};
+        std::array<Particles::Particle, GeneratedScene::ParticleCapacity> pool{};
+        std::array<Particles::Quad, GeneratedScene::ParticleCapacity> quads{};
+    };
+    std::unique_ptr<ParticleWorld> particleWorld;
+    void startParticles();
+    Particles::Emitter* emitterFor(std::size_t item);
     Positions positions{};
     Colors colors{};
     Visibility visible{};

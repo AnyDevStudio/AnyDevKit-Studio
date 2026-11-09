@@ -10,7 +10,7 @@ The stage is always 1920x1080. The origin is the top left corner and `y` grows d
 
 ```json
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "background": "#151C3A",
   "items": [
     {
@@ -45,6 +45,25 @@ The stage is always 1920x1080. The origin is the top left corner and `y` grows d
       "height": 128,
       "source": "assets/logo.png",
       "controllable": false
+    },
+    {
+      "id": "item-4",
+      "type": "particles",
+      "name": "Finale",
+      "x": 300,
+      "y": 100,
+      "width": 1320,
+      "height": 900,
+      "color": "#FFD23F",
+      "preset": "fireworks",
+      "palette": "festival",
+      "amount": 600,
+      "spread": 50,
+      "speed": 100,
+      "gravity": 100,
+      "pixelSize": 12,
+      "looping": true,
+      "controllable": false
     }
   ]
 }
@@ -52,11 +71,12 @@ The stage is always 1920x1080. The origin is the top left corner and `y` grows d
 
 Rules:
 
-- `schemaVersion` is `2`, the version Studio saves. Scenes saved with `1` still load; they cannot hold
-  image items. A scene holds at most 256 items, drawn in list order, later items on top.
+- `schemaVersion` is `3`, the version Studio saves. Scenes saved with `1` or `2` still load: `1` cannot
+  hold image items, and neither can hold particles items. A scene holds at most 256 items, drawn in
+  list order, later items on top.
 - `id` values are unique, non-empty strings. `name` is only for the editor.
 - Colors are `#RRGGBB`. `image` items have no color.
-- Positions and sizes are numbers. `rectangle` and `image` need `width` and `height` above 0.
+- Positions and sizes are numbers. `rectangle`, `image` and `particles` need `width` and `height` above 0.
 - `text` holds 1 to 64 printable ASCII characters (U+0020 to U+007E). Its `scale` is a whole number
   from 1 to 40. Each character is a 5x7 pixel cell advancing 6 cells, so the drawn width is
   `(length * 6 - 1) * scale` and the height is `7 * scale`.
@@ -68,6 +88,34 @@ Rules:
   together at most 256 MB once decoded (4 bytes per pixel).
 - A `controllable` item moves with the controller's left stick or D-pad at 600 units per second and
   stays inside the stage.
+- `particles` draws an effect with blocky particles snapped to a pixel grid. `x`, `y`, `width` and
+  `height` are the area the effect happens in. See [Particles](#particles).
+
+### Particles
+
+| Field       | Values                                                   | Beginners read it as                                   |
+| ----------- | -------------------------------------------------------- | ------------------------------------------------------ |
+| `preset`    | `fireworks`, `fountain`, `sparks`, `snow`, `rain`        | what the effect is                                     |
+| `palette`   | `color`, `festival`, `fire`, `ice`                       | which colors it uses. `color` means the `color` field  |
+| `color`     | `#RRGGBB`                                                | the color when `palette` is `color`                    |
+| `amount`    | whole number from 1 to 8000                              | the most particles alive at once                       |
+| `spread`    | whole number from 0 to 100                               | how widely it fans out                                 |
+| `speed`     | whole number from 10 to 300 (100 is natural)             | how fast it moves                                      |
+| `gravity`   | whole number from -300 to 300 (100 is natural)           | how hard it falls. Negative rises instead              |
+| `pixelSize` | whole number from 2 to 32                                | how big its blocks are, in stage units                 |
+| `looping`   | `true` or `false`                                        | keeps going, or plays once when the game starts        |
+
+Picking a preset in the editor sets all of these to the preset's look. Snow and Rain cover the whole
+stage; the others take a smaller area. A one-shot item a block bursts waits for that block instead of
+also playing when the game starts (see [docs/blocks-format.md](blocks-format.md)).
+
+A scene that has particles draws at most 16000 quads in total: one for the background, one per
+rectangle and image, one per text character and `amount` for each particles item. A scene over this
+is refused with a message saying which limit it hit. Scenes with no particles are not limited, so
+older files keep working.
+
+Each particle lives in its own slot, one slot per `amount`, and the whole budget is reserved before
+the first frame. When a burst would need more slots than are free it is clipped instead of overrunning.
 
 ## src/GeneratedScene.hpp
 
@@ -82,7 +130,7 @@ Rules:
 
 namespace GeneratedScene {
 
-enum class Kind : std::uint8_t { Rectangle, Text, Image };
+enum class Kind : std::uint8_t { Rectangle, Text, Image, Particles };
 
 struct Item {
     Kind kind;
@@ -92,6 +140,7 @@ struct Item {
     std::string_view text;
     bool controllable;
     std::int32_t image = -1; // index into Images for an image item
+    std::int32_t particles = -1; // index into ParticleEffects for a particles item
 };
 
 // Row by row, top row first, 4 bytes per pixel: red, green, blue, alpha, with alpha already applied.
@@ -100,21 +149,38 @@ struct Image {
     std::uint32_t width, height;
 };
 
+// One particles item. preset and palette are the numbers of Particles::Preset and Particles::Palette
+// in the runtime. spread, speed and gravity are the percentages of scene.json divided by 100.
+struct ParticleEffect {
+    std::uint8_t preset, palette;
+    std::uint32_t amount, seed;
+    float spread, speed, gravity, pixelSize;
+    bool looping;
+};
+
 inline constexpr std::array<float, 3> Background{0.082353f, 0.109804f, 0.227451f};
 inline constexpr std::size_t ImageCount = 1;
 extern const std::array<Image, ImageCount> Images; // defined in src/GeneratedImages.cpp
-inline constexpr std::array<Item, 3> Items{{
+inline constexpr std::size_t ParticleEffectCount = 1;
+inline constexpr std::size_t ParticleCapacity = 600; // the sum of every amount, sized before the first frame
+inline constexpr std::array<ParticleEffect, 1> ParticleEffects{{
+    {0, 1, 600, 3025279935u, 0.5f, 1.0f, 1.0f, 12.0f, true},
+}};
+inline constexpr std::array<Item, 4> Items{{
     {Kind::Rectangle, 120.0f, 300.0f, 160.0f, 160.0f, 1.0f, 0.823529f, 0.247059f, 0.0f, "", true},
     {Kind::Text, 400.0f, 96.0f, 636.0f, 84.0f, 0.952941f, 0.945098f, 0.886275f, 12.0f, "Hello PS5", false},
     {Kind::Image, 900.0f, 500.0f, 256.0f, 128.0f, 0.0f, 0.0f, 0.0f, 0.0f, "", false, 0},
+    {Kind::Particles, 300.0f, 100.0f, 1320.0f, 900.0f, 1.0f, 0.823529f, 0.247059f, 0.0f, "", false, -1, 0},
 }};
 
 }
 ```
 
-Color channels are the `#RRGGBB` bytes divided by 255. For text items `width` and `height` hold the
+`seed` is the FNV-1a hash of the item's `id`, so a particles item plays the same way on every run. Color
+channels are the `#RRGGBB` bytes divided by 255. For text items `width` and `height` hold the
 drawn size from the rule above. In a text literal `"` and `\\` are escaped, and so is every `?` that
-follows another `?`, because `??=` and similar sequences are trigraphs. An empty scene is `inline constexpr std::array<Item, 0> Items{};`.
+follows another `?`, because `??=` and similar sequences are trigraphs. An empty scene is `inline constexpr std::array<Item, 0> Items{};`, and a scene without
+particles has an empty `ParticleEffects` table.
 
 ## src/GeneratedImages
 

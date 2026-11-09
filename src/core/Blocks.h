@@ -37,6 +37,7 @@ enum class BlockType {
     AddScore,
     SetScore,
     IfScore, // also holds actions
+    BurstParticles, // the item must be a particles item
 };
 
 enum class ControllerButton { Cross, Circle, Square, Triangle, DpadUp, DpadDown, DpadLeft, DpadRight };

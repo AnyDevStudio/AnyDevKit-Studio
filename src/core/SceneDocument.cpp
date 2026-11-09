@@ -46,6 +46,18 @@ QVariant SceneDocument::data(const QModelIndex& index, int role) const {
     case TextRole: return item.text;
     case ScaleRole: return item.scale;
     case ControllableRole: return item.controllable;
+    case ParticlesRole: return QVariantMap{
+        {"preset", item.preset},
+        {"palette", item.palette},
+        {"color", item.color},
+        {"amount", item.amount},
+        {"spread", item.spread},
+        {"speed", item.speed},
+        {"gravity", item.gravity},
+        {"pixelSize", item.pixelSize},
+        {"looping", item.looping},
+        {"id", item.id},
+    };
     default: return {};
     }
 }
@@ -63,6 +75,7 @@ QHash<int, QByteArray> SceneDocument::roleNames() const {
         {TextRole, "itemText"},
         {ScaleRole, "itemScale"},
         {ControllableRole, "itemControllable"},
+        {ParticlesRole, "itemParticles"},
     };
 }
 
@@ -139,6 +152,14 @@ QVariantMap SceneDocument::selected() const {
         {"text", item.text},
         {"scale", item.scale},
         {"controllable", item.controllable},
+        {"preset", item.preset},
+        {"palette", item.palette},
+        {"amount", item.amount},
+        {"spread", item.spread},
+        {"speed", item.speed},
+        {"gravity", item.gravity},
+        {"pixelSize", item.pixelSize},
+        {"looping", item.looping},
     };
 }
 
@@ -198,6 +219,9 @@ int SceneDocument::addItem(const QString& type, double centerX, double centerY) 
         item.name = "Text " + number;
         item.text = "Text";
         item.color = "#F3F1E2";
+    } else if (type == "particles") {
+        item.name = "Particles " + number;
+        applyParticlePreset(item, "fireworks");
     } else {
         item.name = "Shape " + number;
         item.width = 200;
@@ -265,7 +289,7 @@ void SceneDocument::nudgeItem(int index, double deltaX, double deltaY) {
 }
 
 void SceneDocument::resizeItem(int index, double width, double height) {
-    if (!isValidIndex(index) || document.items[index].type != "rectangle") return;
+    if (!isValidIndex(index) || (document.items[index].type != "rectangle" && document.items[index].type != "particles")) return;
     auto item = document.items[index];
     item.width = std::round(std::clamp(width, MinimumSize, std::max(MinimumSize, StageWidth - item.x)));
     item.height = std::round(std::clamp(height, MinimumSize, std::max(MinimumSize, StageHeight - item.y)));
@@ -284,7 +308,32 @@ bool SceneDocument::setItemValue(int index, const QString& property, const QVari
     if (!isValidIndex(index) || changing) return false;
     auto item = document.items[index];
 
-    if (property == "name") item.name = value.toString();
+    static const QStringList particleSettings{"preset", "palette", "looping", "amount", "spread", "speed", "gravity", "pixelSize"};
+    if (particleSettings.contains(property) && item.type != "particles") return false;
+
+    if (property == "preset") {
+        // A preset brings a whole look with it. The area is the preset's own, centered where the item was.
+        const auto centerX = item.x + item.width / 2;
+        const auto centerY = item.y + item.height / 2;
+        applyParticlePreset(item, value.toString());
+        item.x = centerX - item.width / 2;
+        item.y = centerY - item.height / 2;
+    } else if (property == "palette") item.palette = value.toString();
+    else if (property == "looping") item.looping = value.toBool();
+    else if (property == "amount" || property == "spread" || property == "speed" || property == "gravity" || property == "pixelSize") {
+        bool isNumber = false;
+        const auto number = value.toDouble(&isNumber);
+        if (!isNumber || !std::isfinite(number) || number != std::floor(number)) {
+            setError(QString("%1 must be a whole number.").arg(property));
+            return false;
+        }
+        const auto whole = static_cast<int>(std::clamp(number, -1e8, 1e8));
+        if (property == "amount") item.amount = whole;
+        else if (property == "spread") item.spread = whole;
+        else if (property == "speed") item.speed = whole;
+        else if (property == "gravity") item.gravity = whole;
+        else item.pixelSize = whole;
+    } else if (property == "name") item.name = value.toString();
     else if (property == "text") item.text = value.toString();
     else if (property == "color") item.color = value.toString();
     else if (property == "controllable") item.controllable = value.toBool();

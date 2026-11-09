@@ -12,6 +12,7 @@ Flickable {
     readonly property var item: scene.selected
     readonly property bool hasItem: item.type !== undefined
     readonly property bool isText: item.type === "text"
+    readonly property bool isParticles: item.type === "particles"
 
     function set(name, value) { scene.setItemValue(scene.selectedIndex, name, value) }
 
@@ -116,11 +117,137 @@ Flickable {
             onCommitted: (text) => inspector.set("scale", Number(text))
         }
 
+        ChoiceRow {
+            Layout.fillWidth: true
+            visible: inspector.isParticles
+            label: "Effect"
+            value: inspector.isParticles ? inspector.item.preset : ""
+            options: [
+                { value: "fireworks", label: "Fireworks" },
+                { value: "fountain", label: "Fountain" },
+                { value: "sparks", label: "Sparks" },
+                { value: "snow", label: "Snow" },
+                { value: "rain", label: "Rain" }
+            ]
+            onPicked: (value) => inspector.set("preset", value)
+        }
+
+        ChoiceRow {
+            Layout.fillWidth: true
+            visible: inspector.isParticles
+            label: "Colors"
+            value: inspector.isParticles ? inspector.item.palette : ""
+            options: [
+                { value: "color", label: "One color" },
+                { value: "festival", label: "Festival" },
+                { value: "fire", label: "Fire" },
+                { value: "ice", label: "Ice" }
+            ]
+            onPicked: (value) => inspector.set("palette", value)
+        }
+
         ColorRow {
             Layout.fillWidth: true
-            visible: inspector.hasItem
+            visible: inspector.hasItem && (!inspector.isParticles || inspector.item.palette === "color")
             value: inspector.hasItem ? inspector.item.color : ""
             onPicked: (color) => inspector.set("color", color)
+        }
+
+        // The limits here are the ones validateScene checks, in docs/scene-format.md.
+        SliderRow {
+            Layout.fillWidth: true
+            visible: inspector.isParticles
+            label: "Amount"
+            from: 10
+            to: 8000
+            stepSize: 10
+            value: inspector.isParticles ? inspector.item.amount : 0
+            onCommitted: (value) => inspector.set("amount", value)
+        }
+
+        SliderRow {
+            Layout.fillWidth: true
+            visible: inspector.isParticles
+            label: "Spread"
+            suffix: "%"
+            value: inspector.isParticles ? inspector.item.spread : 0
+            onCommitted: (value) => inspector.set("spread", value)
+        }
+
+        SliderRow {
+            Layout.fillWidth: true
+            visible: inspector.isParticles
+            label: "Speed"
+            suffix: "%"
+            from: 10
+            to: 300
+            stepSize: 5
+            value: inspector.isParticles ? inspector.item.speed : 100
+            onCommitted: (value) => inspector.set("speed", value)
+        }
+
+        SliderRow {
+            Layout.fillWidth: true
+            visible: inspector.isParticles
+            label: "Gravity"
+            suffix: "%"
+            from: -300
+            to: 300
+            stepSize: 5
+            value: inspector.isParticles ? inspector.item.gravity : 100
+            onCommitted: (value) => inspector.set("gravity", value)
+        }
+
+        SliderRow {
+            Layout.fillWidth: true
+            visible: inspector.isParticles
+            label: "Pixel size"
+            from: 2
+            to: 32
+            value: inspector.isParticles ? inspector.item.pixelSize : 8
+            onCommitted: (value) => inspector.set("pixelSize", value)
+        }
+
+        T.Switch {
+            id: loopToggle
+
+            Layout.fillWidth: true
+            visible: inspector.isParticles
+            implicitHeight: 34
+            checked: inspector.isParticles && inspector.item.looping
+            onToggled: inspector.set("looping", checked)
+
+            indicator: Rectangle {
+                width: 44
+                height: 26
+                radius: 13
+                anchors.verticalCenter: parent.verticalCenter
+                color: loopToggle.checked ? Theme.signal : Theme.raised
+                border.width: loopToggle.visualFocus ? 2 : 0
+                border.color: Theme.paper
+
+                Rectangle {
+                    width: 20
+                    height: 20
+                    radius: 10
+                    y: 3
+                    x: loopToggle.checked ? 21 : 3
+                    color: loopToggle.checked ? Theme.ink : Theme.paper
+
+                    Behavior on x {
+                        SpringAnimation { spring: 6; damping: 0.45; duration: Theme.ms(200) }
+                    }
+                }
+            }
+
+            contentItem: Text {
+                leftPadding: 54
+                verticalAlignment: Text.AlignVCenter
+                text: loopToggle.checked ? "Keeps going" : "Plays once"
+                color: Theme.paper
+                font.family: Theme.body
+                font.pixelSize: 15
+            }
         }
 
         T.Switch {

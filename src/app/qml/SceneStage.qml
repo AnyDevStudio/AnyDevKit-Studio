@@ -3,7 +3,7 @@ import AnyDevKitStudio
 
 // The 16:9 stage: what is drawn here is what the PS5 runtime draws.
 Item {
-    id: area
+    id: area_
 
     required property SceneDocument scene
 
@@ -28,26 +28,26 @@ Item {
         anchors.centerIn: parent
         width: Math.min(parent.width, parent.height * 16 / 9)
         height: width * 9 / 16
-        color: area.scene.background
+        color: area_.scene.background
         clip: true
         activeFocusOnTab: true
 
         Keys.onPressed: (event) => {
-            const index = area.scene.selectedIndex
+            const index = area_.scene.selectedIndex
             if (index < 0) return
             const step = (event.modifiers & Qt.ShiftModifier) ? 40 : 8
-            if (event.key === Qt.Key_Delete || event.key === Qt.Key_Backspace) area.scene.removeItem(index)
-            else if (event.key === Qt.Key_Left) area.scene.nudgeItem(index, -step, 0)
-            else if (event.key === Qt.Key_Right) area.scene.nudgeItem(index, step, 0)
-            else if (event.key === Qt.Key_Up) area.scene.nudgeItem(index, 0, -step)
-            else if (event.key === Qt.Key_Down) area.scene.nudgeItem(index, 0, step)
+            if (event.key === Qt.Key_Delete || event.key === Qt.Key_Backspace) area_.scene.removeItem(index)
+            else if (event.key === Qt.Key_Left) area_.scene.nudgeItem(index, -step, 0)
+            else if (event.key === Qt.Key_Right) area_.scene.nudgeItem(index, step, 0)
+            else if (event.key === Qt.Key_Up) area_.scene.nudgeItem(index, 0, -step)
+            else if (event.key === Qt.Key_Down) area_.scene.nudgeItem(index, 0, step)
             else return
             event.accepted = true
         }
 
         TapHandler {
             onTapped: {
-                area.scene.selectedIndex = -1
+                area_.scene.selectedIndex = -1
                 stage.forceActiveFocus()
             }
         }
@@ -63,7 +63,7 @@ Item {
         }
 
         Repeater {
-            model: area.scene
+            model: area_.scene
 
             Item {
                 id: stageItem
@@ -76,8 +76,10 @@ Item {
                 required property real itemHeight
                 required property color itemColor
                 required property string itemText
+                required property var itemParticles
 
-                readonly property bool selected: area.scene.selectedIndex === index
+                readonly property bool selected: area_.scene.selectedIndex === index
+                readonly property bool isParticles: itemType === "particles"
 
                 x: itemX * stage.unit
                 y: itemY * stage.unit
@@ -97,27 +99,64 @@ Item {
                     color: stageItem.itemColor
                 }
 
+                Loader {
+                    active: stageItem.isParticles
+                    x: -stageItem.x
+                    y: -stageItem.y
+                    width: stage.width
+                    height: stage.height
+
+                    sourceComponent: ParticlePreview {
+                        id: preview
+
+                        settings: stageItem.itemParticles
+                        area: Qt.rect(stageItem.itemX, stageItem.itemY, stageItem.itemWidth, stageItem.itemHeight)
+                        background: area_.scene.background
+                        still: Theme.reducedMotion
+
+                        // Particles only run while the Scene tab is showing and motion is allowed.
+                        FrameAnimation {
+                            running: !Theme.reducedMotion && area_.visible
+                            onTriggered: preview.advance(frameTime)
+                        }
+                    }
+                }
+
+                // Particles have no solid shape to click on, and Snow or Rain cover the whole stage,
+                // so they are picked and dragged by this small mark instead of by their area.
+                PixelBurst {
+                    anchors.centerIn: parent
+                    cell: 4
+                    visible: stageItem.isParticles
+                    color: stageItem.selected || emitterGrab.containsMouse ? Theme.signal : Qt.rgba(1, 1, 1, 0.55)
+                }
+
                 MouseArea {
+                    id: emitterGrab
+
                     property real grabX: 0
                     property real grabY: 0
 
-                    anchors.fill: parent
+                    anchors.centerIn: parent
+                    width: stageItem.isParticles ? Math.min(parent.width, 44) : parent.width
+                    height: stageItem.isParticles ? Math.min(parent.height, 44) : parent.height
+                    hoverEnabled: stageItem.isParticles
                     cursorShape: pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor
                     preventStealing: true
 
                     onPressed: (mouse) => {
-                        area.scene.selectedIndex = stageItem.index
+                        area_.scene.selectedIndex = stageItem.index
                         stage.forceActiveFocus()
                         grabX = mouse.x
                         grabY = mouse.y
-                        area.scene.beginChange()
+                        area_.scene.beginChange()
                     }
                     onPositionChanged: (mouse) => {
                         if (!pressed) return
                         const point = mapToItem(stage, mouse.x, mouse.y)
-                        area.scene.moveItem(stageItem.index, (point.x - grabX) / stage.unit, (point.y - grabY) / stage.unit)
+                        area_.scene.moveItem(stageItem.index, (point.x - grabX) / stage.unit, (point.y - grabY) / stage.unit)
                     }
-                    onReleased: area.scene.endChange()
+                    onReleased: area_.scene.endChange()
                 }
 
                 Rectangle {
@@ -146,7 +185,7 @@ Item {
                     color: Theme.signal
                     border.width: 2
                     border.color: Theme.ink
-                    visible: stageItem.selected && stageItem.itemType === "rectangle"
+                    visible: stageItem.selected && (stageItem.itemType === "rectangle" || stageItem.isParticles)
 
                     MouseArea {
                         anchors.fill: parent
@@ -154,13 +193,13 @@ Item {
                         cursorShape: Qt.SizeFDiagCursor
                         preventStealing: true
 
-                        onPressed: area.scene.beginChange()
+                        onPressed: area_.scene.beginChange()
                         onPositionChanged: (mouse) => {
                             if (!pressed) return
                             const point = mapToItem(stage, mouse.x, mouse.y)
-                            area.scene.resizeItem(stageItem.index, point.x / stage.unit - stageItem.itemX, point.y / stage.unit - stageItem.itemY)
+                            area_.scene.resizeItem(stageItem.index, point.x / stage.unit - stageItem.itemX, point.y / stage.unit - stageItem.itemY)
                         }
-                        onReleased: area.scene.endChange()
+                        onReleased: area_.scene.endChange()
                     }
                 }
             }
@@ -174,7 +213,7 @@ Item {
 
         Text {
             anchors.centerIn: parent
-            visible: area.scene.count === 0
+            visible: area_.scene.count === 0
             text: "Drag a shape or text here"
             color: Qt.rgba(1, 1, 1, 0.6)
             font.family: Theme.body

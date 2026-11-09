@@ -73,7 +73,10 @@ class Validator {
 public:
     explicit Validator(const Scene* scene) : scene(scene) {
         if (scene) {
-            for (const auto& item : scene->items) itemIds.insert(item.id);
+            for (const auto& item : scene->items) {
+                itemIds.insert(item.id);
+                if (item.type == "particles") particleIds.insert(item.id);
+            }
         }
     }
 
@@ -120,6 +123,9 @@ private:
         if (!info.holdsActions && !block.children.isEmpty()) report(block, QString("%1 cannot hold other blocks. Move them out of it.").arg(label));
 
         if (info.usesItem) checkItem(block, block.item);
+        if (block.type == BlockType::BurstParticles && scene && itemIds.contains(block.item) && !particleIds.contains(block.item)) {
+            report(block, QString("%1 uses the item \"%2\", which is not a Particles item. Choose a Particles item to burst from.").arg(label, block.item));
+        }
         if (info.usesOtherItem) {
             checkItem(block, block.otherItem);
             if (scene && !block.item.isEmpty() && block.item == block.otherItem) {
@@ -146,6 +152,7 @@ private:
 
     const Scene* scene;
     QSet<QString> itemIds;
+    QSet<QString> particleIds;
     QSet<QString> usedIds;
     QList<LogicProblem> problems;
 };
@@ -351,6 +358,9 @@ public:
         case BlockType::SetScore:
             code += pad + "world.SetScore(" + QByteArray::number(block.value) + ");" + comment;
             return;
+        case BlockType::BurstParticles:
+            code += pad + "world.BurstParticles(" + index(block.item) + ");" + comment;
+            return;
         case BlockType::IfScore:
             code += pad + "if (world.Score() " + comparisonOperator(block.comparison) + ' ' + QByteArray::number(block.value) + ") {" + comment;
             actions(block.children, level + 1, code);
@@ -388,6 +398,13 @@ public:
 private:
     QHash<QString, qsizetype> itemIndexes;
 };
+
+void collectBurstTargets(const QList<Block>& blocks, QSet<QString>& targets) {
+    for (const auto& block : blocks) {
+        if (block.type == BlockType::BurstParticles) targets.insert(block.item);
+        collectBurstTargets(block.children, targets);
+    }
+}
 
 bool referencesItems(const QList<Block>& blocks) {
     for (const auto& block : blocks) {
@@ -433,6 +450,7 @@ const QList<BlockInfo>& blockCatalog() {
         {BlockType::AddScore, "addScore", "Add to score",                            false, false, false, false, false, false, false, true,  false},
         {BlockType::SetScore, "setScore", "Set score",                               false, false, false, false, false, false, false, true,  false},
         {BlockType::IfScore, "ifScore", "If score",                                  false, true,  false, false, false, false, false, true,  true},
+        {BlockType::BurstParticles, "burstParticles", "Burst particles from item",   false, false, false, true,  false, false, false, false, false},
     };
     return catalog;
 }
@@ -554,6 +572,14 @@ QByteArray generateLogicHeader(const LogicProgram& program, const Scene& scene) 
 
     const Generator generator(scene);
     QByteArray startCode;
+    // A one-shot item a block bursts plays when that block runs, not also when the game starts.
+    QSet<QString> burstTargets;
+    collectBurstTargets(program.events, burstTargets);
+    for (const auto& item : scene.items) {
+        if (item.type == "particles" && !item.looping && burstTargets.contains(item.id)) {
+            startCode += "    world.AwaitBurst(" + generator.index(item.id) + ");\n";
+        }
+    }
     QByteArray frameCode;
     int touchEvents = 0;
     bool usesButtons = false;
