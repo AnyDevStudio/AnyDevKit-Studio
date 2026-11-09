@@ -7,8 +7,14 @@ Item {
 
     required property StudioController studio
     property bool newGameOpen: false
+    property bool startOnTools: false
 
-    Component.onCompleted: if (newGameOpen) newGameForm.prepare()
+    signal guidedSetupRequested()
+
+    Component.onCompleted: if (newGameOpen) {
+        newGameForm.prepare()
+        if (startOnTools) newGameForm.continueFromType()
+    }
 
     function openNewGame() {
         newGameOpen = true
@@ -116,6 +122,7 @@ Item {
                     }
                 }
                 onCloseRequested: view.newGameOpen = false
+                onGuidedSetupRequested: view.guidedSetupRequested()
 
                 Behavior on opacity {
                     NumberAnimation { duration: Theme.ms(180); easing.type: Easing.OutCubic }

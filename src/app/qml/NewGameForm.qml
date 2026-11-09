@@ -8,6 +8,7 @@ Item {
     required property StudioController studio
 
     signal closeRequested()
+    signal guidedSetupRequested()
 
     property bool attempted: false
     property bool editingTools: false
@@ -393,6 +394,13 @@ Item {
                     enabled: !form.studio.creatingGame
                     text: "Back"
                     onClicked: form.goBack()
+                }
+
+                LinkButton {
+                    Layout.leftMargin: 8
+                    visible: form.showTools && !form.toolsReady
+                    text: "Set it up for me instead"
+                    onClicked: form.guidedSetupRequested()
                 }
             }
         }

@@ -15,6 +15,9 @@ qt_add_qml_module(AnyDevKitStudio
         qml/PillButton.qml
         qml/SafeAreaFrame.qml
         qml/WelcomeView.qml
+        qml/SetupView.qml
+        qml/SetupStepRow.qml
+        qml/LinkButton.qml
         qml/NewGameForm.qml
         qml/ProjectTypeCard.qml
         qml/ProjectTypeGlyph.qml
@@ -77,7 +80,7 @@ qt_add_resources(AnyDevKitStudio "scene_runtime"
     FILES ${scene_runtime_files}
 )
 
-target_link_libraries(AnyDevKitStudio PRIVATE studio_core studio_gamepage studio_export Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickControls2)
+target_link_libraries(AnyDevKitStudio PRIVATE studio_core studio_gamepage studio_setup studio_export Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickControls2)
 # The stage preview compiles the game's particle simulation, so the two always match.
 target_include_directories(AnyDevKitStudio PRIVATE "${PROJECT_SOURCE_DIR}/runtime/SceneGame/include")
 

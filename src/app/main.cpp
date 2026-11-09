@@ -40,7 +40,10 @@ int main(int argc, char** argv) {
     const QCommandLineOption newGameOption("new-game", "Start on the new game form.");
     const QCommandLineOption formatOption("export-format", "Export format for the opened project: ffpfsc, zip or pkg.", "format");
     const QCommandLineOption logOption("build-log", "Write the build log to this file when Studio exits.", "file");
-    parser.addOptions({openOption, buildOption, screenshotOption, delayOption, newGameOption, formatOption, logOption});
+    const QCommandLineOption runSetupOption("run-setup", "Run the guided PS5 tools setup without waiting for its button, for scripted testing.");
+    const QCommandLineOption setupLogOption("setup-log", "Write the guided setup log to this file when Studio exits.", "file");
+    const QCommandLineOption windowSizeOption("window-size", "Open the window at this size, for example 980x620.", "size");
+    parser.addOptions({openOption, buildOption, screenshotOption, delayOption, newGameOption, formatOption, logOption, runSetupOption, setupLogOption, windowSizeOption});
     parser.process(application);
 
     if (parser.isSet(formatOption) && !Studio::exportFormatFromId(parser.value(formatOption))) {
@@ -57,6 +60,12 @@ int main(int argc, char** argv) {
     engine.setInitialProperties({{"studio", QVariant::fromValue(&studio)}, {"reducedMotion", Studio::prefersReducedMotion()}, {"startOnNewGame", parser.isSet(newGameOption)}});
     engine.loadFromModule("AnyDevKitStudio", "Main");
 
+    if (parser.isSet(windowSizeOption)) {
+        const auto parts = parser.value(windowSizeOption).split('x');
+        auto* window = qobject_cast<QQuickWindow*>(engine.rootObjects().value(0));
+        if (window && parts.size() == 2) window->resize(parts[0].toInt(), parts[1].toInt());
+    }
+
     auto buildSucceeded = true;
     const auto screenshot = [&] {
         const auto file = parser.value(screenshotOption);
@@ -68,6 +77,24 @@ int main(int argc, char** argv) {
         });
     };
 
+    auto setupStarted = false;
+    if (parser.isSet(runSetupOption)) {
+        auto* setup = studio.setup();
+        QObject::connect(setup, &Studio::SetupFlow::changed, &application, [&, setup] {
+            const auto phase = setup->phase();
+            if (phase == "ready" && !setupStarted) {
+                setupStarted = true;
+                setup->start();
+            } else if (phase == "done" || phase == "failed" || phase == "cancelled" || phase == "needsTools") {
+                QObject::disconnect(setup, &Studio::SetupFlow::changed, &application, nullptr);
+                buildSucceeded = phase == "done";
+                if (parser.isSet(screenshotOption) && !parser.isSet(delayOption)) screenshot();
+                else if (!parser.isSet(delayOption)) QCoreApplication::exit(buildSucceeded ? 0 : 1);
+            }
+        });
+        if (parser.isSet(delayOption)) screenshot();
+    }
+
     if (parser.isSet(buildOption)) {
         QObject::connect(&studio, &Studio::StudioController::buildFinished, &application, [&](bool success) {
             buildSucceeded = success;
@@ -75,7 +102,7 @@ int main(int argc, char** argv) {
         });
         QTimer::singleShot(0, &studio, &Studio::StudioController::build);
         if (parser.isSet(delayOption)) screenshot();
-    } else if (parser.isSet(screenshotOption)) {
+    } else if (parser.isSet(screenshotOption) && !parser.isSet(runSetupOption)) {
         screenshot();
     }
 
@@ -83,6 +110,10 @@ int main(int argc, char** argv) {
     if (parser.isSet(logOption)) {
         QFile logFile(parser.value(logOption));
         if (logFile.open(QIODevice::WriteOnly | QIODevice::Text)) logFile.write(studio.log()->stringList().join('\n').toUtf8() + '\n');
+    }
+    if (parser.isSet(setupLogOption)) {
+        QFile logFile(parser.value(setupLogOption));
+        if (logFile.open(QIODevice::WriteOnly | QIODevice::Text)) logFile.write(studio.setup()->log()->stringList().join('\n').toUtf8() + '\n');
     }
     return exitCode;
 }

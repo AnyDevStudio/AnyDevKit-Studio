@@ -7,6 +7,9 @@ Window {
     required property StudioController studio
     required property bool reducedMotion
     property bool startOnNewGame: false
+    property bool startOnTools: false
+    // A binding until the person leaves the setup screen, which then ends it for good.
+    property bool setupActive: !studio.hasProject && studio.needsToolSetup && !startOnNewGame
 
     width: 1280
     height: 800
@@ -22,7 +25,7 @@ Window {
         id: content
 
         anchors.fill: parent
-        sourceComponent: root.studio.hasProject ? projectView : welcomeView
+        sourceComponent: root.studio.hasProject ? projectView : root.setupActive ? setupView : welcomeView
         opacity: 0
         scale: 0.992
         onLoaded: entrance.restart()
@@ -36,8 +39,35 @@ Window {
     }
 
     Component {
+        id: setupView
+
+        SetupView {
+            studio: root.studio
+            onFinished: {
+                root.startOnNewGame = true
+                root.setupActive = false
+            }
+            onUseExistingFolders: {
+                root.startOnNewGame = true
+                root.startOnTools = true
+                root.setupActive = false
+            }
+        }
+    }
+
+    Component {
         id: welcomeView
-        WelcomeView { studio: root.studio; newGameOpen: root.startOnNewGame }
+
+        WelcomeView {
+            studio: root.studio
+            newGameOpen: root.startOnNewGame
+            startOnTools: root.startOnTools
+            onGuidedSetupRequested: {
+                root.startOnNewGame = false
+                root.startOnTools = false
+                root.setupActive = true
+            }
+        }
     }
 
     Component {
@@ -49,7 +79,7 @@ Window {
     DropArea {
         anchors.fill: parent
         z: -1
-        enabled: !root.studio.building && !root.studio.creatingGame
+        enabled: !root.studio.building && !root.studio.creatingGame && !root.studio.setup.running
         onDropped: (drop) => {
             if (drop.hasUrls) root.studio.openFolder(drop.urls[0])
         }

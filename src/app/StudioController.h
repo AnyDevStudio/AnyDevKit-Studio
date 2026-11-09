@@ -8,6 +8,7 @@
 #include "NewGame.h"
 #include "Project.h"
 #include "SceneDocument.h"
+#include "SetupFlow.h"
 
 #include <QObject>
 #include <QStringListModel>
@@ -37,6 +38,13 @@ struct GamePageDocumentForeign {
     Q_GADGET
     QML_FOREIGN(Studio::GamePageDocument)
     QML_NAMED_ELEMENT(GamePageDocument)
+    QML_UNCREATABLE("Owned by the studio controller")
+};
+
+struct SetupFlowForeign {
+    Q_GADGET
+    QML_FOREIGN(Studio::SetupFlow)
+    QML_NAMED_ELEMENT(SetupFlow)
     QML_UNCREATABLE("Owned by the studio controller")
 };
 
@@ -80,6 +88,8 @@ class StudioController : public QObject {
     Q_PROPERTY(QVariantList projectTypes READ projectTypes CONSTANT)
     Q_PROPERTY(QString defaultProjectType READ defaultProjectType CONSTANT)
     Q_PROPERTY(QString openingTab READ openingTab NOTIFY projectChanged)
+    Q_PROPERTY(Studio::SetupFlow* setup READ setup CONSTANT)
+    Q_PROPERTY(bool needsToolSetup READ needsToolSetup NOTIFY toolFoldersChanged)
 
 public:
     explicit StudioController(QObject* parent = nullptr);
@@ -122,6 +132,8 @@ public:
     QVariantList projectTypes() const;
     QString defaultProjectType() const;
     QString openingTab() const;
+    SetupFlow* setup();
+    bool needsToolSetup() const;
 
     Q_INVOKABLE void addSceneEditor();
     Q_INVOKABLE void addSceneImage(const QUrl& file, double centerX, double centerY);
@@ -138,6 +150,7 @@ public:
     Q_INVOKABLE void forgetPkgKeys();
     Q_INVOKABLE void openFile(const QString& relativePath);
     Q_INVOKABLE void copyLog() const;
+    Q_INVOKABLE void copyText(const QString& text) const;
     Q_INVOKABLE QString gameNameProblem(const QString& name, const QString& noun = "game") const;
     Q_INVOKABLE QString projectsFolder() const;
     Q_INVOKABLE QString suggestedProjectName(const QString& parentFolder, const QString& noun) const;
@@ -206,6 +219,9 @@ private:
     QString savedSdkRoot;
     QString savedDependencyRoot;
     QString currentOpeningTab = "scene";
+    NetworkHttpClient setupHttp;
+    SystemToolProbe setupProbe;
+    SetupFlow setupFlow;
 };
 
 }
