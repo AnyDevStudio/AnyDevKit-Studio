@@ -1,0 +1,210 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    # Homebrew only ships Qt for the current macOS, and the app needs at least the macOS it was
+    # built on. Name the version so a new macos-latest cannot raise that minimum by surprise.
+    runs-on: macos-26
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # actions/checkout v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Name the package
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          [ "$GITHUB_REF_TYPE" = tag ] || version=${GITHUB_SHA::7}
+          echo "PACKAGE=AnyDevKitStudio-$version-macos-arm64.zip" >> "$GITHUB_ENV"
+      # Qt 6.8 still links the AGL framework, which current Xcode no longer ships.
+      - name: Install Qt with Homebrew
+        run: brew install qtbase qtdeclarative qtsvg
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+      - name: Build
+        run: cmake --build build --config Release --parallel
+      - name: Copy Qt into the app
+        run: cmake --install build --prefix stage
+      - name: Create the zip
+        run: ditto -c -k --sequesterRsrc --keepParent stage/AnyDevKitStudio.app "$PACKAGE"
+      - name: Start the app from the zip
+        run: |
+          set -euo pipefail
+          mkdir unpacked
+          ditto -x -k "$PACKAGE" unpacked
+          ./packaging/macos/check-bundle.sh unpacked/AnyDevKitStudio.app "$PWD/window.png"
+      # actions/upload-artifact v7.0.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: macos
+          path: ${{ env.PACKAGE }}
+          if-no-files-found: error
+
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # actions/checkout v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Name the package
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          [ "$GITHUB_REF_TYPE" = tag ] || version=${GITHUB_SHA::7}
+          echo "PACKAGE=AnyDevKitStudio-$version-windows-x64.zip" >> "$GITHUB_ENV"
+      # jurplel/install-qt-action v4
+      - uses: jurplel/install-qt-action@b344308e4483fc892e0d27b3cd1b173ebdd95f06
+        with:
+          version: '6.8.*'
+      - name: Configure
+        run: cmake -S . -B build -DBUILD_TESTING=OFF
+      - name: Build
+        run: cmake --build build --config Release --parallel
+      - name: Copy Qt next to the program
+        run: cmake --install build --config Release --prefix stage/AnyDevKitStudio
+      - name: Create the zip
+        working-directory: stage
+        run: 7z a -tzip "../$PACKAGE" AnyDevKitStudio
+      - name: Start the app from the zip with Qt out of the way
+        env:
+          QT_QPA_PLATFORM: offscreen
+          QT_QUICK_BACKEND: software
+        run: |
+          set -euo pipefail
+          7z x "$PACKAGE" -ounpacked
+          mv "$QT_ROOT_DIR" "$QT_ROOT_DIR.hidden"
+          unpacked/AnyDevKitStudio/bin/AnyDevKitStudio.exe --screenshot window.png
+          test -s window.png
+      # actions/upload-artifact v7.0.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: windows
+          path: ${{ env.PACKAGE }}
+          if-no-files-found: error
+
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    env:
+      # The runner has no FUSE to mount AppImages, including linuxdeploy's own.
+      APPIMAGE_EXTRACT_AND_RUN: '1'
+    steps:
+      # actions/checkout v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Name the package
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          [ "$GITHUB_REF_TYPE" = tag ] || version=${GITHUB_SHA::7}
+          echo "PACKAGE=AnyDevKitStudio-$version-linux-x86_64.AppImage" >> "$GITHUB_ENV"
+      # jurplel/install-qt-action v4
+      - uses: jurplel/install-qt-action@b344308e4483fc892e0d27b3cd1b173ebdd95f06
+        with:
+          version: '6.8.*'
+      - name: Install the libraries Qt's X11 plugin needs
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libdbus-1-3 libegl1 libfontconfig1 libgl1 libopengl0 libxkbcommon-x11-0 \
+            libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 \
+            libxcb-render-util0 libxcb-shape0 libxcb-sync1 libxcb-xfixes0 libxcb-xinerama0 libxcb-xkb1
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DCMAKE_INSTALL_PREFIX=/usr
+      - name: Build
+        run: cmake --build build --config Release --parallel
+      - name: Install into the AppDir
+        run: DESTDIR="$PWD/AppDir" cmake --install build
+      - name: Download linuxdeploy
+        run: |
+          set -euo pipefail
+          mkdir tools
+          base=https://github.com/linuxdeploy
+          curl -fsSL -o tools/linuxdeploy-x86_64.AppImage \
+            "$base/linuxdeploy/releases/download/1-alpha-20251107-1/linuxdeploy-x86_64.AppImage"
+          curl -fsSL -o tools/linuxdeploy-plugin-qt-x86_64.AppImage \
+            "$base/linuxdeploy-plugin-qt/releases/download/1-alpha-20250213-1/linuxdeploy-plugin-qt-x86_64.AppImage"
+          sha256sum --check <<'SUMS'
+          c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d  tools/linuxdeploy-x86_64.AppImage
+          15106be885c1c48a021198e7e1e9a48ce9d02a86dd0a1848f00bdbf3c1c92724  tools/linuxdeploy-plugin-qt-x86_64.AppImage
+          SUMS
+          chmod +x tools/*.AppImage
+      - name: Create the AppImage
+        env:
+          EXTRA_PLATFORM_PLUGINS: libqoffscreen.so
+          LDAI_OUTPUT: ${{ env.PACKAGE }}
+          # linuxdeploy's own strip is too old for some sections in current libraries.
+          NO_STRIP: '1'
+        run: |
+          set -euo pipefail
+          # The plugin looks for qmlimportscanner on PATH, and Qt 6 keeps it in libexec.
+          export PATH="$PWD/tools:$QT_ROOT_DIR/libexec:$QT_ROOT_DIR/bin:$PATH"
+          export LD_LIBRARY_PATH="$QT_ROOT_DIR/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          export QMAKE="$QT_ROOT_DIR/bin/qmake"
+          export QML_SOURCES_PATHS="$PWD/src/app/qml"
+          linuxdeploy-x86_64.AppImage --appdir AppDir --plugin qt --output appimage \
+            --executable AppDir/usr/bin/AnyDevKitStudio \
+            --desktop-file AppDir/usr/share/applications/anydevkit-studio.desktop \
+            --icon-file AppDir/usr/share/icons/hicolor/512x512/apps/anydevkit-studio.png
+          test -s "$PACKAGE"
+      - name: Start the AppImage with Qt out of the way
+        env:
+          QT_QPA_PLATFORM: offscreen
+          QT_QUICK_BACKEND: software
+        run: |
+          set -euo pipefail
+          mv "$QT_ROOT_DIR" "$QT_ROOT_DIR.hidden"
+          "./$PACKAGE" --screenshot "$PWD/window.png"
+          test -s window.png
+      # actions/upload-artifact v7.0.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: linux
+          path: ${{ env.PACKAGE }}
+          if-no-files-found: error
+
+  release:
+    if: github.event_name == 'push'
+    needs: [macos, windows, linux]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      # actions/checkout v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      # actions/download-artifact v8.0.2
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          path: packages
+          merge-multiple: true
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" packages/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "AnyDevKit Studio $TAG" \
+            --notes-file packaging/release-notes.md \
+            --verify-tag

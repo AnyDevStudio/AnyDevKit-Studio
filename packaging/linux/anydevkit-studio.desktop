@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=AnyDevKit Studio
+Comment=Make PS5 homebrew games and apps with AnyDevKit
+Exec=AnyDevKitStudio
+Icon=anydevkit-studio
+Terminal=false
+Categories=Development;IDE;

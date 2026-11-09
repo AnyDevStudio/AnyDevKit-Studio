@@ -72,3 +72,62 @@ set_target_properties(AnyDevKitStudio PROPERTIES
     MACOSX_BUNDLE_BUNDLE_VERSION ${PROJECT_VERSION}
     MACOSX_BUNDLE_SHORT_VERSION_STRING ${PROJECT_VERSION}
 )
+
+# `cmake --install` gives a self-contained app on macOS and Windows: Qt, its plugins and the QML
+# modules are copied next to the program. On Linux it installs only the program, its menu entry
+# and its icon, which is what a distribution package wants. The AppImage job bundles Qt on top.
+include(GNUInstallDirs)
+install(TARGETS AnyDevKitStudio
+    BUNDLE DESTINATION .
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+)
+
+if(APPLE OR WIN32)
+    # The deploy tools skip the offscreen platform, which the release workflow starts the packaged
+    # app on. Placing it first lets macdeployqt repoint its Qt libraries into the bundle.
+    if(APPLE)
+        set(offscreen_plugin_dir "AnyDevKitStudio.app/Contents/PlugIns/platforms")
+    else()
+        set(offscreen_plugin_dir "plugins/platforms")
+    endif()
+    # REAL_PATH because Homebrew's plugin folder holds symlinks, which would dangle inside the app.
+    install(CODE "
+        file(REAL_PATH \"$<TARGET_FILE:Qt6::QOffscreenIntegrationPlugin>\" offscreen_plugin)
+        file(INSTALL \"\${offscreen_plugin}\"
+            DESTINATION \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/${offscreen_plugin_dir}\"
+            FILE_PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ
+        )
+    ")
+
+    if(WIN32)
+        # A zip has no installer to add the Visual C++ runtime, so its DLLs travel with the program.
+        set(CMAKE_INSTALL_SYSTEM_RUNTIME_DESTINATION "${CMAKE_INSTALL_BINDIR}")
+        include(InstallRequiredSystemLibraries)
+    endif()
+
+    qt_generate_deploy_qml_app_script(
+        TARGET AnyDevKitStudio
+        OUTPUT_SCRIPT deploy_script
+        NO_COMPILER_RUNTIME
+        NO_TRANSLATIONS
+    )
+    install(SCRIPT "${deploy_script}")
+
+    if(APPLE)
+        install(CODE "
+            execute_process(
+                COMMAND \"${PROJECT_SOURCE_DIR}/packaging/macos/fix-install-names.sh\"
+                    \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/AnyDevKitStudio.app\"
+                COMMAND_ERROR_IS_FATAL ANY
+            )
+        ")
+    endif()
+else()
+    install(FILES "${PROJECT_SOURCE_DIR}/packaging/linux/anydevkit-studio.desktop"
+        DESTINATION "${CMAKE_INSTALL_DATADIR}/applications"
+    )
+    install(FILES assets/icon/app-icon.png
+        DESTINATION "${CMAKE_INSTALL_DATADIR}/icons/hicolor/512x512/apps"
+        RENAME anydevkit-studio.png
+    )
+endif()
