@@ -162,6 +162,8 @@ QVariant LogicDocument::data(const QModelIndex& index, int role) const {
     case EmptyCavityRole: return info.holdsActions && !info.isEvent && block->children.isEmpty();
     case ProblemHeightRole: return place ? place->problemHeight : 0.0;
     case VariableRole: return block->variable;
+    case AnimationRole: return block->animation;
+    case FlippedRole: return block->flipped;
     default: return {};
     }
 }
@@ -200,6 +202,8 @@ QHash<int, QByteArray> LogicDocument::roleNames() const {
         {EmptyCavityRole, "emptyCavity"},
         {ProblemHeightRole, "problemHeight"},
         {VariableRole, "variable"},
+        {AnimationRole, "animation"},
+        {FlippedRole, "flipped"},
     };
 }
 
@@ -322,7 +326,11 @@ QVariantList LogicDocument::variables() const {
 
 QVariantList LogicDocument::sceneItems() const {
     QVariantList list;
-    for (const auto& item : scene.items) list.append(QVariantMap{{"id", item.id}, {"name", item.name.isEmpty() ? item.id : item.name}});
+    for (const auto& item : scene.items) {
+        QVariantList animations;
+        for (const auto& animation : item.animations) animations.append(QVariantMap{{"id", animation.name}, {"name", animation.name}});
+        list.append(QVariantMap{{"id", item.id}, {"name", item.name.isEmpty() ? item.id : item.name}, {"animations", animations}});
+    }
     return list;
 }
 
@@ -370,6 +378,13 @@ Block LogicDocument::makeBlock(const BlockInfo& info, const QString& id) const {
     block.id = id;
     block.type = info.type;
     if (info.usesItem && !scene.items.isEmpty()) block.item = scene.items.first().id;
+    if (info.usesAnimation) {
+        const auto sheet = std::ranges::find_if(scene.items, [](const SceneItem& item) { return isSpriteSheet(item) && !item.animations.isEmpty(); });
+        if (sheet != scene.items.end()) {
+            block.item = sheet->id;
+            block.animation = sheet->animation.isEmpty() ? sheet->animations.first().name : sheet->animation;
+        }
+    }
     if (info.usesVariable && !document.variables.isEmpty()) block.variable = document.variables.first().name;
     if (info.usesOtherItem && scene.items.size() > 1) block.otherItem = scene.items[1].id;
     if (info.usesPosition) block.x = 4;
@@ -574,6 +589,18 @@ bool LogicDocument::setField(const QString& id, const QString& key, const QVaria
 
     if (key == "item") {
         block.item = value.toString();
+        // An animation belongs to its item, so a new sheet starts from its own first animation.
+        if (blockInfo(block.type).usesAnimation) {
+            const auto chosen = std::ranges::find(scene.items, block.item, &SceneItem::id);
+            const auto keeps = chosen != scene.items.end() && std::ranges::find(chosen->animations, block.animation, &SceneAnimation::name) != chosen->animations.end();
+            if (!keeps) block.animation = chosen != scene.items.end() && !chosen->animations.isEmpty() ? (chosen->animation.isEmpty() ? chosen->animations.first().name : chosen->animation) : QString();
+        }
+    } else if (key == "animation") {
+        block.animation = value.toString();
+    } else if (key == "flipped") {
+        const auto text = value.toString();
+        if (text != "true" && text != "false") return false;
+        block.flipped = text == "true";
     } else if (key == "otherItem") {
         block.otherItem = value.toString();
     } else if (key == "x" || key == "y") {
@@ -616,7 +643,7 @@ bool LogicDocument::setField(const QString& id, const QString& key, const QVaria
 
     const auto unchanged = block.item == before.item && block.otherItem == before.otherItem && block.x == before.x && block.y == before.y
         && block.value == before.value && block.color == before.color && block.button == before.button && block.comparison == before.comparison
-        && block.variable == before.variable;
+        && block.variable == before.variable && block.animation == before.animation && block.flipped == before.flipped;
     if (unchanged) {
         setError({});
         return true;

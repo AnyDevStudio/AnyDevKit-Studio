@@ -70,6 +70,8 @@ public:
         EmptyCavityRole,
         ProblemHeightRole,
         VariableRole,
+        AnimationRole,
+        FlippedRole,
     };
 
     explicit LogicDocument(QObject* parent = nullptr);

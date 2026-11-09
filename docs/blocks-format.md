@@ -15,7 +15,7 @@ and an `ifVariable` action can hold more actions.
 
 ```json
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "variables": [
     { "name": "score", "initial": 0 }
   ],
@@ -90,6 +90,10 @@ and an `ifVariable` action can hold more actions.
 | `changeVariable` | Change variable | `variable`, `value`     | adds `value`, which can be negative    |
 | `ifVariable`  | If variable       | `variable`, `comparison`, `value`, `actions` | runs `actions` when the variable compares true to `value` |
 | `burstParticles` | Burst particles from item | `item` | plays that Particles item once, at its current position, on top of anything already running. The item must be a Particles item |
+| `playAnimation` | Play animation on item | `item`, `animation` | starts that animation of a sprite sheet, or keeps playing it if it is already on. The item must be an image with frames, and `animation` one of its names |
+| `flipItem` | Flip item | `item`, `flipped` | mirrors an image left to right (`true`) or back (`false`). The item must be an image |
+| `cameraFollow` | Camera follows item | `item` | keeps the camera centered on the item, every frame, as far as the world allows. The item must not have Stays on screen turned on |
+| `setCameraPosition` | Set camera position | `x`, `y` | puts the camera's top left corner at `x`, `y`, clamped to the world, and stops following any item |
 
 `comparison` is one of `equal`, `notEqual`, `less`, `lessOrEqual`, `greater`, `greaterOrEqual`.
 
@@ -108,16 +112,19 @@ no `{name}` behave exactly as before.
 
 ### Rules
 
-- `schemaVersion` is `2`, the version Studio saves. A file saved with `1` still loads: it has no `variables`
+- `schemaVersion` is `3`, the version Studio saves. A file saved with `1` still loads: it has no `variables`
   list, and its `addScore`, `setScore` and `ifScore` blocks become `changeVariable`, `setVariable` and
   `ifVariable` on a variable named `score` that starts at 0. A file with no score blocks gets no variables.
-  The block types `addScore`, `setScore` and `ifScore` only exist in version 1 files.
+  The block types `addScore`, `setScore` and `ifScore` only exist in version 1 files. A file saved with `2`
+  still loads but cannot use `playAnimation`, `flipItem`, `cameraFollow` or `setCameraPosition`.
 - `id` is 1 to 64 letters, digits, `-` or `_`, unique across the whole program. It stays the same
   across saves, so an editor can refer to a block.
 - Events go at the top level only. Actions go inside an event or inside `ifVariable`.
 - `item` and `otherItem` are `id` values from `scene.json`. A build fails when one is missing or not
-  in the scene, when an event's two items are the same, or when `burstParticles` names an item that is
-  not a Particles item. A file in that state can still be opened and saved, so it can be repaired.
+  in the scene, when an event's two items are the same, when `burstParticles` names an item that is
+  not a Particles item, when `playAnimation` names an item without that animation, when `flipItem` names an
+  item that is not an image, or when `cameraFollow` names an item with Stays on screen on. A file in that state
+  can still be opened and saved, so it can be repaired.
 - `variable` is the `name` of a variable in `variables`. A build fails when it is empty or names a variable
   that does not exist, and when a text item shows a variable that does not exist. Deleting a variable in
   Studio asks first and leaves the blocks and text that used it to be repaired, for the same reason.
@@ -151,9 +158,13 @@ Touching:
 
 Limits at run time:
 
-- A `controllable` item always stays inside the stage, even when a block moves it.
+- A `controllable` item always stays inside the world, or the screen if it has Stays on screen, even when a block moves it.
 - Any other item stays within -1000000 to 1000000.
 - A variable stops at the largest or smallest 32-bit whole number instead of overflowing.
+
+The camera follows its item after the blocks of a frame have run. It never leaves the world, however far
+its item goes, and its position does not change `x` or `y` of anything. Animations play for as long as the game
+runs; an animation repeats, and `playAnimation` on the one already playing changes nothing.
 
 A hidden item is not drawn but keeps its position, can still be moved and still follows the
 controller if it is `controllable`. A hidden Particles item also stops making new particles; the ones

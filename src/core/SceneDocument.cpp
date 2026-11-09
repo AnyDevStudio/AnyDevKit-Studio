@@ -3,17 +3,22 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QRegularExpression>
+#include <QSize>
 #include <QUrl>
 
 #include <algorithm>
 #include <cmath>
+#include <utility>
 
 namespace Studio {
 
 namespace {
 
-constexpr double StageWidth = 1920;
-constexpr double StageHeight = 1080;
+constexpr double StageWidth = ScreenWidthUnits;
+constexpr double StageHeight = ScreenHeightUnits;
+constexpr int DefaultFps = 8;
+constexpr int NewTileSize = 16;
+constexpr int NewTileScale = 4;
 constexpr double MinimumSize = 8;
 constexpr int MaximumItems = 256;
 constexpr int MaximumUndoSteps = 200;
@@ -90,9 +95,22 @@ QVariant SceneDocument::data(const QModelIndex& index, int role) const {
         {"id", item.id},
     };
     case SourceRole: return item.source;
-    case ImageUrlRole: return item.type == "image" && !imageProblems.contains(item.source) ? QUrl::fromLocalFile(projectRoot() + '/' + item.source) : QUrl();
+    case ImageUrlRole: return (item.type == "image" || item.type == "tilemap") && !imageProblems.contains(item.source) ? QUrl::fromLocalFile(projectRoot() + '/' + item.source) : QUrl();
     case ImageProblemRole: return imageProblems.value(item.source);
     case HiddenRole: return hiddenItems.contains(item.id);
+    case ScreenFixedRole: return item.screenFixed;
+    case SpriteRole: {
+        QVariantList frames;
+        int fps = DefaultFps;
+        if (!item.animations.isEmpty()) {
+            const auto chosen = std::ranges::find(item.animations, item.animation, &SceneAnimation::name);
+            const auto& animation = chosen == item.animations.end() ? item.animations.first() : *chosen;
+            for (const auto frame : animation.frames) frames.append(frame);
+            fps = animation.fps;
+        }
+        return QVariantMap{{"frameWidth", item.frameWidth}, {"frameHeight", item.frameHeight}, {"flipX", item.flipX}, {"pixelated", item.pixelated}, {"frames", frames}, {"fps", fps}};
+    }
+    case TilemapRole: return QVariantMap{{"tileWidth", item.tileWidth}, {"tileHeight", item.tileHeight}, {"tileScale", item.tileScale}, {"columns", item.columns}, {"rows", item.rows}};
     default: return {};
     }
 }
@@ -115,6 +133,9 @@ QHash<int, QByteArray> SceneDocument::roleNames() const {
         {ImageUrlRole, "itemImageUrl"},
         {ImageProblemRole, "itemImageProblem"},
         {HiddenRole, "itemHidden"},
+        {ScreenFixedRole, "itemScreenFixed"},
+        {SpriteRole, "itemSprite"},
+        {TilemapRole, "itemTilemap"},
     };
 }
 
@@ -136,6 +157,7 @@ bool SceneDocument::open(const QString& newPath) {
     emit loadedChanged();
     emit countChanged();
     emit backgroundChanged();
+    emit worldChanged();
     return true;
 }
 
@@ -159,6 +181,7 @@ void SceneDocument::close() {
     emit selectionChanged();
     emit undoChanged();
     emit imagesChanged();
+    emit worldChanged();
 }
 
 void SceneDocument::setError(const QString& text) {
@@ -180,6 +203,18 @@ QStringList SceneDocument::variableNames() const {
     QStringList names;
     for (const auto& variable : variables) names << variable.name;
     return names;
+}
+
+int SceneDocument::worldWidth() const { return document.worldWidth; }
+int SceneDocument::worldHeight() const { return document.worldHeight; }
+double SceneDocument::cameraX() const { return document.cameraX; }
+double SceneDocument::cameraY() const { return document.cameraY; }
+
+QUrl SceneDocument::selectedTilesetUrl() const {
+    if (!isValidIndex(selection)) return {};
+    const auto& item = document.items[selection];
+    if ((item.type != "tilemap") || imageProblems.contains(item.source)) return {};
+    return QUrl::fromLocalFile(projectRoot() + '/' + item.source);
 }
 
 QString SceneDocument::projectRoot() const { return path.isEmpty() ? QString() : QFileInfo(path).absolutePath(); }
@@ -214,7 +249,25 @@ void SceneDocument::setSelectedIndex(int index) {
 QVariantMap SceneDocument::selected() const {
     if (!isValidIndex(selection)) return {};
     const auto& item = document.items[selection];
+    QVariantList animations;
+    for (const auto& animation : item.animations) {
+        QStringList frames;
+        for (const auto frame : animation.frames) frames << QString::number(frame);
+        animations.append(QVariantMap{{"name", animation.name}, {"frames", frames.join(", ")}, {"fps", animation.fps}});
+    }
     return {
+        {"screenFixed", item.screenFixed},
+        {"pixelated", item.pixelated},
+        {"flipX", item.flipX},
+        {"frameWidth", item.frameWidth},
+        {"frameHeight", item.frameHeight},
+        {"animation", item.animation},
+        {"animations", animations},
+        {"tileWidth", item.tileWidth},
+        {"tileHeight", item.tileHeight},
+        {"tileScale", item.tileScale},
+        {"columns", item.columns},
+        {"rows", item.rows},
         {"type", item.type},
         {"name", item.name},
         {"x", item.x},
@@ -240,6 +293,14 @@ QVariantMap SceneDocument::selected() const {
 
 bool SceneDocument::isValidIndex(int index) const {
     return index >= 0 && index < document.items.size();
+}
+
+bool SceneDocument::isTilemap(int index) const {
+    return isValidIndex(index) && document.items[index].type == "tilemap";
+}
+
+QSize SceneDocument::itemBounds(const SceneItem& item) const {
+    return item.screenFixed ? QSize(ScreenWidthUnits, ScreenHeightUnits) : QSize(document.worldWidth, document.worldHeight);
 }
 
 void SceneDocument::pushUndo() {
@@ -270,8 +331,9 @@ void SceneDocument::notifyItem(int index) {
 }
 
 void SceneDocument::placeInsideStage(SceneItem& item) const {
-    item.x = std::round(std::clamp(item.x, 0.0, std::max(0.0, StageWidth - drawnWidth(item))));
-    item.y = std::round(std::clamp(item.y, 0.0, std::max(0.0, StageHeight - drawnHeight(item))));
+    const auto bounds = itemBounds(item);
+    item.x = std::round(std::clamp(item.x, 0.0, std::max(0.0, double(bounds.width()) - drawnWidth(item))));
+    item.y = std::round(std::clamp(item.y, 0.0, std::max(0.0, double(bounds.height()) - drawnHeight(item))));
 }
 
 int SceneDocument::indexOfItem(const QString& id) const {
@@ -389,6 +451,219 @@ bool SceneDocument::replaceImage(int index, const QString& source, int pixelWidt
     return true;
 }
 
+int SceneDocument::addTilemap(const QString& source, int pixelWidth, int pixelHeight, const QString& name, double centerX, double centerY) {
+    Q_UNUSED(centerX)
+    Q_UNUSED(centerY)
+    if (!loaded || changing) return -1;
+    if (pixelWidth < NewTileSize || pixelHeight < NewTileSize) {
+        setError(QString("This picture is %1x%2 pixels, but a tileset needs at least one %3x%3 tile. Choose a larger picture.").arg(pixelWidth).arg(pixelHeight).arg(NewTileSize));
+        return -1;
+    }
+    if (const auto problem = roomProblem(); !problem.isEmpty()) {
+        setError(problem);
+        return -1;
+    }
+
+    SceneItem item;
+    item.id = nextItemId();
+    item.type = "tilemap";
+    item.name = name;
+    item.source = source;
+    item.tileWidth = NewTileSize;
+    item.tileHeight = NewTileSize;
+    item.tileScale = NewTileScale;
+    const auto cell = NewTileSize * NewTileScale;
+    item.columns = std::min(static_cast<int>(std::ceil(double(document.worldWidth) / cell)), MaximumTilemapSide);
+    item.rows = std::min(static_cast<int>(std::ceil(double(document.worldHeight) / cell)), MaximumTilemapSide);
+    item.tiles = QList<int>(qint64(item.columns) * item.rows, -1);
+    updateTilemapSize(item);
+    return insertItem(item);
+}
+
+bool SceneDocument::commitItem(int index, const SceneItem& item) {
+    auto candidate = document;
+    candidate.items[index] = item;
+    if (const auto problem = validateScene(candidate); !problem.isEmpty()) {
+        setError(problem);
+        return false;
+    }
+    auto placed = item;
+    placeInsideStage(placed);
+    candidate.items[index] = placed;
+    if (!commit(candidate)) return false;
+    notifyItem(index);
+    return true;
+}
+
+bool SceneDocument::changeTilemapCell(SceneItem& item, int column, int row, int tile) const {
+    const auto cell = row * item.columns + column;
+    if (item.tiles[cell] == tile) return false;
+    item.tiles[cell] = tile;
+    return true;
+}
+
+int SceneDocument::tileAt(int index, int column, int row) const {
+    if (!isTilemap(index)) return -1;
+    const auto& item = document.items[index];
+    if (column < 0 || column >= item.columns || row < 0 || row >= item.rows) return -1;
+    return item.tiles.value(row * item.columns + column, -1);
+}
+
+bool SceneDocument::paintTile(int index, int column, int row, int tile) {
+    if (!isTilemap(index) || tile < -1 || tile > MaximumTileIndex) return false;
+    const auto& current = document.items[index];
+    if (column < 0 || column >= current.columns || row < 0 || row >= current.rows) return false;
+    if (current.tiles[row * current.columns + column] == tile) return true;
+    if (changing) {
+        changeTilemapCell(document.items[index], column, row, tile);
+        changedDuringChange = true;
+        notifyItem(index);
+        return true;
+    }
+    auto item = current;
+    changeTilemapCell(item, column, row, tile);
+    return commitItem(index, item);
+}
+
+int SceneDocument::fillTiles(int index, int column, int row, int tile) {
+    if (!isTilemap(index) || changing || tile < -1 || tile > MaximumTileIndex) return 0;
+    auto item = document.items[index];
+    if (column < 0 || column >= item.columns || row < 0 || row >= item.rows) return 0;
+    const auto target = item.tiles[row * item.columns + column];
+    if (target == tile) return 0;
+
+    int painted = 0;
+    QList<std::pair<int, int>> pending{{column, row}};
+    while (!pending.isEmpty()) {
+        const auto [x, y] = pending.takeLast();
+        const auto cell = y * item.columns + x;
+        if (item.tiles[cell] != target) continue;
+        item.tiles[cell] = tile;
+        ++painted;
+        if (x > 0) pending.append({x - 1, y});
+        if (x + 1 < item.columns) pending.append({x + 1, y});
+        if (y > 0) pending.append({x, y - 1});
+        if (y + 1 < item.rows) pending.append({x, y + 1});
+    }
+    return commitItem(index, item) ? painted : 0;
+}
+
+bool SceneDocument::setTileSolid(int index, int tile, bool solid) {
+    if (!isTilemap(index) || tile < 0 || tile > MaximumTileIndex) return false;
+    auto item = document.items[index];
+    const auto position = std::lower_bound(item.solidTiles.begin(), item.solidTiles.end(), tile);
+    const auto present = position != item.solidTiles.end() && *position == tile;
+    if (present == solid) return true;
+    if (solid) item.solidTiles.insert(position, tile);
+    else item.solidTiles.erase(position);
+    return commitItem(index, item);
+}
+
+bool SceneDocument::isTileSolid(int index, int tile) const {
+    return isTilemap(index) && document.items[index].solidTiles.contains(tile);
+}
+
+QVariantList SceneDocument::solidTiles(int index) const {
+    QVariantList list;
+    if (isTilemap(index)) {
+        for (const auto tile : document.items[index].solidTiles) list.append(tile);
+    }
+    return list;
+}
+
+bool SceneDocument::addAnimation(int index, const QString& name) {
+    if (!isValidIndex(index) || changing) return false;
+    auto item = document.items[index];
+    if (!isSpriteSheet(item)) {
+        setError("Set a frame width and frame height on this image first, so it has frames to animate.");
+        return false;
+    }
+    item.animations.append({name, {0}, DefaultFps});
+    if (item.animation.isEmpty()) item.animation = name;
+    return commitItem(index, item);
+}
+
+bool SceneDocument::removeAnimation(int index, const QString& name) {
+    if (!isValidIndex(index) || changing) return false;
+    auto item = document.items[index];
+    const auto found = std::ranges::find(item.animations, name, &SceneAnimation::name);
+    if (found == item.animations.end()) return false;
+    item.animations.erase(found);
+    if (item.animation == name) item.animation = item.animations.isEmpty() ? QString() : item.animations.first().name;
+    return commitItem(index, item);
+}
+
+bool SceneDocument::setAnimationFrames(int index, const QString& name, const QVariantList& frames) {
+    if (!isValidIndex(index) || changing) return false;
+    auto item = document.items[index];
+    const auto found = std::ranges::find(item.animations, name, &SceneAnimation::name);
+    if (found == item.animations.end()) return false;
+    QList<int> list;
+    for (const auto& frame : frames) {
+        bool isNumber = false;
+        const auto number = frame.toDouble(&isNumber);
+        if (!isNumber || number != std::floor(number) || !std::isfinite(number)) {
+            setError(QString("Frames must be whole numbers, like 0, 1, 2. \"%1\" is not.").arg(frame.toString()));
+            return false;
+        }
+        list.append(static_cast<int>(std::clamp(number, -1.0, 1e8)));
+    }
+    found->frames = list;
+    return commitItem(index, item);
+}
+
+bool SceneDocument::setAnimationFps(int index, const QString& name, int fps) {
+    if (!isValidIndex(index) || changing) return false;
+    auto item = document.items[index];
+    const auto found = std::ranges::find(item.animations, name, &SceneAnimation::name);
+    if (found == item.animations.end()) return false;
+    found->fps = fps;
+    return commitItem(index, item);
+}
+
+bool SceneDocument::setWorldSize(int width, int height) {
+    if (!loaded || changing) return false;
+    auto candidate = document;
+    candidate.worldWidth = width;
+    candidate.worldHeight = height;
+    candidate.cameraX = std::clamp(document.cameraX, 0.0, std::max(0.0, double(width) - ScreenWidthUnits));
+    candidate.cameraY = std::clamp(document.cameraY, 0.0, std::max(0.0, double(height) - ScreenHeightUnits));
+    if (const auto problem = validateScene(candidate); !problem.isEmpty()) {
+        setError(problem);
+        return false;
+    }
+    const auto before = document.items;
+    for (auto& item : candidate.items) {
+        if (item.screenFixed) continue;
+        item.x = std::round(std::clamp(item.x, 0.0, std::max(0.0, double(width) - drawnWidth(item))));
+        item.y = std::round(std::clamp(item.y, 0.0, std::max(0.0, double(height) - drawnHeight(item))));
+    }
+    if (!commit(candidate)) return false;
+    for (int row = 0; row < document.items.size(); ++row) {
+        if (document.items[row].x != before[row].x || document.items[row].y != before[row].y) notifyItem(row);
+    }
+    emit worldChanged();
+    return true;
+}
+
+void SceneDocument::setCameraStart(double x, double y) {
+    if (!loaded || !std::isfinite(x) || !std::isfinite(y)) return;
+    const auto clampedX = std::clamp(x, 0.0, std::max(0.0, double(document.worldWidth) - ScreenWidthUnits));
+    const auto clampedY = std::clamp(y, 0.0, std::max(0.0, double(document.worldHeight) - ScreenHeightUnits));
+    if (clampedX == document.cameraX && clampedY == document.cameraY) return;
+    if (changing) {
+        document.cameraX = clampedX;
+        document.cameraY = clampedY;
+        changedDuringChange = true;
+        emit worldChanged();
+        return;
+    }
+    auto candidate = document;
+    candidate.cameraX = clampedX;
+    candidate.cameraY = clampedY;
+    if (commit(candidate)) emit worldChanged();
+}
+
 int SceneDocument::insertItem(SceneItem item) {
     placeInsideStage(item);
     auto candidate = document;
@@ -456,14 +731,16 @@ void SceneDocument::resizeItem(int index, double width, double height, bool keep
     if (keepAspect) {
         // During a drag the shape the drag started with, since the current size is already rounded.
         const auto& start = changing && index < history.last().items.size() ? history.last().items[index] : item;
-        const auto largest = std::min((StageWidth - item.x) / start.width, (StageHeight - item.y) / start.height);
+        const auto bounds = itemBounds(item);
+        const auto largest = std::min((bounds.width() - item.x) / start.width, (bounds.height() - item.y) / start.height);
         const auto smallest = std::max(MinimumSize / start.width, MinimumSize / start.height);
         const auto scale = std::clamp(std::max(width / start.width, height / start.height), smallest, std::max(smallest, largest));
         item.width = std::round(start.width * scale);
         item.height = std::round(start.height * scale);
     } else {
-        item.width = std::round(std::clamp(width, MinimumSize, std::max(MinimumSize, StageWidth - item.x)));
-        item.height = std::round(std::clamp(height, MinimumSize, std::max(MinimumSize, StageHeight - item.y)));
+        const auto bounds = itemBounds(item);
+        item.width = std::round(std::clamp(width, MinimumSize, std::max(MinimumSize, bounds.width() - item.x)));
+        item.height = std::round(std::clamp(height, MinimumSize, std::max(MinimumSize, bounds.height() - item.y)));
     }
     if (changing) {
         document.items[index] = item;
@@ -479,6 +756,49 @@ void SceneDocument::resizeItem(int index, double width, double height, bool keep
 bool SceneDocument::setItemValue(int index, const QString& property, const QVariant& value) {
     if (!isValidIndex(index) || changing) return false;
     auto item = document.items[index];
+
+    static const QStringList sheetSettings{"frameWidth", "frameHeight", "animation"};
+    static const QStringList tilemapSettings{"tileWidth", "tileHeight", "tileScale", "columns", "rows"};
+    if ((sheetSettings.contains(property) || property == "flipX" || property == "pixelated") && item.type != "image") return false;
+    if (tilemapSettings.contains(property) && item.type != "tilemap") return false;
+
+    if (sheetSettings.contains(property) || tilemapSettings.contains(property)) {
+        if (property == "animation") {
+            item.animation = value.toString();
+        } else {
+            bool isNumber = false;
+            const auto number = value.toDouble(&isNumber);
+            if (!isNumber || !std::isfinite(number) || number != std::floor(number)) {
+                setError(QString("%1 must be a whole number.").arg(property));
+                return false;
+            }
+            const auto whole = static_cast<int>(std::clamp(number, -1e8, 1e8));
+            if (property == "frameWidth" || property == "frameHeight") {
+                // A square sheet is the usual case, and a sheet of frames is almost always pixel art.
+                if (property == "frameWidth") item.frameWidth = whole;
+                else item.frameHeight = whole;
+                if (whole == 0) {
+                    item.frameWidth = item.frameHeight = 0;
+                    item.animations.clear();
+                    item.animation.clear();
+                } else {
+                    if (item.frameWidth == 0) item.frameWidth = whole;
+                    if (item.frameHeight == 0) item.frameHeight = whole;
+                    item.pixelated = true;
+                }
+            } else if (property == "tileWidth" || property == "tileHeight" || property == "tileScale") {
+                (property == "tileWidth" ? item.tileWidth : property == "tileHeight" ? item.tileHeight : item.tileScale) = whole;
+                updateTilemapSize(item);
+            } else {
+                resizeTilemap(item, property == "columns" ? whole : item.columns, property == "rows" ? whole : item.rows);
+            }
+        }
+        return commitItem(index, item);
+    }
+    if (property == "flipX" || property == "pixelated" || property == "screenFixed") {
+        (property == "flipX" ? item.flipX : property == "pixelated" ? item.pixelated : item.screenFixed) = value.toBool();
+        return commitItem(index, item);
+    }
 
     static const QStringList particleSettings{"preset", "palette", "looping", "amount", "spread", "speed", "gravity", "pixelSize"};
     if (particleSettings.contains(property) && item.type != "particles") return false;
@@ -630,8 +950,9 @@ int SceneDocument::duplicateItem(int index) {
     auto copy = document.items[index];
     copy.name = copyName(copy, document.items);
     copy.id = nextItemId();
-    copy.x = offsetForCopy(copy.x, drawnWidth(copy), StageWidth);
-    copy.y = offsetForCopy(copy.y, drawnHeight(copy), StageHeight);
+    const auto bounds = itemBounds(copy);
+    copy.x = offsetForCopy(copy.x, drawnWidth(copy), bounds.width());
+    copy.y = offsetForCopy(copy.y, drawnHeight(copy), bounds.height());
     placeInsideStage(copy);
 
     auto candidate = document;
@@ -675,6 +996,7 @@ void SceneDocument::undo() {
     emit undoChanged();
     emit countChanged();
     emit backgroundChanged();
+    emit worldChanged();
     emit selectionChanged();
 }
 

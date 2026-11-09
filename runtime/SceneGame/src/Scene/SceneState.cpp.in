@@ -44,6 +44,12 @@ char* writeNumber(char* out, std::int32_t value) {
     return out;
 }
 
+// Animation number `animation` of a sprite, in the sprite's own list.
+[[maybe_unused]] World2D::Clip ClipOf(const GeneratedScene::Sprite& sprite, std::size_t animation) {
+    const auto& clip = GeneratedScene::Animations[sprite.firstAnimation + animation];
+    return {clip.firstFrame, clip.frameCount, clip.framesPerSecond};
+}
+
 // An item larger than the stage cannot fit, so it may only slide while still covering the stage.
 float clampAxis(float value, float stage, float size) {
     const float limit = stage - size;
@@ -60,11 +66,19 @@ SceneState::SceneState(int width, int height) : stageWidth(static_cast<float>(wi
     for (const auto& item : GeneratedScene::Items) {
         *position = {item.x, item.y};
         *color++ = {item.red, item.green, item.blue};
-        if (item.controllable) clampToStage(index, *position);
+        flipped[index] = item.flipped;
+        if constexpr (GeneratedScene::SpriteCount != 0) {
+            if (item.sprite >= 0) {
+                const auto& sprite = GeneratedScene::Sprites[static_cast<std::size_t>(item.sprite)];
+                if (sprite.animationCount != 0) animations[static_cast<std::size_t>(item.sprite)].Play(ClipOf(sprite, sprite.startAnimation));
+            }
+        }
+        if (item.controllable) clampToBounds(index, *position);
         ++position;
         ++index;
     }
     visible.fill(true);
+    camera = World2D::ClampCamera({GeneratedScene::CameraStartX, GeneratedScene::CameraStartY}, GeneratedScene::WorldWidth, GeneratedScene::WorldHeight);
     startParticles();
     GeneratedLogic::OnStart(*this);
     rebuildText();
@@ -103,7 +117,7 @@ void SceneState::Update(double seconds, Position direction, std::uint32_t button
         if (item.controllable) {
             (*position)[0] += direction[0] * distance;
             (*position)[1] += direction[1] * distance;
-            clampToStage(index, *position);
+            clampToBounds(index, *position);
         }
         ++position;
         ++index;
@@ -111,6 +125,8 @@ void SceneState::Update(double seconds, Position direction, std::uint32_t button
     heldButtons = buttons;
     GeneratedLogic::OnFrame(*this, logicMemory);
     rebuildText();
+    updateCamera();
+    for (auto& player : animations) player.Advance(seconds);
     for (std::size_t item = 0; item < GeneratedScene::Items.size(); ++item) {
         if (auto* emitter = emitterFor(item)) {
             emitter->SetPosition(positions[item][0], positions[item][1]);
@@ -122,6 +138,44 @@ void SceneState::Update(double seconds, Position direction, std::uint32_t button
 const SceneState::Positions& SceneState::Current() const { return positions; }
 const SceneState::Colors& SceneState::CurrentColors() const { return colors; }
 const SceneState::Visibility& SceneState::CurrentVisibility() const { return visible; }
+World2D::Point SceneState::Camera() const { return camera; }
+bool SceneState::Flipped(std::size_t item) const { return flipped[item]; }
+
+std::uint32_t SceneState::SpriteFrame(std::size_t item) const {
+    if constexpr (GeneratedScene::SpriteCount != 0) {
+        const auto sprite = GeneratedScene::Items[item].sprite;
+        if (sprite >= 0) {
+            if (GeneratedScene::Sprites[static_cast<std::size_t>(sprite)].animationCount == 0) return 0;
+            return GeneratedScene::AnimationFrames[animations[static_cast<std::size_t>(sprite)].Frame()];
+        }
+    }
+    return 0;
+}
+
+void SceneState::PlayAnimation(std::size_t item, std::size_t animation) {
+    if constexpr (GeneratedScene::SpriteCount != 0) {
+        const auto sprite = GeneratedScene::Items[item].sprite;
+        if (sprite >= 0) {
+            const auto& entry = GeneratedScene::Sprites[static_cast<std::size_t>(sprite)];
+            animations[static_cast<std::size_t>(sprite)].Play(ClipOf(entry, animation));
+        }
+    }
+}
+
+void SceneState::SetFlipped(std::size_t item, bool value) { flipped[item] = value; }
+
+void SceneState::CameraFollow(std::size_t item) { followedItem = static_cast<std::int32_t>(item); }
+
+void SceneState::SetCameraPosition(float x, float y) {
+    followedItem = -1;
+    camera = World2D::ClampCamera({x, y}, GeneratedScene::WorldWidth, GeneratedScene::WorldHeight);
+}
+
+void SceneState::updateCamera() {
+    if (followedItem < 0) return;
+    const auto item = static_cast<std::size_t>(followedItem);
+    camera = World2D::FollowCamera({positions[item][0], positions[item][1], drawnWidth(item), GeneratedScene::Items[item].height}, GeneratedScene::WorldWidth, GeneratedScene::WorldHeight);
+}
 
 void SceneState::MoveBy(std::size_t item, float x, float y) {
     auto position = positions[item];
@@ -212,14 +266,17 @@ bool SceneState::Touching(std::size_t first, std::size_t second) const {
 
 bool SceneState::Held(std::uint32_t button) const { return (heldButtons & button) != 0; }
 
-void SceneState::clampToStage(std::size_t item, Position& position) const {
-    position[0] = clampAxis(position[0], stageWidth, drawnWidth(item));
-    position[1] = clampAxis(position[1], stageHeight, GeneratedScene::Items[item].height);
+void SceneState::clampToBounds(std::size_t item, Position& position) const {
+    const auto& scene = GeneratedScene::Items[item];
+    const float boundsWidth = scene.screenFixed ? stageWidth : GeneratedScene::WorldWidth;
+    const float boundsHeight = scene.screenFixed ? stageHeight : GeneratedScene::WorldHeight;
+    position[0] = clampAxis(position[0], boundsWidth, drawnWidth(item));
+    position[1] = clampAxis(position[1], boundsHeight, scene.height);
 }
 
 void SceneState::limitPosition(std::size_t item, Position& position) const {
     if (GeneratedScene::Items[item].controllable) {
-        clampToStage(item, position);
+        clampToBounds(item, position);
         return;
     }
     position[0] = std::clamp(position[0], -LogicWorldLimit, LogicWorldLimit);

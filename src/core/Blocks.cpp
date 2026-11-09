@@ -20,10 +20,12 @@ namespace Studio {
 
 namespace {
 
-// The version saved today. Version 1 files still load: their score blocks become variable blocks.
-constexpr int CurrentSchema = 2;
+// The version saved today. Older files still load: version 1's score blocks become variable blocks,
+// and version 3 adds the animation, flip and camera blocks.
+constexpr int CurrentSchema = 3;
 constexpr int OldestLoadableSchema = 1;
 constexpr int VariableSchema = 2;
+constexpr int WorldBlockSchema = 3;
 constexpr auto ScoreVariableName = "score";
 constexpr auto LogicFileName = "logic.json";
 constexpr auto HeaderFolder = "src";
@@ -84,6 +86,7 @@ public:
         if (scene) {
             for (const auto& item : scene->items) {
                 itemIds.insert(item.id);
+                itemsById.insert(item.id, item);
                 if (item.type == "particles") particleIds.insert(item.id);
             }
         }
@@ -147,6 +150,20 @@ private:
         }
     }
 
+    void checkWorldBlock(const Block& block, const QString& label, const SceneItem& item) {
+        if (block.type == BlockType::PlayAnimation) {
+            if (!isSpriteSheet(item)) {
+                report(block, QString("%1 uses the item \"%2\", which is not a sprite sheet. Choose an image with frames, or give this image a frame size.").arg(label, block.item));
+            } else if (!block.animation.isEmpty() && std::ranges::find(item.animations, block.animation, &SceneAnimation::name) == item.animations.end()) {
+                report(block, QString("%1 plays the animation \"%2\", which this item does not have. Choose an animation it has.").arg(label, block.animation));
+            }
+        } else if (block.type == BlockType::FlipItem && item.type != "image") {
+            report(block, QString("%1 uses the item \"%2\", but only an image can be flipped.").arg(label, block.item));
+        } else if (block.type == BlockType::CameraFollow && item.screenFixed) {
+            report(block, QString("%1 follows the item \"%2\", which has \"Stays on screen\" turned on, so the camera could never leave it. Choose another item.").arg(label, block.item));
+        }
+    }
+
     void visit(const Block& block, int depth) {
         const auto& info = blockInfo(block.type);
         const auto label = describeBlock(block);
@@ -167,6 +184,8 @@ private:
         if (block.type == BlockType::BurstParticles && scene && itemIds.contains(block.item) && !particleIds.contains(block.item)) {
             report(block, QString("%1 uses the item \"%2\", which is not a Particles item. Choose a Particles item to burst from.").arg(label, block.item));
         }
+        if (scene && itemIds.contains(block.item)) checkWorldBlock(block, label, itemsById.value(block.item));
+        if (info.usesAnimation && scene && block.animation.isEmpty()) report(block, QString("%1 has no animation chosen. Choose one of this item's animations.").arg(label));
         if (info.usesOtherItem) {
             checkItem(block, block.otherItem);
             if (scene && !block.item.isEmpty() && block.item == block.otherItem) {
@@ -194,6 +213,7 @@ private:
     const Scene* scene;
     QSet<QString> itemIds;
     QSet<QString> particleIds;
+    QHash<QString, SceneItem> itemsById;
     QSet<QString> variableNames;
     QSet<QString> usedIds;
     QList<LogicProblem> problems;
@@ -215,6 +235,10 @@ const QHash<QString, BlockType>& legacyScoreBlocks() {
         {"ifScore", BlockType::IfVariable},
     };
     return blocks;
+}
+
+bool isWorldBlock(BlockType type) {
+    return type == BlockType::PlayAnimation || type == BlockType::FlipItem || type == BlockType::CameraFollow || type == BlockType::SetCameraPosition;
 }
 
 struct Parsing {
@@ -260,6 +284,9 @@ QString parseBlock(const QJsonValue& value, qsizetype index, int depth, Parsing&
     const auto& info = *found;
     block.type = info.type;
     const auto label = describeBlock(block);
+    if (parsing.schema < WorldBlockSchema && isWorldBlock(info.type)) {
+        return QString("%1 needs schemaVersion %2. Change schemaVersion to %2 and try again.").arg(label).arg(WorldBlockSchema);
+    }
     if (info.usesVariable && parsing.schema < VariableSchema && !legacyScore) {
         return QString("%1 uses a variable, which needs schemaVersion %2. Change schemaVersion to %2 and add a \"variables\" list.").arg(label).arg(VariableSchema);
     }
@@ -274,6 +301,12 @@ QString parseBlock(const QJsonValue& value, qsizetype index, int depth, Parsing&
         }
         if (!button) return unknownChoiceMessage(label, "button", name, choices);
         block.button = button->button;
+    }
+    if (info.usesAnimation) block.animation = object.value("animation").toString();
+    if (info.usesFlipped) {
+        const auto flipped = object.value("flipped");
+        if (!flipped.isBool()) return QString("%1 needs flipped to be true or false.").arg(label);
+        block.flipped = flipped.toBool();
     }
     if (info.usesItem) block.item = object.value("item").toString();
     if (info.usesOtherItem) block.otherItem = object.value("otherItem").toString();
@@ -337,6 +370,8 @@ QJsonObject blockToJson(const Block& block) {
             if (candidate.button == block.button) object.insert("button", candidate.jsonName);
         }
     }
+    if (info.usesAnimation) object.insert("animation", block.animation);
+    if (info.usesFlipped) object.insert("flipped", block.flipped);
     if (info.usesItem) object.insert("item", block.item);
     if (info.usesOtherItem) object.insert("otherItem", block.otherItem);
     if (info.usesVariable) object.insert("variable", block.variable);
@@ -412,7 +447,7 @@ QByteArray indentation(int level) {
 // and names are free text, which is why only indexes reach the generated code.
 class Generator {
 public:
-    Generator(const Scene& scene, const LogicProgram& program) {
+    Generator(const Scene& scene, const LogicProgram& program) : scene(scene) {
         for (qsizetype index = 0; index < scene.items.size(); ++index) itemIndexes.insert(scene.items[index].id, index);
         for (qsizetype index = 0; index < program.variables.size(); ++index) variableIndexes.insert(program.variables[index].name, index);
     }
@@ -420,6 +455,12 @@ public:
     QByteArray index(const QString& itemId) const { return QByteArray::number(itemIndexes.value(itemId)); }
 
     QByteArray variable(const QString& name) const { return QByteArray::number(variableIndexes.value(name)); }
+
+    int animationIndex(const Block& block) const {
+        const auto& item = scene.items[itemIndexes.value(block.item)];
+        const auto found = std::ranges::find(item.animations, block.animation, &SceneAnimation::name);
+        return found == item.animations.end() ? 0 : static_cast<int>(found - item.animations.begin());
+    }
 
     void actions(const QList<Block>& blocks, int level, QByteArray& code) const {
         for (const auto& block : blocks) action(block, level, code);
@@ -452,6 +493,18 @@ public:
             return;
         case BlockType::BurstParticles:
             code += pad + "world.BurstParticles(" + index(block.item) + ");" + comment;
+            return;
+        case BlockType::PlayAnimation:
+            code += pad + "world.PlayAnimation(" + index(block.item) + ", " + QByteArray::number(animationIndex(block)) + ");" + comment;
+            return;
+        case BlockType::FlipItem:
+            code += pad + "world.SetFlipped(" + index(block.item) + ", " + (block.flipped ? "true" : "false") + ");" + comment;
+            return;
+        case BlockType::CameraFollow:
+            code += pad + "world.CameraFollow(" + index(block.item) + ");" + comment;
+            return;
+        case BlockType::SetCameraPosition:
+            code += pad + "world.SetCameraPosition(" + floatLiteral(block.x) + ", " + floatLiteral(block.y) + ");" + comment;
             return;
         case BlockType::IfVariable:
             code += pad + "if (world.Variable(" + variable(block.variable) + ") " + comparisonOperator(block.comparison) + ' ' + QByteArray::number(block.value) + ") {" + comment;
@@ -488,6 +541,7 @@ public:
     }
 
 private:
+    const Scene& scene;
     QHash<QString, qsizetype> itemIndexes;
     QHash<QString, qsizetype> variableIndexes;
 };
@@ -497,6 +551,10 @@ void collectBurstTargets(const QList<Block>& blocks, QSet<QString>& targets) {
         if (block.type == BlockType::BurstParticles) targets.insert(block.item);
         collectBurstTargets(block.children, targets);
     }
+}
+
+bool usesWorldBlock(const QList<Block>& blocks) {
+    return std::ranges::any_of(blocks, [](const Block& block) { return isWorldBlock(block.type) || usesWorldBlock(block.children); });
 }
 
 bool referencesItems(const QList<Block>& blocks) {
@@ -544,6 +602,10 @@ const QList<BlockInfo>& blockCatalog() {
         {BlockType::ChangeVariable, "changeVariable", "Change variable",             false, false, false, false, false, false, false, true,  false, true},
         {BlockType::IfVariable, "ifVariable", "If variable",                         false, true,  false, false, false, false, false, true,  true,  true},
         {BlockType::BurstParticles, "burstParticles", "Burst particles from item",   false, false, false, true,  false, false, false, false, false, false},
+        {BlockType::PlayAnimation, "playAnimation", "Play animation on item",        false, false, false, true,  false, false, false, false, false, false, true,  false},
+        {BlockType::FlipItem, "flipItem", "Flip item",                               false, false, false, true,  false, false, false, false, false, false, false, true},
+        {BlockType::CameraFollow, "cameraFollow", "Camera follows item",             false, false, false, true,  false, false, false, false, false, false},
+        {BlockType::SetCameraPosition, "setCameraPosition", "Set camera position",   false, false, false, false, false, true,  false, false, false, false},
     };
     return catalog;
 }
@@ -709,6 +771,10 @@ QByteArray generateLogicHeader(const LogicProgram& program, const Scene& scene) 
         if (block.type == BlockType::WhileButtonHeld) usesButtons = true;
     }
     return assembleHeader(referencesItems(program.events), usesButtons, static_cast<int>(scene.items.size()), touchEvents, startCode, frameCode);
+}
+
+bool programUsesWorldBlocks(const LogicProgram& program) {
+    return usesWorldBlock(program.events);
 }
 
 QByteArray generateVariablesHeader(const LogicProgram& program, const Scene& scene) {

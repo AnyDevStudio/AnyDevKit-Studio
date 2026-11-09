@@ -1,0 +1,159 @@
+#pragma once
+// The camera, sprite animation and tile culling of the game. tests/tst_world2d.cpp compiles this same
+// file on the host under sanitizers, so it stays free of @NAME@, Qt and the rest of the runtime. It uses
+// no heap and no libm, so it is safe to call from the frame loop.
+#include <algorithm>
+#include <array>
+#include <cstddef>
+#include <cstdint>
+
+namespace World2D {
+
+inline constexpr float ScreenWidth = 1920.0f;
+inline constexpr float ScreenHeight = 1080.0f;
+
+struct Point {
+    float x, y;
+};
+
+constexpr float RoundToUnit(float value) {
+    // Halves round up. Coordinates stay far below 2^24, so the conversion is exact.
+    const auto whole = static_cast<float>(static_cast<std::int64_t>(value + (value >= 0.0f ? 0.5f : -0.5f)));
+    return whole;
+}
+
+// Keeps the screen-sized camera inside the world. A stage-sized world leaves it at the origin.
+constexpr Point ClampCamera(Point camera, float worldWidth, float worldHeight) {
+    return {std::clamp(camera.x, 0.0f, std::max(0.0f, worldWidth - ScreenWidth)), std::clamp(camera.y, 0.0f, std::max(0.0f, worldHeight - ScreenHeight))};
+}
+
+// Where the camera goes to center this rectangle on the screen, kept inside the world.
+struct FollowRect {
+    float x, y, width, height;
+};
+
+constexpr Point FollowCamera(FollowRect item, float worldWidth, float worldHeight) {
+    return ClampCamera({item.x + item.width / 2.0f - ScreenWidth / 2.0f, item.y + item.height / 2.0f - ScreenHeight / 2.0f}, worldWidth, worldHeight);
+}
+
+// An animation's slice of the animation frame list, and how fast it plays.
+struct Clip {
+    std::uint32_t firstFrame, frameCount, framesPerSecond;
+    constexpr bool operator==(const Clip&) const = default;
+};
+
+// One sprite's playback. Frame() is the frame table position: clip.firstFrame plus the current step.
+class AnimationPlayer final {
+public:
+    constexpr void Play(Clip next) {
+        if (next == clip) return; // playing the same animation again keeps its place
+        clip = next;
+        step = 0;
+        elapsed = 0.0;
+    }
+
+    constexpr void Advance(double seconds) {
+        if (clip.frameCount == 0 || clip.framesPerSecond == 0 || !(seconds > 0.0)) return;
+        const double frameLength = 1.0 / clip.framesPerSecond;
+        elapsed += std::min(seconds, MaxStepSeconds); // a long hitch skips ahead instead of replaying every frame
+        if (elapsed < frameLength) return;
+        const auto whole = static_cast<std::uint64_t>(elapsed / frameLength);
+        step = static_cast<std::uint32_t>((step + whole % clip.frameCount) % clip.frameCount);
+        elapsed -= static_cast<double>(whole) * frameLength;
+        elapsed = std::max(elapsed, 0.0);
+    }
+
+    constexpr std::uint32_t Frame() const { return clip.firstFrame + step; }
+
+private:
+    static constexpr double MaxStepSeconds = 3600.0;
+    Clip clip{};
+    std::uint32_t step = 0;
+    double elapsed = 0.0;
+};
+
+struct UvRect {
+    float u0, v0, u1, v1;
+};
+
+constexpr UvRect FullImageUv(bool flipped) {
+    return flipped ? UvRect{1.0f, 0.0f, 0.0f, 1.0f} : UvRect{0.0f, 0.0f, 1.0f, 1.0f};
+}
+
+// Sheets are numbered left to right, then top to bottom.
+constexpr UvRect SheetFrameUv(std::uint32_t frame, std::uint32_t frameWidth, std::uint32_t frameHeight, std::uint32_t columns, std::uint32_t imageWidth, std::uint32_t imageHeight, bool flipped) {
+    const auto column = columns == 0 ? 0u : frame % columns;
+    const auto row = columns == 0 ? 0u : frame / columns;
+    const auto left = static_cast<float>(column * frameWidth) / static_cast<float>(imageWidth);
+    const auto top = static_cast<float>(row * frameHeight) / static_cast<float>(imageHeight);
+    const auto right = static_cast<float>((column + 1) * frameWidth) / static_cast<float>(imageWidth);
+    const auto bottom = static_cast<float>((row + 1) * frameHeight) / static_cast<float>(imageHeight);
+    return flipped ? UvRect{right, top, left, bottom} : UvRect{left, top, right, bottom};
+}
+
+struct TilemapInfo {
+    std::uint32_t columns, rows, tileWidth, tileHeight, cellWidth, cellHeight, tilesetColumns, imageWidth, imageHeight;
+};
+
+struct TileQuad {
+    float x, y, width, height;
+    UvRect uv;
+};
+
+// The most tiles of one map the screen can show: one extra row and column when not on a grid line.
+constexpr std::uint32_t ReservedTileQuads(std::uint32_t columns, std::uint32_t rows, std::uint32_t cellWidth, std::uint32_t cellHeight) {
+    const auto reserved = [](std::uint32_t cells, std::uint32_t cellSize, float screen) {
+        if (cellSize == 0) return 0u;
+        const auto size = static_cast<float>(cellSize);
+        auto fit = static_cast<std::uint32_t>(screen / size);
+        if (static_cast<float>(fit) * size < screen) ++fit;
+        return std::min(cells, fit + 1u);
+    };
+    return reserved(columns, cellWidth, ScreenWidth) * reserved(rows, cellHeight, ScreenHeight);
+}
+
+// Calls sink(quad) for every non-empty tile on the screen and returns how many, never more than
+// capacity. Quads sit on whole-unit positions so edges of neighbouring tiles meet exactly. Tiles outside
+// the tileset are skipped instead of sampling past the texture.
+template <typename Sink>
+constexpr std::size_t EmitVisibleTiles(const TilemapInfo& map, const std::int32_t* cells, Point origin, Point camera, std::size_t capacity, Sink&& sink) {
+    if (map.cellWidth == 0 || map.cellHeight == 0 || map.tileWidth == 0 || map.tileHeight == 0 || map.tilesetColumns == 0) return 0;
+    const float left = RoundToUnit(origin.x - camera.x);
+    const float top = RoundToUnit(origin.y - camera.y);
+    const auto cellWidth = static_cast<float>(map.cellWidth);
+    const auto cellHeight = static_cast<float>(map.cellHeight);
+    const auto tilesetRows = map.imageHeight / map.tileHeight;
+
+    const auto firstVisible = [](float start, float size) {
+        return start >= 0.0f ? std::int64_t{0} : static_cast<std::int64_t>(-start / size);
+    };
+    const auto pastVisible = [](float start, float size, float screen, std::uint32_t cells) {
+        const auto beyond = (screen - start) / size;
+        const auto last = beyond <= 0.0f ? std::int64_t{0} : static_cast<std::int64_t>(beyond) + 1;
+        return std::min(last, static_cast<std::int64_t>(cells));
+    };
+    const auto startColumn = firstVisible(left, cellWidth);
+    const auto endColumn = pastVisible(left, cellWidth, ScreenWidth, map.columns);
+    const auto startRow = firstVisible(top, cellHeight);
+    const auto endRow = pastVisible(top, cellHeight, ScreenHeight, map.rows);
+
+    std::size_t count = 0;
+    for (auto row = startRow; row < endRow && count < capacity; ++row) {
+        for (auto column = startColumn; column < endColumn && count < capacity; ++column) {
+            const auto tile = cells[row * map.columns + column];
+            if (tile < 0) continue;
+            const auto index = static_cast<std::uint32_t>(tile);
+            const auto x = left + static_cast<float>(column) * cellWidth;
+            const auto y = top + static_cast<float>(row) * cellHeight;
+            if (x >= ScreenWidth || y >= ScreenHeight || x + cellWidth <= 0.0f || y + cellHeight <= 0.0f) continue;
+            const auto tileRow = index / map.tilesetColumns;
+            if (tileRow >= tilesetRows) continue;
+            const auto tileColumn = index % map.tilesetColumns;
+            sink(TileQuad{x, y, cellWidth, cellHeight, SheetFrameUv(tileColumn + tileRow * map.tilesetColumns, map.tileWidth, map.tileHeight, map.tilesetColumns, map.imageWidth, map.imageHeight, false)});
+            ++count;
+        }
+    }
+    return count;
+}
+
+}

@@ -4,7 +4,9 @@
 
 #include <QAbstractListModel>
 #include <QHash>
+#include <QUrl>
 #include <QSet>
+#include <QVariantList>
 #include <QVariantMap>
 
 namespace Studio {
@@ -23,6 +25,11 @@ class SceneDocument : public QAbstractListModel {
     Q_PROPERTY(bool noticeIsProblem READ noticeIsProblem NOTIFY noticeChanged)
     Q_PROPERTY(QString imageWarning READ imageWarning NOTIFY imagesChanged)
     Q_PROPERTY(QStringList variableNames READ variableNames NOTIFY variablesChanged)
+    Q_PROPERTY(int worldWidth READ worldWidth NOTIFY worldChanged)
+    Q_PROPERTY(int worldHeight READ worldHeight NOTIFY worldChanged)
+    Q_PROPERTY(double cameraX READ cameraX NOTIFY worldChanged)
+    Q_PROPERTY(double cameraY READ cameraY NOTIFY worldChanged)
+    Q_PROPERTY(QUrl selectedTilesetUrl READ selectedTilesetUrl NOTIFY selectionChanged)
 
 public:
     enum Role {
@@ -42,6 +49,9 @@ public:
         ImageUrlRole,
         ImageProblemRole,
         HiddenRole,
+        ScreenFixedRole,
+        SpriteRole,  // a map for the stage preview: frame size, flip, pixelated and the frames to play
+        TilemapRole, // a map for the stage: tile size, scale, columns and rows
     };
 
     explicit SceneDocument(QObject* parent = nullptr);
@@ -69,6 +79,11 @@ public:
     QString roomProblem() const;
     void setNotice(const QString& text, bool problem);
     QStringList variableNames() const;
+    int worldWidth() const;
+    int worldHeight() const;
+    double cameraX() const;
+    double cameraY() const;
+    QUrl selectedTilesetUrl() const;
 
     // What the logic's variables are and start at, for text that shows them on the stage.
     void setVariables(const QList<LogicVariable>& variables);
@@ -80,6 +95,9 @@ public:
     int addImage(const QString& source, int pixelWidth, int pixelHeight, const QString& name, double centerX, double centerY);
     bool replaceImage(int index, const QString& source, int pixelWidth, int pixelHeight);
     QString projectRoot() const;
+
+    // A tilemap over the whole world, every cell empty. `source` is a file already in the project.
+    int addTilemap(const QString& source, int pixelWidth, int pixelHeight, const QString& name, double centerX, double centerY);
 
     Q_INVOKABLE int addItem(const QString& type, double centerX, double centerY);
     Q_INVOKABLE void beginChange();
@@ -104,6 +122,25 @@ public:
     Q_INVOKABLE void setItemHidden(int index, bool hidden);
     Q_INVOKABLE bool isItemHidden(int index) const;
     Q_INVOKABLE void undo();
+    // Painting a tilemap. Inside beginChange/endChange a drag is one undo step and saves at the end;
+    // alone, each call is one undo step. false means the item is not a tilemap or the cell is off the map.
+    Q_INVOKABLE bool paintTile(int index, int column, int row, int tile);
+    Q_INVOKABLE int tileAt(int index, int column, int row) const; // -1 for empty or off the map
+    // Fills the area of connected equal tiles starting at this cell. Returns how many tiles changed.
+    Q_INVOKABLE int fillTiles(int index, int column, int row, int tile);
+    // Marks a tile index solid, or not, for later collision. Kept per tilemap, sorted.
+    Q_INVOKABLE bool setTileSolid(int index, int tile, bool solid);
+    Q_INVOKABLE bool isTileSolid(int index, int tile) const;
+    Q_INVOKABLE QVariantList solidTiles(int index) const;
+    // Named animations of a sprite sheet. Each is one undo step and false means nothing changed.
+    Q_INVOKABLE bool addAnimation(int index, const QString& name);
+    Q_INVOKABLE bool removeAnimation(int index, const QString& name);
+    Q_INVOKABLE bool setAnimationFrames(int index, const QString& name, const QVariantList& frames);
+    Q_INVOKABLE bool setAnimationFps(int index, const QString& name, int fps);
+    // The world size clamps the camera and the items into the new area. Refused sizes change nothing.
+    Q_INVOKABLE bool setWorldSize(int width, int height);
+    // Where the camera starts, kept inside the world. Inside beginChange/endChange it is one undo step.
+    Q_INVOKABLE void setCameraStart(double x, double y);
     // Looks again at the image files on disk, so the stage follows files that went missing or came back.
     Q_INVOKABLE void recheckImages();
     Q_INVOKABLE void clearNotice();
@@ -118,9 +155,14 @@ signals:
     void noticeChanged();
     void imagesChanged();
     void variablesChanged();
+    void worldChanged();
 
 private:
     bool isValidIndex(int index) const;
+    bool isTilemap(int index) const;
+    QSize itemBounds(const SceneItem& item) const; // the world, or the screen for a screen-fixed item
+    bool changeTilemapCell(SceneItem& item, int column, int row, int tile) const;
+    bool commitItem(int index, const SceneItem& item);
     double drawnWidth(const SceneItem& item) const;
     void pushUndo();
     bool commit(const Scene& candidate);

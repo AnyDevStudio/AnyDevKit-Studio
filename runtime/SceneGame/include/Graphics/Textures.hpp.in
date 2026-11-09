@@ -43,8 +43,15 @@ constexpr std::array<std::uint32_t, 4> BilinearClampSampler() {
     return {2u | (2u << 3) | (2u << 6), 0u, (1u << 20) | (1u << 22), 0u};
 }
 
+// The four dwords of a sampler descriptor (S#) for pixel art: clamp to the last texel, nearest, no mipmaps.
+constexpr std::array<std::uint32_t, 4> NearestClampSampler() {
+    return {2u | (2u << 3) | (2u << 6), 0u, 0u, 0u};
+}
+
 // S# then T#, matching the --descriptor layout of ScreenImage.frag in CMakeLists.txt.
 constexpr std::size_t TableBytes = 16 + 32;
+// Each image has one table per kind of sampling, so a run only has to pick which table to bind.
+constexpr std::size_t TablesPerImage = 2;
 
 }
 #endif

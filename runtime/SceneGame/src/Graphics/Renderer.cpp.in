@@ -2,6 +2,7 @@
 #include "Graphics/Font.hpp"
 #include "Graphics/Textures.hpp"
 #include "Scene/SceneState.hpp"
+#include "Scene/World2D.hpp"
 #include "Error.hpp"
 #include "GeneratedScene.hpp"
 #include "ScreenVertex.hpp"
@@ -18,6 +19,7 @@ namespace {
 
 constexpr float GlyphMode = 1.0f;
 constexpr float SolidMode = 2.0f;
+constexpr float TexturedMode = 3.0f;
 // Every quad is always in the draw, so a hidden item's quads are given no area and rasterize to nothing.
 constexpr std::array<float, 4> HiddenRectangle{0.0f, 0.0f, 0.0f, 0.0f};
 
@@ -26,19 +28,30 @@ constexpr std::array<float, 4> HiddenRectangle{0.0f, 0.0f, 0.0f, 0.0f};
 constexpr std::uint32_t PremultipliedBlendControl = 1u | (5u << 8) | (1u << 16) | (5u << 24) | (1u << 30);
 constexpr std::uint32_t BlendControlRegister = 0x1e0;
 
-// One draw call: a stretch of quads that share a shader. Solid quads are grouped so a scene without
-// images is still one draw. Images get their own draw so each can bind its texture.
+// One draw call: a stretch of quads that share a shader and a texture. Solid quads are grouped so a
+// scene without images is still one draw. Consecutive items that use the same image with the same
+// sampling share one draw, so tile layers on one tileset and the sprites over them cost one bind.
 struct Run {
     std::size_t first;
     std::size_t count;
     std::int32_t image;
+    bool nearest;
 };
+
+constexpr bool isTextured(const GeneratedScene::Item& item) {
+    return item.kind == GeneratedScene::Kind::Image || item.kind == GeneratedScene::Kind::Tilemap;
+}
+
+constexpr bool usesNearest(const GeneratedScene::Item& item) {
+    return item.kind == GeneratedScene::Kind::Tilemap || item.pixelated;
+}
 
 // A particles item reserves one quad per particle it can ever show, so the budget is fixed before
 // the first frame.
 consteval std::size_t itemFrames(const GeneratedScene::Item& item) {
     if (item.kind == GeneratedScene::Kind::Text) return item.text.size();
     if (item.kind == GeneratedScene::Kind::Particles) return GeneratedScene::ParticleEffects[static_cast<std::size_t>(item.particles)].amount;
+    if (item.kind == GeneratedScene::Kind::Tilemap) return GeneratedScene::Tilemaps[static_cast<std::size_t>(item.tilemap)].reservedQuads;
     return 1;
 }
 
@@ -51,17 +64,19 @@ consteval std::size_t countFrames() {
 constexpr std::size_t FrameCount = countFrames();
 
 consteval std::size_t countRuns() {
-    std::size_t runs = 0;
-    bool solidOpen = true; // the background always opens the first solid run
+    std::size_t runs = 1; // the background
+    std::int32_t image = -1;
+    bool nearest = false;
     for (const auto& item : GeneratedScene::Items) {
-        if (item.kind == GeneratedScene::Kind::Image) {
-            runs += solidOpen ? 2 : 1;
-            solidOpen = false;
-        } else {
-            solidOpen = true;
+        const std::int32_t wanted = isTextured(item) ? item.image : -1;
+        const bool wantedNearest = isTextured(item) && usesNearest(item);
+        if (wanted != image || wantedNearest != nearest) {
+            ++runs;
+            image = wanted;
+            nearest = wantedNearest;
         }
     }
-    return runs + (solidOpen ? 1 : 0);
+    return runs;
 }
 
 constexpr std::size_t RunCount = countRuns();
@@ -70,27 +85,52 @@ consteval std::array<Run, RunCount> buildRuns() {
     std::array<Run, RunCount> runs{};
     std::size_t count = 0;
     std::size_t frame = 1;
-    Run open{0, 1, -1};
+    Run open{0, 1, -1, false};
     for (const auto& item : GeneratedScene::Items) {
-        if (item.kind == GeneratedScene::Kind::Image) {
-            if (open.count != 0) runs[count++] = open;
-            runs[count++] = {frame, 1, item.image};
-            frame += 1;
-            open = {frame, 0, -1};
-        } else {
-            const std::size_t frames = itemFrames(item);
-            open.count += frames;
-            frame += frames;
+        const std::int32_t wanted = isTextured(item) ? item.image : -1;
+        const bool wantedNearest = isTextured(item) && usesNearest(item);
+        const std::size_t frames = itemFrames(item);
+        if (wanted != open.image || wantedNearest != open.nearest) {
+            runs[count++] = open;
+            open = {frame, 0, wanted, wantedNearest};
         }
+        open.count += frames;
+        frame += frames;
     }
-    if (open.count != 0) runs[count++] = open;
+    runs[count++] = open;
     return runs;
 }
+
+// For each item, the run its quads go in.
+consteval std::array<std::size_t, GeneratedScene::Items.size()> buildItemRuns() {
+    std::array<std::size_t, GeneratedScene::Items.size()> runOfItem{};
+    std::size_t run = 0;
+    std::int32_t image = -1;
+    bool nearest = false;
+    for (std::size_t index = 0; index < GeneratedScene::Items.size(); ++index) {
+        const auto& item = GeneratedScene::Items[index];
+        const std::int32_t wanted = isTextured(item) ? item.image : -1;
+        const bool wantedNearest = isTextured(item) && usesNearest(item);
+        if (wanted != image || wantedNearest != nearest) {
+            ++run;
+            image = wanted;
+            nearest = wantedNearest;
+        }
+        runOfItem[index] = run;
+    }
+    return runOfItem;
+}
+
+constexpr auto ItemRuns = buildItemRuns();
 
 constexpr std::array<Run, RunCount> Runs = buildRuns();
 
 // Worst case per draw: both shaders' user data (16 registers each), a pipeline switch and the draw.
 constexpr std::size_t CommandWords = 4096 + RunCount * 200;
+
+// The size the game draws at, also what culling and whole-pixel snapping work against.
+constexpr int FrameWidth = 1920;
+constexpr int FrameHeight = 1080;
 
 bool APS5_VABI exhausted(CommandBuffer*, std::uint32_t, void*) { throw Error{"AGC command buffer exhausted"}; }
 void bindShader(CommandBuffer& buffer, std::uint32_t base, const std::array<std::uint32_t, 16>& values, std::uint32_t count, int slot, const void* descriptors) {
@@ -117,7 +157,7 @@ std::size_t Renderer::requiredMemory() {
     }
 
     for (const auto& image : GeneratedScene::Images) reserve(Textures::SurfaceBytes(image.width, image.height), Textures::BaseAlignment);
-    if (GeneratedScene::ImageCount != 0) reserve(Textures::TableBytes * GeneratedScene::ImageCount, 16);
+    if (GeneratedScene::ImageCount != 0) reserve(Textures::TableBytes * Textures::TablesPerImage * GeneratedScene::ImageCount, 16);
 
     reserve(sizeof(AdkShaders::ScreenVertex::Header), 8);
     reserve(sizeof(AdkShaders::ScreenVertex::Code), 256);
@@ -169,6 +209,10 @@ Renderer::Renderer(int width, int height) : memory(requiredMemory(), 0x240000000
                 next += GeneratedScene::ParticleEffects[static_cast<std::size_t>(item.particles)].amount;
                 continue;
             }
+            if (item.kind == GeneratedScene::Kind::Tilemap) {
+                next += GeneratedScene::Tilemaps[static_cast<std::size_t>(item.tilemap)].reservedQuads;
+                continue;
+            }
             if (item.kind != GeneratedScene::Kind::Text) {
                 frames[next++].color = color;
                 continue;
@@ -179,6 +223,11 @@ Renderer::Renderer(int width, int height) : memory(requiredMemory(), 0x240000000
                 frames[next].viewport[2] = GlyphMode;
                 frames[next++].glyph = EncodeGlyph(character);
             }
+        }
+
+        for (const auto& run : Runs) {
+            if (run.image < 0) continue;
+            for (std::size_t index = 0; index < run.count; ++index) frames[run.first + index].viewport[2] = TexturedMode;
         }
 
         // Each draw reads its quads through its own buffer descriptor, because gl_VertexIndex restarts at 0.
@@ -229,14 +278,17 @@ void Renderer::uploadImages() {
         surfaces[index] = surface;
     }
 
-    imageTables = static_cast<std::uint32_t*>(memory.Allocate(Textures::TableBytes * GeneratedScene::ImageCount, 16));
+    imageTables = static_cast<std::uint32_t*>(memory.Allocate(Textures::TableBytes * Textures::TablesPerImage * GeneratedScene::ImageCount, 16));
     for (std::size_t index = 0; index < GeneratedScene::ImageCount; ++index) {
         const auto& image = GeneratedScene::Images[index];
-        auto* table = imageTables + index * Textures::TableBytes / sizeof(std::uint32_t);
-        const auto sampler = Textures::BilinearClampSampler();
         const auto texture = Textures::TextureDescriptor(reinterpret_cast<std::uintptr_t>(surfaces[index]), image.width, image.height);
-        std::memcpy(table, sampler.data(), sizeof(sampler));
-        std::memcpy(table + 4, texture.data(), sizeof(texture));
+        // The bilinear table comes first and the nearest one right after it, see imageTable().
+        for (std::size_t nearest = 0; nearest < Textures::TablesPerImage; ++nearest) {
+            auto* table = imageTables + (index * Textures::TablesPerImage + nearest) * Textures::TableBytes / sizeof(std::uint32_t);
+            const auto sampler = nearest != 0 ? Textures::NearestClampSampler() : Textures::BilinearClampSampler();
+            std::memcpy(table, sampler.data(), sizeof(sampler));
+            std::memcpy(table + 4, texture.data(), sizeof(texture));
+        }
     }
 }
 
@@ -282,6 +334,12 @@ void Renderer::Draw(Display& display, const SceneState& scene) {
     auto position = scene.Current().begin();
     auto tint = scene.CurrentColors().begin();
     auto shown = scene.CurrentVisibility().begin();
+    const auto camera = scene.Camera();
+    // Quads written so far into each textured run. A run's quads are not all used every frame:
+    // off-screen tiles and sprites never reach it, and an empty run makes no draw call.
+    std::array<std::size_t, RunCount> runUsed{};
+    const float screenWidth = static_cast<float>(FrameWidth);
+    const float screenHeight = static_cast<float>(FrameHeight);
 
     std::size_t nextItem = 0;
     for (const auto& item : GeneratedScene::Items) {
@@ -290,6 +348,50 @@ void Renderer::Draw(Display& display, const SceneState& scene) {
         const auto [red, green, blue] = *tint++;
         const std::array color{red, green, blue, 1.0f};
         const bool visible = *shown++;
+        // Items that stay on the screen do not move with the camera.
+        const float offsetX = item.screenFixed ? 0.0f : camera.x;
+        const float offsetY = item.screenFixed ? 0.0f : camera.y;
+
+        if (isTextured(item)) {
+            const std::size_t runIndex = ItemRuns[itemIndex];
+            const auto& run = Runs[runIndex];
+            if (item.kind == GeneratedScene::Kind::Tilemap) {
+                const auto mapIndex = static_cast<std::size_t>(item.tilemap);
+                const auto& map = GeneratedScene::Tilemaps[mapIndex];
+                const auto& image = GeneratedScene::Images[static_cast<std::size_t>(map.image)];
+                if (visible) {
+                    const World2D::TilemapInfo info{map.columns, map.rows, map.tileWidth, map.tileHeight, map.cellWidth, map.cellHeight, map.tilesetColumns, image.width, image.height};
+                    auto* out = frames + run.first + runUsed[runIndex];
+                    runUsed[runIndex] += World2D::EmitVisibleTiles(info, GeneratedScene::TilemapCells[mapIndex], {x, y}, {offsetX, offsetY}, map.reservedQuads, [&out](const World2D::TileQuad& quad) {
+                        out->rectangle = {quad.x, quad.y, quad.width, quad.height};
+                        out->color = {quad.uv.u0, quad.uv.v0, quad.uv.u1, quad.uv.v1};
+                        ++out;
+                    });
+                }
+                next += map.reservedQuads;
+                continue;
+            }
+
+            float left = x - offsetX;
+            float top = y - offsetY;
+            if (item.pixelated) { // pixel art lands on whole screen pixels, so it never shimmers
+                left = World2D::RoundToUnit(left);
+                top = World2D::RoundToUnit(top);
+            }
+            if (visible && left < screenWidth && top < screenHeight && left + item.width > 0.0f && top + item.height > 0.0f) {
+                const auto& image = GeneratedScene::Images[static_cast<std::size_t>(item.image)];
+                const bool flipped = scene.Flipped(itemIndex);
+                const World2D::UvRect uv = item.sprite >= 0
+                    ? World2D::SheetFrameUv(scene.SpriteFrame(itemIndex), GeneratedScene::Sprites[static_cast<std::size_t>(item.sprite)].frameWidth, GeneratedScene::Sprites[static_cast<std::size_t>(item.sprite)].frameHeight, GeneratedScene::Sprites[static_cast<std::size_t>(item.sprite)].columns, image.width, image.height, flipped)
+                    : World2D::FullImageUv(flipped);
+                auto& quad = frames[run.first + runUsed[runIndex]++];
+                quad.rectangle = {left, top, item.width, item.height};
+                quad.color = {uv.u0, uv.v0, uv.u1, uv.v1};
+            }
+            next += 1;
+            continue;
+        }
+
         if (item.kind == GeneratedScene::Kind::Particles) {
             // The solid shader draws these quads like any other item's, in list order. The unused
             // part of the budget is given no area, as a hidden item is.
@@ -298,7 +400,7 @@ void Renderer::Draw(Display& display, const SceneState& scene) {
             for (std::size_t index = 0; index < capacity; ++index, ++next) {
                 if (index < quads.size()) {
                     const auto& quad = quads[index];
-                    frames[next].rectangle = {quad.x, quad.y, quad.width, quad.height};
+                    frames[next].rectangle = {quad.x - offsetX, quad.y - offsetY, quad.width, quad.height};
                     frames[next].color = {quad.color.red, quad.color.green, quad.color.blue, 1.0f};
                 } else {
                     frames[next].rectangle = HiddenRectangle;
@@ -308,7 +410,7 @@ void Renderer::Draw(Display& display, const SceneState& scene) {
         }
         if (item.kind != GeneratedScene::Kind::Text) {
             frames[next].color = color;
-            frames[next++].rectangle = visible ? std::array{x, y, item.width, item.height} : HiddenRectangle;
+            frames[next++].rectangle = visible ? std::array{x - offsetX, y - offsetY, item.width, item.height} : HiddenRectangle;
             continue;
         }
 
@@ -319,7 +421,7 @@ void Renderer::Draw(Display& display, const SceneState& scene) {
         for (std::size_t index = 0; index < item.text.size(); ++index) {
             frames[next].color = color;
             if (visible && index < text.size()) {
-                frames[next].rectangle = {x + static_cast<float>(index) * 6 * item.textScale, y, 5 * item.textScale, 7 * item.textScale};
+                frames[next].rectangle = {x - offsetX + static_cast<float>(index) * 6 * item.textScale, y - offsetY, 5 * item.textScale, 7 * item.textScale};
                 if (changes) frames[next].glyph = EncodeGlyph(text[index]);
             } else {
                 frames[next].rectangle = HiddenRectangle;
@@ -339,6 +441,8 @@ void Renderer::Draw(Display& display, const SceneState& scene) {
     for (std::size_t index = 0; index < RunCount; ++index) {
         const auto& run = Runs[index];
         const bool isImage = run.image >= 0;
+        const std::size_t quadCount = isImage ? runUsed[index] : run.count;
+        if (quadCount == 0) continue; // nothing of this run is on the screen this frame
         auto& wanted = isImage ? *imagePipeline : *pipeline;
 
         if (&wanted != bound) {
@@ -352,12 +456,12 @@ void Renderer::Draw(Display& display, const SceneState& scene) {
 
         bindShader(buffer, 0x8c, AdkShaders::ScreenVertex::UserData, AdkShaders::ScreenVertex::UserDataCount, AdkShaders::ScreenVertex::DescriptorSetSlots[0], descriptor + index * 4);
         if (isImage) {
-            const auto* table = imageTables + static_cast<std::size_t>(run.image) * Textures::TableBytes / sizeof(std::uint32_t);
+            const auto* table = imageTables + (static_cast<std::size_t>(run.image) * Textures::TablesPerImage + (run.nearest ? 1u : 0u)) * Textures::TableBytes / sizeof(std::uint32_t);
             bindShader(buffer, 0xc, AdkShaders::ScreenImageFragment::UserData, AdkShaders::ScreenImageFragment::UserDataCount, AdkShaders::ScreenImageFragment::DescriptorSetSlots[0], table);
         } else {
             bindShader(buffer, 0xc, AdkShaders::ScreenFragment::UserData, AdkShaders::ScreenFragment::UserDataCount, -1, nullptr);
         }
-        sceAgcDcbDrawIndexAuto(&buffer, static_cast<std::uint32_t>(run.count * 6), 0);
+        sceAgcDcbDrawIndexAuto(&buffer, static_cast<std::uint32_t>(quadCount * 6), 0);
     }
 
     const auto flip = display.PrepareFlip();

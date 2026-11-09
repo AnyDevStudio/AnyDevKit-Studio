@@ -55,5 +55,14 @@ target_link_libraries(tst_font_tables PRIVATE Qt6::Test)
 target_compile_definitions(tst_font_tables PRIVATE STUDIO_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
 add_test(NAME tst_font_tables COMMAND tst_font_tables)
 
+qt_add_executable(tst_sprites_tilemap tst_sprites_tilemap.cpp)
+target_link_libraries(tst_sprites_tilemap PRIVATE studio_core Qt6::Test)
+add_test(NAME tst_sprites_tilemap COMMAND tst_sprites_tilemap)
+
+# The camera, animation and tile culling from the game runtime, with no Qt so it can run under sanitizers.
+add_executable(tst_world2d tst_world2d.cpp)
+target_include_directories(tst_world2d PRIVATE "${PROJECT_SOURCE_DIR}/runtime/SceneGame/include")
+add_test(NAME tst_world2d COMMAND tst_world2d)
+
 # qt_standard_project_setup makes Windows executables GUI apps, which hides test output.
-set_target_properties(tst_particles tst_core tst_scene tst_scene_document tst_gamepage tst_blocks tst_logic_document tst_scene_export tst_font_tables PROPERTIES WIN32_EXECUTABLE FALSE)
+set_target_properties(tst_particles tst_world2d tst_sprites_tilemap tst_core tst_scene tst_scene_document tst_gamepage tst_blocks tst_logic_document tst_scene_export tst_font_tables PROPERTIES WIN32_EXECUTABLE FALSE)

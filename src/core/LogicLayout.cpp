@@ -22,6 +22,8 @@ double fieldWidth(const BlockField& field) {
     if (field.kind == "whole") return 96;
     if (field.kind == "number") return 100;
     if (field.kind == "color") return 40;
+    if (field.kind == "animation") return 140;
+    if (field.kind == "flip") return 118;
     return 120;
 }
 
@@ -92,6 +94,8 @@ QList<BlockField> blockFields(const BlockInfo& info) {
     QList<BlockField> fields;
     if (info.usesButton) fields.append({"button", "button", ""});
     if (info.usesItem) fields.append({"item", "item", ""});
+    if (info.usesAnimation) fields.append({"animation", "animation", "plays"});
+    if (info.usesFlipped) fields.append({"flipped", "flip", ""});
     if (info.usesOtherItem) fields.append({"otherItem", "item", "and"});
     if (info.usesVariable) fields.append({"variable", "variable", ""});
     if (info.usesComparison) fields.append({"comparison", "comparison", ""});
