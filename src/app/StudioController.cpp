@@ -165,6 +165,24 @@ void StudioController::addSceneImage(const QUrl& file, double centerX, double ce
     emit projectChanged();
 }
 
+void StudioController::addSceneTilemap(const QUrl& file) {
+    if (!project || !sceneDocument.isLoaded()) return;
+    if (const auto room = sceneDocument.roomProblem(); !room.isEmpty()) {
+        sceneDocument.setNotice(room, true);
+        return;
+    }
+    ImportedSceneImage image;
+    QString problem;
+    if (!importSceneImage(project->root, sceneDocument.scene(), file.toLocalFile(), image, problem)) {
+        sceneDocument.setNotice(problem, true);
+        return;
+    }
+    if (sceneDocument.addTilemap(image.source, image.width, image.height, image.name, 0, 0) < 0) return;
+    sceneDocument.setNotice(image.notice, false);
+    refreshFiles();
+    emit projectChanged();
+}
+
 void StudioController::replaceSceneImage(int index, const QUrl& file) {
     if (!project || !sceneDocument.isLoaded() || index < 0 || index >= sceneDocument.count()) return;
     // The picture being replaced no longer counts towards the scene's image memory.
@@ -217,15 +235,15 @@ bool StudioController::exportScene() {
         return false;
     }
 
-    // A project that started with an older Studio needs game code that knows about variables.
-    if (usesVariables() && sceneRuntimeNeedsUpdate(project->root)) {
+    // A project that started with an older Studio needs game code that knows about what the scene uses.
+    if ((usesVariables() && sceneRuntimeNeedsUpdate(project->root)) || sceneRuntimeNeedsUpdate(project->root, sceneDocument.scene()) || (programUsesWorldBlocks(logicDocument.program()) && sceneRuntimeLacksWorld(project->root))) {
         if (!installSceneRuntime(":/runtime/SceneGame", project->root, project->name, problem)) {
             state = "failed";
             message = problem;
             emit buildChanged();
             return false;
         }
-        appendLog({"Updated this project's game code to show variables. Its previous files are in .studio-backup."});
+        appendLog({"Updated this project's game code to run what this scene uses. Its previous files are in .studio-backup."});
         refreshFiles();
     }
     return true;

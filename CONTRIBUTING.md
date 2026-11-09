@@ -27,7 +27,8 @@ ctest --test-dir build --output-on-failure
 - `runtime/SceneGame`: the PS5 game code Studio adds to a project. It compiles the headers exported
   from the scene and from the block logic, as described in [docs/scene-format.md](docs/scene-format.md)
   and [docs/blocks-format.md](docs/blocks-format.md). `include/Scene/Particles.hpp.in` is also compiled
-  by the stage preview and `tests/tst_particles.cpp`, so it must stay free of `@NAME@` and Qt.
+  by the stage preview and `tests/tst_particles.cpp`, and `include/Scene/World2D.hpp.in` by `tests/tst_world2d.cpp`,
+  so they must stay free of `@NAME@` and Qt.
 
 ## Rules worth knowing
 

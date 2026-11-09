@@ -30,6 +30,9 @@ Drag shapes and text onto the stage, press one button, and the same scene runs a
 | Drag and drop scene | Place shapes, text and images on a 16:9 stage, resize, reorder and duplicate in a layers list, hide while editing, undo, autosave | Working |
 | Logic blocks | Snap together events and actions without writing code | Working in Studio, builds for PS5 |
 | Particles | Fireworks, fountains, sparks, snow and rain | Working in Studio, builds for PS5 |
+| Sprites | Sprite sheets with named animations, sharp pixel scaling and flip | Working in Studio, builds for PS5, not yet seen running |
+| Tilemaps | Tile layers painted on the stage from a tileset palette, with a solid flag per tile | Working in Studio, builds for PS5, not yet seen running |
+| World and camera | A world larger than the screen, pan and zoom on the stage, camera blocks and screen-fixed items | Working in Studio, builds for PS5, not yet seen running |
 | Game runtime | Draws the scene on AGC, the PS5 graphics API, with controller movement | Shapes and text run in AnyPS5, not yet on a console |
 | Image drawing | Textured images in the game | Builds for PS5, not yet seen running |
 | Sound | Music and effects | Planned |

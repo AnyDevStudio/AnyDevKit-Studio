@@ -28,6 +28,7 @@ qt_add_qml_module(AnyDevKitStudio
         qml/SceneStage.qml
         qml/SceneView.qml
         qml/SceneInspector.qml
+        qml/TilePalette.qml
         qml/LayerPanel.qml
         qml/LayerIcon.qml
         qml/ImagePicker.qml
@@ -57,6 +58,10 @@ qt_add_qml_module(AnyDevKitStudio
         PixelText.h
         ParticlePreview.cpp
         ParticlePreview.h
+        PixelImage.cpp
+        PixelImage.h
+        TilemapView.cpp
+        TilemapView.h
     RESOURCES
         assets/fonts/ArchivoBlack-Regular.ttf
         assets/fonts/IBMPlexSans-Regular.ttf
