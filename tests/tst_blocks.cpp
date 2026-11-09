@@ -304,6 +304,17 @@ void OnFrame([[maybe_unused]] World& world, [[maybe_unused]] Memory& memory) {
     }
 }
 
+// Runs the blocks of one scene: when it starts, and each frame while it is showing.
+template <typename World>
+void OnSceneStart([[maybe_unused]] World& world, [[maybe_unused]] std::size_t scene) {
+    OnStart(world);
+}
+
+template <typename World>
+void OnSceneFrame([[maybe_unused]] World& world, [[maybe_unused]] Memory& memory, [[maybe_unused]] std::size_t scene) {
+    OnFrame(world, memory);
+}
+
 }
 )cpp";
 
@@ -403,6 +414,17 @@ template <typename World>
 void OnFrame([[maybe_unused]] World& world, [[maybe_unused]] Memory& memory) {
 }
 
+// Runs the blocks of one scene: when it starts, and each frame while it is showing.
+template <typename World>
+void OnSceneStart([[maybe_unused]] World& world, [[maybe_unused]] std::size_t scene) {
+    OnStart(world);
+}
+
+template <typename World>
+void OnSceneFrame([[maybe_unused]] World& world, [[maybe_unused]] Memory& memory, [[maybe_unused]] std::size_t scene) {
+    OnFrame(world, memory);
+}
+
 }
 )cpp";
 
@@ -489,7 +511,7 @@ HarnessResult runHarness(const Scene& scene, const LogicProgram& program, const 
     const auto root = directory.path();
     const QString runtime = QString(STUDIO_TEST_SOURCE_DIR) + "/runtime/SceneGame";
 
-    for (const auto& relative : {QString("include/Scene/SceneState.hpp"), QString("include/Scene/Particles.hpp"), QString("src/Scene/SceneState.cpp"), QString("include/Input/Buttons.hpp"), QString("include/Audio/Mixer.hpp"), QString("include/Save/SaveData.hpp"), QString("include/Scene/World2D.hpp")}) {
+    for (const auto& relative : {QString("include/Scene/SceneState.hpp"), QString("include/Scene/Particles.hpp"), QString("src/Scene/SceneState.cpp"), QString("include/Input/Buttons.hpp"), QString("include/Audio/Mixer.hpp"), QString("include/Save/SaveData.hpp"), QString("include/Scene/World2D.hpp"), QString("include/Scene/Physics2D.hpp")}) {
         auto contents = readBytes(runtime + '/' + relative + ".in");
         if (contents.isEmpty()) {
             result.buildOutput = "missing runtime file " + relative;
@@ -542,7 +564,7 @@ class TstBlocks : public QObject {
 
 private slots:
     void catalogDescribesEveryBlockOnce() {
-        QCOMPARE(blockCatalog().size(), 23);
+        QCOMPARE(blockCatalog().size(), 31);
         QSet<QString> names;
         QSet<QString> titles;
         for (const auto& info : blockCatalog()) {
@@ -552,8 +574,8 @@ private slots:
             titles.insert(info.title);
             QCOMPARE(blockInfo(info.type).jsonName, info.jsonName);
         }
-        QCOMPARE(names.size(), 23);
-        QCOMPARE(titles.size(), 23);
+        QCOMPARE(names.size(), 31);
+        QCOMPARE(titles.size(), 31);
         QCOMPARE(buttonCatalog().size(), 8);
         QCOMPARE(comparisonCatalog().size(), 6);
         QVERIFY(blockInfo(BlockType::EveryFrame).isEvent);
@@ -616,12 +638,12 @@ private slots:
         QString error;
         QVERIFY2(saveLogic(path, everyBlockProgram(), error), qPrintable(error));
         const auto root = QJsonDocument::fromJson(readBytes(path)).object();
-        QCOMPARE(root.value("schemaVersion").toInt(), 3);
+        QCOMPARE(root.value("schemaVersion").toInt(), 4);
         const auto savedVariables = root.value("variables").toArray();
         QCOMPARE(savedVariables.size(), qsizetype(1));
         QCOMPARE(savedVariables.at(0).toObject().value("name").toString(), QString("score"));
         QCOMPARE(savedVariables.at(0).toObject().value("initial").toInt(), 0);
-        const auto events = root.value("events").toArray();
+        const auto events = root.value("scenes").toArray().at(0).toObject().value("events").toArray();
         QCOMPARE(events.size(), 5);
         const auto held = events.at(1).toObject();
         QCOMPARE(held.value("type").toString(), QString("whileButtonHeld"));

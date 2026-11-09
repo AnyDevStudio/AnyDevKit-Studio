@@ -123,6 +123,8 @@ struct Item {
     bool screenFixed = false; // stays at the same place on the screen as the camera moves
     bool pixelated = false; // drawn with nearest-neighbour sampling, on whole pixels
     bool flipped = false; // drawn mirrored left to right when the game starts
+    std::int32_t body = -1; // index into Bodies for a moving body
+    bool solid = false; // a wall or platform that moving bodies collide with
 };
 
 // Row by row, top row first, 4 bytes per pixel: red, green, blue, alpha, with alpha already applied.
@@ -157,6 +159,19 @@ struct Tilemap {
     std::uint32_t reservedQuads, firstSolid, solidCount;
 };
 
+// How a moving body behaves. gravityPercent, moveSpeed and jumpHeight are the numbers from scene.json.
+struct Body {
+    std::int32_t gravityPercent, moveSpeed, jumpHeight;
+    bool platformer;
+};
+
+// One scene of the game: which of Items are its own, its world and where its camera starts.
+struct SceneInfo {
+    std::uint32_t firstItem, itemCount;
+    float worldWidth, worldHeight, cameraStartX, cameraStartY;
+    std::array<float, 3> background;
+};
+
 inline constexpr float WorldWidth = 1920.0f;
 inline constexpr float WorldHeight = 1080.0f;
 inline constexpr float CameraStartX = 0.0f;
@@ -177,6 +192,14 @@ inline constexpr std::size_t TilemapCount = 0;
 inline constexpr std::array<Tilemap, 0> Tilemaps{};
 inline constexpr std::array<std::uint16_t, 0> SolidTiles{};
 extern const std::array<const std::int32_t*, TilemapCount> TilemapCells; // defined in src/GeneratedImages.cpp, columns * rows cells each
+inline constexpr std::size_t BodyCount = 0;
+inline constexpr std::array<Body, 0> Bodies{};
+inline constexpr std::size_t SolidItemCount = 0;
+inline constexpr std::size_t SceneCount = 1;
+inline constexpr std::size_t StartScene = 0;
+inline constexpr std::array<SceneInfo, 1> Scenes{{
+    {0, 4, 1920.0f, 1080.0f, 0.0f, 0.0f, {0.082353f, 0.109804f, 0.227451f}},
+}};
 inline constexpr std::array<Item, 4> Items{{
     {Kind::Rectangle, 120.0f, 300.0f, 160.0f, 160.0f, 1.0f, 0.823529f, 0.247059f, 0.0f, "", true},
     {Kind::Text, 400.0f, 96.0f, 636.0f, 84.0f, 0.952941f, 0.945098f, 0.886275f, 12.0f, "Hello PS5", false},
@@ -381,7 +404,7 @@ private slots:
             const char* expected;
         } cases[] = {
             {"schema missing", [](QJsonObject& r) { r.remove("schemaVersion"); }, "schemaVersion"},
-            {"schema 6", [](QJsonObject& r) { r["schemaVersion"] = 6; }, "schemaVersion"},
+            {"schema 7", [](QJsonObject& r) { r["schemaVersion"] = 7; }, "schemaVersion"},
             {"schema 1 cannot hold images", [](QJsonObject& r) { r["schemaVersion"] = 1; }, "schemaVersion 2"},
             {"schema 2 cannot hold particles", [](QJsonObject& r) { r["schemaVersion"] = 2; }, "schemaVersion 3"},
             {"preset missing", removeField(3, "preset"), "Item Finale: preset"},
@@ -624,12 +647,13 @@ private slots:
         QString error;
         QVERIFY2(saveScene(path, scene, error), qPrintable(error));
         const auto root = QJsonDocument::fromJson(readBytes(path)).object();
-        QCOMPARE(root.value("schemaVersion").toInt(), 5);
-        const auto box = root.value("items").toArray().at(0).toObject();
+        QCOMPARE(root.value("schemaVersion").toInt(), 6);
+        const auto sceneObject = root.value("scenes").toArray().at(0).toObject();
+        const auto box = sceneObject.value("items").toArray().at(0).toObject();
         QVERIFY(box.contains("width"));
         QVERIFY(!box.contains("scale"));
         QVERIFY(!box.contains("text"));
-        const auto text = root.value("items").toArray().at(1).toObject();
+        const auto text = sceneObject.value("items").toArray().at(1).toObject();
         QVERIFY(text.contains("scale"));
         QVERIFY(text.contains("text"));
         QVERIFY(!text.contains("width"));
@@ -681,6 +705,7 @@ private slots:
         end = expected.indexOf("}};\n", start) + 4;
         expected.replace(start, end - start, "inline constexpr std::array<Item, 0> Items{};\n");
         expected.replace("ImageCount = 1;", "ImageCount = 0;");
+        expected.replace("{0, 4, 1920.0f, 1080.0f, 0.0f, 0.0f,", "{0, 0, 1920.0f, 1080.0f, 0.0f, 0.0f,");
         QCOMPARE(generateSceneHeader(Scene{}), expected);
     }
 
@@ -726,7 +751,7 @@ private slots:
         QString error;
         QVERIFY2(saveScene(path, scene, error), qPrintable(error));
 
-        const auto saved = QJsonDocument::fromJson(readBytes(path)).object().value("items").toArray().at(0).toObject();
+        const auto saved = QJsonDocument::fromJson(readBytes(path)).object().value("scenes").toArray().at(0).toObject().value("items").toArray().at(0).toObject();
         QCOMPARE(saved.value("preset").toString(), QString("sparks"));
         QCOMPARE(saved.value("palette").toString(), QString("ice"));
         QCOMPARE(saved.value("amount").toInt(), 321);
@@ -847,8 +872,8 @@ private slots:
         QString error;
         QVERIFY2(saveScene(path, scene, error), qPrintable(error));
         const auto root = QJsonDocument::fromJson(readBytes(path)).object();
-        QCOMPARE(root.value("schemaVersion").toInt(), 5);
-        const auto saved = root.value("items").toArray().at(0).toObject();
+        QCOMPARE(root.value("schemaVersion").toInt(), 6);
+        const auto saved = root.value("scenes").toArray().at(0).toObject().value("items").toArray().at(0).toObject();
         QCOMPARE(saved.value("source").toString(), QString("assets/logo.png"));
         QCOMPARE(saved.value("width").toDouble(), 64.0);
         QVERIFY(!saved.contains("color"));

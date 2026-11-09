@@ -55,25 +55,34 @@ consteval std::size_t itemFrames(const GeneratedScene::Item& item) {
     return 1;
 }
 
+// Quads are laid out scene after scene: each scene starts with its own background quad. Only the showing
+// scene's quads and runs are read each frame, and each scene's static colors and glyphs are set up once.
 consteval std::size_t countFrames() {
-    std::size_t count = 1;
-    for (const auto& item : GeneratedScene::Items) count += itemFrames(item);
+    std::size_t count = 0;
+    for (const auto& scene : GeneratedScene::Scenes) {
+        count += 1;
+        for (std::size_t index = scene.firstItem; index < scene.firstItem + scene.itemCount; ++index) count += itemFrames(GeneratedScene::Items[index]);
+    }
     return count;
 }
 
 constexpr std::size_t FrameCount = countFrames();
 
 consteval std::size_t countRuns() {
-    std::size_t runs = 1; // the background
-    std::int32_t image = -1;
-    bool nearest = false;
-    for (const auto& item : GeneratedScene::Items) {
-        const std::int32_t wanted = isTextured(item) ? item.image : -1;
-        const bool wantedNearest = isTextured(item) && usesNearest(item);
-        if (wanted != image || wantedNearest != nearest) {
-            ++runs;
-            image = wanted;
-            nearest = wantedNearest;
+    std::size_t runs = 0;
+    for (const auto& scene : GeneratedScene::Scenes) {
+        ++runs; // the scene's background
+        std::int32_t image = -1;
+        bool nearest = false;
+        for (std::size_t index = scene.firstItem; index < scene.firstItem + scene.itemCount; ++index) {
+            const auto& item = GeneratedScene::Items[index];
+            const std::int32_t wanted = isTextured(item) ? item.image : -1;
+            const bool wantedNearest = isTextured(item) && usesNearest(item);
+            if (wanted != image || wantedNearest != nearest) {
+                ++runs;
+                image = wanted;
+                nearest = wantedNearest;
+            }
         }
     }
     return runs;
@@ -81,49 +90,51 @@ consteval std::size_t countRuns() {
 
 constexpr std::size_t RunCount = countRuns();
 
-consteval std::array<Run, RunCount> buildRuns() {
+struct SceneLayout {
+    std::size_t firstFrame = 0;
+    std::size_t firstRun = 0;
+    std::size_t runCount = 0;
+};
+
+struct Layout {
     std::array<Run, RunCount> runs{};
-    std::size_t count = 0;
-    std::size_t frame = 1;
-    Run open{0, 1, -1, false};
-    for (const auto& item : GeneratedScene::Items) {
-        const std::int32_t wanted = isTextured(item) ? item.image : -1;
-        const bool wantedNearest = isTextured(item) && usesNearest(item);
-        const std::size_t frames = itemFrames(item);
-        if (wanted != open.image || wantedNearest != open.nearest) {
-            runs[count++] = open;
-            open = {frame, 0, wanted, wantedNearest};
-        }
-        open.count += frames;
-        frame += frames;
-    }
-    runs[count++] = open;
-    return runs;
-}
+    std::array<std::size_t, GeneratedScene::Items.size()> itemRuns{};
+    std::array<SceneLayout, GeneratedScene::SceneCount> scenes{};
+};
 
-// For each item, the run its quads go in.
-consteval std::array<std::size_t, GeneratedScene::Items.size()> buildItemRuns() {
-    std::array<std::size_t, GeneratedScene::Items.size()> runOfItem{};
+consteval Layout buildLayout() {
+    Layout layout{};
+    std::size_t frame = 0;
     std::size_t run = 0;
-    std::int32_t image = -1;
-    bool nearest = false;
-    for (std::size_t index = 0; index < GeneratedScene::Items.size(); ++index) {
-        const auto& item = GeneratedScene::Items[index];
-        const std::int32_t wanted = isTextured(item) ? item.image : -1;
-        const bool wantedNearest = isTextured(item) && usesNearest(item);
-        if (wanted != image || wantedNearest != nearest) {
-            ++run;
-            image = wanted;
-            nearest = wantedNearest;
+    for (std::size_t sceneIndex = 0; sceneIndex < GeneratedScene::SceneCount; ++sceneIndex) {
+        const auto& scene = GeneratedScene::Scenes[sceneIndex];
+        auto& sceneLayout = layout.scenes[sceneIndex];
+        sceneLayout.firstFrame = frame;
+        sceneLayout.firstRun = run;
+        Run open{frame, 1, -1, false};
+        frame += 1;
+        for (std::size_t index = scene.firstItem; index < scene.firstItem + scene.itemCount; ++index) {
+            const auto& item = GeneratedScene::Items[index];
+            const std::int32_t wanted = isTextured(item) ? item.image : -1;
+            const bool wantedNearest = isTextured(item) && usesNearest(item);
+            const std::size_t frames = itemFrames(item);
+            if (wanted != open.image || wantedNearest != open.nearest) {
+                layout.runs[run++] = open;
+                open = {frame, 0, wanted, wantedNearest};
+            }
+            layout.itemRuns[index] = run;
+            open.count += frames;
+            frame += frames;
         }
-        runOfItem[index] = run;
+        layout.runs[run++] = open;
+        sceneLayout.runCount = run - sceneLayout.firstRun;
     }
-    return runOfItem;
+    return layout;
 }
 
-constexpr auto ItemRuns = buildItemRuns();
-
-constexpr std::array<Run, RunCount> Runs = buildRuns();
+constexpr Layout SceneLayouts = buildLayout();
+constexpr const auto& Runs = SceneLayouts.runs;
+constexpr const auto& ItemRuns = SceneLayouts.itemRuns;
 
 // Worst case per draw: both shaders' user data (16 registers each), a pipeline switch and the draw.
 constexpr std::size_t CommandWords = 4096 + RunCount * 200;
@@ -198,30 +209,35 @@ Renderer::Renderer(int width, int height) : memory(requiredMemory(), 0x240000000
             frames[index].viewport = {stageWidth, stageHeight, SolidMode, 0};
         }
 
-        const auto& background = GeneratedScene::Background;
-        frames[0].rectangle = {0, 0, stageWidth, stageHeight};
-        frames[0].color = {background[0], background[1], background[2], 1};
-        std::size_t next = 1;
+        for (std::size_t sceneIndex = 0; sceneIndex < GeneratedScene::SceneCount; ++sceneIndex) {
+            const auto& scene = GeneratedScene::Scenes[sceneIndex];
+            const auto& background = scene.background;
+            const auto backgroundFrame = SceneLayouts.scenes[sceneIndex].firstFrame;
+            frames[backgroundFrame].rectangle = {0, 0, stageWidth, stageHeight};
+            frames[backgroundFrame].color = {background[0], background[1], background[2], 1};
+            std::size_t next = backgroundFrame + 1;
 
-        for (const auto& item : GeneratedScene::Items) {
-            const std::array color{item.red, item.green, item.blue, 1.0f};
-            if (item.kind == GeneratedScene::Kind::Particles) {
-                next += GeneratedScene::ParticleEffects[static_cast<std::size_t>(item.particles)].amount;
-                continue;
-            }
-            if (item.kind == GeneratedScene::Kind::Tilemap) {
-                next += GeneratedScene::Tilemaps[static_cast<std::size_t>(item.tilemap)].reservedQuads;
-                continue;
-            }
-            if (item.kind != GeneratedScene::Kind::Text) {
-                frames[next++].color = color;
-                continue;
-            }
+            for (std::size_t itemIndex = scene.firstItem; itemIndex < scene.firstItem + scene.itemCount; ++itemIndex) {
+                const auto& item = GeneratedScene::Items[itemIndex];
+                const std::array color{item.red, item.green, item.blue, 1.0f};
+                if (item.kind == GeneratedScene::Kind::Particles) {
+                    next += GeneratedScene::ParticleEffects[static_cast<std::size_t>(item.particles)].amount;
+                    continue;
+                }
+                if (item.kind == GeneratedScene::Kind::Tilemap) {
+                    next += GeneratedScene::Tilemaps[static_cast<std::size_t>(item.tilemap)].reservedQuads;
+                    continue;
+                }
+                if (item.kind != GeneratedScene::Kind::Text) {
+                    frames[next++].color = color;
+                    continue;
+                }
 
-            for (const char character : item.text) {
-                frames[next].color = color;
-                frames[next].viewport[2] = GlyphMode;
-                frames[next++].glyph = EncodeGlyph(character);
+                for (const char character : item.text) {
+                    frames[next].color = color;
+                    frames[next].viewport[2] = GlyphMode;
+                    frames[next++].glyph = EncodeGlyph(character);
+                }
             }
         }
 
@@ -330,10 +346,13 @@ Shader* Renderer::createShader(std::span<const std::uint8_t> header, std::span<c
 
 void Renderer::Draw(Display& display, const SceneState& scene) {
     selectSlot(slotIndex);
-    std::size_t next = 1;
-    auto position = scene.Current().begin();
-    auto tint = scene.CurrentColors().begin();
-    auto shown = scene.CurrentVisibility().begin();
+    const auto sceneIndex = scene.CurrentScene();
+    const auto& sceneInfo = GeneratedScene::Scenes[sceneIndex];
+    const auto& sceneLayout = SceneLayouts.scenes[sceneIndex];
+    std::size_t next = sceneLayout.firstFrame + 1;
+    const auto& currentPositions = scene.Current();
+    const auto& currentColors = scene.CurrentColors();
+    const auto& currentVisibility = scene.CurrentVisibility();
     const auto camera = scene.Camera();
     // Quads written so far into each textured run. A run's quads are not all used every frame:
     // off-screen tiles and sprites never reach it, and an empty run makes no draw call.
@@ -341,13 +360,12 @@ void Renderer::Draw(Display& display, const SceneState& scene) {
     const float screenWidth = static_cast<float>(FrameWidth);
     const float screenHeight = static_cast<float>(FrameHeight);
 
-    std::size_t nextItem = 0;
-    for (const auto& item : GeneratedScene::Items) {
-        const std::size_t itemIndex = nextItem++;
-        const auto [x, y] = *position++;
-        const auto [red, green, blue] = *tint++;
+    for (std::size_t itemIndex = sceneInfo.firstItem; itemIndex < sceneInfo.firstItem + sceneInfo.itemCount; ++itemIndex) {
+        const auto& item = GeneratedScene::Items[itemIndex];
+        const auto [x, y] = currentPositions[itemIndex];
+        const auto [red, green, blue] = currentColors[itemIndex];
         const std::array color{red, green, blue, 1.0f};
-        const bool visible = *shown++;
+        const bool visible = currentVisibility[itemIndex];
         // Items that stay on the screen do not move with the camera.
         const float offsetX = item.screenFixed ? 0.0f : camera.x;
         const float offsetY = item.screenFixed ? 0.0f : camera.y;
@@ -438,7 +456,7 @@ void Renderer::Draw(Display& display, const SceneState& scene) {
     auto* const target = display.Acquire();
 
     const Pipeline* bound = nullptr;
-    for (std::size_t index = 0; index < RunCount; ++index) {
+    for (std::size_t index = sceneLayout.firstRun; index < sceneLayout.firstRun + sceneLayout.runCount; ++index) {
         const auto& run = Runs[index];
         const bool isImage = run.image >= 0;
         const std::size_t quadCount = isImage ? runUsed[index] : run.count;

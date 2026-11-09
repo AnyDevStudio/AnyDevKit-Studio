@@ -25,14 +25,15 @@ namespace Studio {
 namespace {
 
 // The version saved today. Older files still load: version 1 cannot hold images, neither 1 nor 2 can
-// hold particles, before 4 a brace in a text was only a brace, and before 5 there are no sprite
-// sheets, tilemaps, world or camera.
-constexpr int CurrentSchema = 5;
+// hold particles, before 4 a brace in a text was only a brace, before 5 there are no sprite sheets,
+// tilemaps, world or camera, and before 6 a project is one scene and items have no physics.
+constexpr int CurrentSchema = 6;
 constexpr int OldestLoadableSchema = 1;
 constexpr int ImageSchema = 2;
 constexpr int ParticleSchema = 3;
 constexpr int VariableTextSchema = 4;
 constexpr int WorldSchema = 5;
+constexpr int SceneSetSchema = 6;
 constexpr int MaximumItems = 256;
 constexpr int MaximumTextLength = 64;
 constexpr int MaximumScale = 40;
@@ -44,6 +45,8 @@ constexpr auto TextType = "text";
 constexpr auto ImageType = "image";
 constexpr auto ParticlesType = "particles";
 constexpr auto TilemapType = "tilemap";
+constexpr auto SolidPhysics = "solid";
+constexpr auto BodyPhysics = "body";
 constexpr int MaximumParticleAmount = 8000;
 constexpr int MinimumParticleSpeed = 10;
 constexpr int MaximumParticleSpeed = 300;
@@ -194,6 +197,20 @@ QString validateTilemap(const SceneItem& item, qsizetype index) {
     return {};
 }
 
+QString validatePhysics(const SceneItem& item, qsizetype index) {
+    if (item.physics != SolidPhysics && item.physics != BodyPhysics) return itemError(item, index, QString("physics must be \"%1\" or \"%2\".").arg(SolidPhysics, BodyPhysics));
+    if (item.type != RectangleType && item.type != ImageType) return itemError(item, index, "only a shape or an image can have physics. A tilemap blocks with its solid tiles instead.");
+    if (item.screenFixed) return itemError(item, index, "an item that stays on the screen cannot have physics. Turn off Stays on screen or remove the physics.");
+    if (item.controllable) return itemError(item, index, "an item with physics cannot also use Moves with the controller. Use Platformer controls for a body, or remove the physics.");
+    if (item.physics != BodyPhysics) return {};
+    if (item.width > MaximumBodySide || item.height > MaximumBodySide) return itemError(item, index, QString("a moving body can be at most %1 units on each side.").arg(MaximumBodySide));
+    const auto outside = [](int value, int lowest, int highest) { return value < lowest || value > highest; };
+    if (outside(item.gravityScale, 0, MaximumGravityScale)) return itemError(item, index, QString("gravity scale must be a whole percent from 0 to %1.").arg(MaximumGravityScale));
+    if (outside(item.moveSpeed, MinimumMoveSpeed, MaximumMoveSpeed)) return itemError(item, index, QString("speed must be a whole number from %1 to %2.").arg(MinimumMoveSpeed).arg(MaximumMoveSpeed));
+    if (outside(item.jumpHeight, MinimumJumpHeight, MaximumJumpHeight)) return itemError(item, index, QString("jump height must be a whole number from %1 to %2.").arg(MinimumJumpHeight).arg(MaximumJumpHeight));
+    return {};
+}
+
 QString validateItem(const SceneItem& item, qsizetype index, QSet<QString>& usedIds) {
     if (item.id.isEmpty()) return itemError(item, index, "id must be a non-empty string.");
     if (usedIds.contains(item.id)) return itemError(item, index, QString("id \"%1\" is already used. Give each item its own id.").arg(item.id));
@@ -211,6 +228,11 @@ QString validateItem(const SceneItem& item, qsizetype index, QSet<QString>& used
         for (const auto& [field, value] : {std::pair<const char*, double>{"width", item.width}, {"height", item.height}}) {
             if (!isUsableNumber(value) || value <= 0) return itemError(item, index, QString("%1 must be a number above 0 and at most 1e38.").arg(field));
         }
+    }
+
+    if (!item.physics.isEmpty()) {
+        const auto problem = validatePhysics(item, index);
+        if (!problem.isEmpty()) return problem;
     }
 
     if (item.flipX && !isImage) return itemError(item, index, "only an image can be flipped.");
@@ -349,6 +371,24 @@ QString parseItem(const QJsonValue& value, qsizetype index, SceneItem& item) {
         item.looping = looping.toBool();
     }
 
+    const auto physics = object.value("physics");
+    if (!physics.isUndefined()) {
+        if (!physics.isString()) return itemError(item, index, "physics must be \"solid\" or \"body\".");
+        item.physics = physics.toString();
+        if (item.physics == BodyPhysics) {
+            const auto optionalNumber = [&](const char* field, int fallback) {
+                const auto number = object.value(field);
+                return number.isUndefined() ? fallback : wholeNumberOrInvalid(number);
+            };
+            item.gravityScale = optionalNumber("gravityScale", DefaultGravityScale);
+            item.moveSpeed = optionalNumber("moveSpeed", DefaultMoveSpeed);
+            item.jumpHeight = optionalNumber("jumpHeight", DefaultJumpHeight);
+            const auto platformer = object.value("platformer");
+            if (!platformer.isUndefined() && !platformer.isBool()) return itemError(item, index, "platformer must be true or false.");
+            item.platformer = platformer.toBool();
+        }
+    }
+
     const auto controllable = object.value("controllable");
     if (!controllable.isUndefined() && !controllable.isBool()) return itemError(item, index, "controllable must be true or false.");
     item.controllable = controllable.toBool();
@@ -368,6 +408,15 @@ QJsonObject itemToJson(const SceneItem& item) {
         {"controllable", item.controllable},
     };
     if (item.screenFixed) object.insert("screenFixed", true);
+    if (!item.physics.isEmpty()) {
+        object.insert("physics", item.physics);
+        if (item.physics == BodyPhysics) {
+            object.insert("gravityScale", item.gravityScale);
+            object.insert("platformer", item.platformer);
+            object.insert("moveSpeed", item.moveSpeed);
+            object.insert("jumpHeight", item.jumpHeight);
+        }
+    }
     if (item.type != ImageType && item.type != TilemapType) object.insert("color", item.color);
     if (item.type == ImageType) {
         object.insert("source", item.source);
@@ -432,7 +481,7 @@ QByteArray colorLiterals(const QString& color) {
 }
 
 
-QByteArray itemLine(const SceneItem& item, const QStringList& imageSources, int particleIndex, int tilemapIndex, int spriteIndex) {
+QByteArray itemLine(const SceneItem& item, const QStringList& imageSources, int particleIndex, int tilemapIndex, int spriteIndex, int bodyIndex) {
     const auto isText = item.type == TextType;
     const auto isImage = item.type == ImageType;
     const auto isParticles = item.type == ParticlesType;
@@ -448,13 +497,15 @@ QByteArray itemLine(const SceneItem& item, const QStringList& imageSources, int 
     line += ", \"" + (isText ? textLiteral(shown) : QByteArray()) + "\", ";
     line += item.controllable ? "true" : "false";
     const auto imageIndex = (isImage || isTilemap) ? QByteArray::number(imageSources.indexOf(item.source)) : QByteArray("-1");
-    if (isTilemap || spriteIndex >= 0 || item.pixelated || item.flipX || item.screenFixed) {
+    const auto hasPhysics = !item.physics.isEmpty();
+    if (isTilemap || spriteIndex >= 0 || item.pixelated || item.flipX || item.screenFixed || hasPhysics) {
         // These items spell out every field, so the older lines below stay as they were.
         line += ", " + imageIndex + ", " + QByteArray::number(isParticles ? particleIndex : -1);
         line += ", " + QByteArray::number(isTilemap ? tilemapIndex : -1) + ", " + QByteArray::number(spriteIndex);
         line += QByteArray(", ") + (item.screenFixed ? "true" : "false");
         line += QByteArray(", ") + ((item.pixelated || isTilemap) ? "true" : "false");
         line += QByteArray(", ") + (item.flipX ? "true" : "false");
+        if (hasPhysics) line += ", " + QByteArray::number(bodyIndex) + ", " + (item.physics == SolidPhysics ? "true" : "false");
     } else if (isImage) {
         line += ", " + imageIndex;
     } else if (isParticles) {
@@ -532,6 +583,14 @@ QString validateScene(const Scene& scene) {
         hasTilemap = hasTilemap || scene.items[index].type == TilemapType;
         hasSheet = hasSheet || isSpriteSheet(scene.items[index]);
     }
+    qsizetype bodies = 0;
+    qsizetype solids = 0;
+    for (const auto& item : scene.items) {
+        if (item.physics == BodyPhysics) ++bodies;
+        if (item.physics == SolidPhysics) ++solids;
+    }
+    if (bodies > MaximumSceneBodies) return QString("This scene has %1 moving bodies, but a scene can have at most %2. Turn physics off on some items and try again.").arg(bodies).arg(MaximumSceneBodies);
+    if (solids > MaximumSceneSolidItems) return QString("This scene has %1 solid items, but a scene can have at most %2. Paint walls on a tilemap instead, or turn physics off on some items.").arg(solids).arg(MaximumSceneSolidItems);
     if (const auto cells = sceneTileCells(scene); cells > MaximumSceneTileCells) {
         return QString("The tilemaps hold %1 tiles, but a scene can hold at most %2. Make a tilemap smaller or remove a layer.").arg(cells).arg(MaximumSceneTileCells);
     }
@@ -827,28 +886,27 @@ void applyParticlePreset(SceneItem& item, const QString& preset) {
     item.preset = preset; // an unknown name is left for validation to reject
 }
 
-SceneLoadResult loadScene(const QString& path) {
-    const auto fileName = QFileInfo(path).fileName();
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) return failure(QString("%1 could not be opened: %2. Check that the file exists and try again.").arg(fileName, file.errorString()));
+namespace {
 
-    QJsonParseError parseError;
-    const auto document = QJsonDocument::fromJson(file.readAll(), &parseError);
-    if (parseError.error != QJsonParseError::NoError) return failure(QString("%1 is not valid JSON: %2 at character %3. Fix the file or restore a backup.").arg(fileName, parseError.errorString(), QString::number(parseError.offset)));
-    if (!document.isObject()) return failure(QString("%1 must contain a JSON object with the scene in it.").arg(fileName));
-    const auto root = document.object();
+bool isSceneId(const QString& id) {
+    if (id.isEmpty() || id.size() > 64) return false;
+    for (const auto character : id) {
+        const auto code = character.unicode();
+        const auto isLetter = (code >= 'a' && code <= 'z') || (code >= 'A' && code <= 'Z');
+        const auto isDigit = code >= '0' && code <= '9';
+        if (!isLetter && !isDigit && code != '-' && code != '_') return false;
+    }
+    return true;
+}
 
-    const auto schema = root.value("schemaVersion");
-    const auto version = schema.toInt(-1);
-    if (!schema.isDouble() || version < OldestLoadableSchema || version > CurrentSchema) return failure(QString("%1 needs schemaVersion %2 or %3, the versions this Studio supports.").arg(fileName).arg(OldestLoadableSchema).arg(CurrentSchema));
-    if (!root.value("items").isArray()) return failure(QString("%1 has no items list. Add \"items\": [] to the file.").arg(fileName));
-
-    Scene scene;
+// Reads the background, world, camera and items of a scene. Older files hold exactly this at their top level.
+QString parseSceneObject(const QJsonObject& root, int version, const QString& fileName, Scene& scene) {
+    if (!root.value("items").isArray()) return QString("%1 has no items list. Add \"items\": [] to the file.").arg(fileName);
     scene.background = root.value("background").toString();
     const auto world = root.value("world");
     const auto camera = root.value("camera");
     if (!world.isUndefined() || !camera.isUndefined()) {
-        if (version < WorldSchema) return failure(QString("%1 uses a world or camera, which needs schemaVersion %2. Change schemaVersion to %2 and try again.").arg(fileName).arg(WorldSchema));
+        if (version < WorldSchema) return QString("%1 uses a world or camera, which needs schemaVersion %2. Change schemaVersion to %2 and try again.").arg(fileName).arg(WorldSchema);
         if (!world.isUndefined()) {
             scene.worldWidth = world.isObject() ? wholeNumberOrInvalid(world.toObject().value("width")) : InvalidNumber;
             scene.worldHeight = world.isObject() ? wholeNumberOrInvalid(world.toObject().value("height")) : InvalidNumber;
@@ -862,30 +920,109 @@ SceneLoadResult loadScene(const QString& path) {
     for (qsizetype index = 0; index < items.size(); ++index) {
         SceneItem item;
         const auto problem = parseItem(items.at(index), index, item);
-        if (!problem.isEmpty()) return failure(problem);
-        if (version < ImageSchema && item.type == ImageType) return failure(QString("%1 uses an image item, which needs schemaVersion %2. Change schemaVersion to %2 and try again.").arg(fileName).arg(ImageSchema));
-        if (version < ParticleSchema && item.type == ParticlesType) return failure(QString("%1 uses a particles item, which needs schemaVersion %2. Change schemaVersion to %2 and try again.").arg(fileName).arg(ParticleSchema));
+        if (!problem.isEmpty()) return problem;
+        if (version < ImageSchema && item.type == ImageType) return QString("%1 uses an image item, which needs schemaVersion %2. Change schemaVersion to %2 and try again.").arg(fileName).arg(ImageSchema);
+        if (version < ParticleSchema && item.type == ParticlesType) return QString("%1 uses a particles item, which needs schemaVersion %2. Change schemaVersion to %2 and try again.").arg(fileName).arg(ParticleSchema);
         if (version < VariableTextSchema && item.type == TextType) item.text.replace('{', "{{").replace('}', "}}");
         const auto usesWorldItem = item.type == TilemapType || item.frameWidth != 0 || item.frameHeight != 0 || !item.animations.isEmpty() || item.pixelated || item.flipX || item.screenFixed;
-        if (version < WorldSchema && usesWorldItem) return failure(QString("%1 uses a tilemap, sprite sheet or screen-fixed item, which needs schemaVersion %2. Change schemaVersion to %2 and try again.").arg(fileName).arg(WorldSchema));
+        if (version < WorldSchema && usesWorldItem) return QString("%1 uses a tilemap, sprite sheet or screen-fixed item, which needs schemaVersion %2. Change schemaVersion to %2 and try again.").arg(fileName).arg(WorldSchema);
+        if (version < SceneSetSchema && !item.physics.isEmpty()) return QString("%1 uses physics, which needs schemaVersion %2. Change schemaVersion to %2 and try again.").arg(fileName).arg(SceneSetSchema);
         scene.items.append(item);
     }
-
-    const auto problem = validateScene(scene);
-    if (!problem.isEmpty()) return failure(problem);
-    return {scene, {}};
+    return {};
 }
 
-bool saveScene(const QString& path, const Scene& scene, QString& error) {
-    error = validateScene(scene);
-    if (!error.isEmpty()) return false;
-
+QJsonObject sceneToJson(const Scene& scene) {
     QJsonArray items;
     for (const auto& item : scene.items) items.append(itemToJson(item));
-    QJsonObject root{{"schemaVersion", CurrentSchema}, {"background", scene.background}, {"items", items}};
+    QJsonObject object{{"id", scene.id}, {"name", scene.name}, {"background", scene.background}, {"items", items}};
     // A stage-sized world saves no world and no camera, so the file reads as it did.
-    if (scene.worldWidth != ScreenWidthUnits || scene.worldHeight != ScreenHeightUnits) root.insert("world", QJsonObject{{"width", scene.worldWidth}, {"height", scene.worldHeight}});
-    if (scene.cameraX != 0 || scene.cameraY != 0) root.insert("camera", QJsonObject{{"x", scene.cameraX}, {"y", scene.cameraY}});
+    if (scene.worldWidth != ScreenWidthUnits || scene.worldHeight != ScreenHeightUnits) object.insert("world", QJsonObject{{"width", scene.worldWidth}, {"height", scene.worldHeight}});
+    if (scene.cameraX != 0 || scene.cameraY != 0) object.insert("camera", QJsonObject{{"x", scene.cameraX}, {"y", scene.cameraY}});
+    return object;
+}
+
+}
+
+QString validateSceneSet(const SceneSet& set) {
+    if (set.scenes.isEmpty()) return "A project needs at least one scene.";
+    if (set.scenes.size() > MaximumScenes) return QString("This project has %1 scenes, but a project can hold at most %2. Delete some scenes and try again.").arg(set.scenes.size()).arg(MaximumScenes);
+    QSet<QString> ids;
+    QSet<QString> names;
+    for (const auto& scene : set.scenes) {
+        if (!isSceneId(scene.id)) return QString("The scene id \"%1\" is not allowed. An id is 1 to 64 letters, digits, - or _.").arg(scene.id);
+        if (ids.contains(scene.id)) return QString("Two scenes have the id \"%1\". Give each scene its own id.").arg(scene.id);
+        ids.insert(scene.id);
+        if (scene.name.isEmpty() || scene.name.size() > MaximumSceneNameLength) return QString("A scene name needs 1 to %1 characters. Rename the scene \"%2\" and try again.").arg(MaximumSceneNameLength).arg(scene.name);
+        const auto folded = scene.name.toCaseFolded();
+        if (names.contains(folded)) return QString("Two scenes are named \"%1\". Give each scene its own name.").arg(scene.name);
+        names.insert(folded);
+        if (const auto problem = validateScene(scene); !problem.isEmpty()) return set.scenes.size() == 1 ? problem : QString("In the scene \"%1\": %2").arg(scene.name, problem);
+    }
+    if (!ids.contains(set.startScene)) return QString("The start scene \"%1\" is not one of the project's scenes. Pick a start scene in the Scene tab.").arg(set.startScene);
+    return {};
+}
+
+SceneSetLoadResult loadSceneSet(const QString& path) {
+    const auto fileName = QFileInfo(path).fileName();
+    const auto failure = [](const QString& message) { return SceneSetLoadResult{std::nullopt, message}; };
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) return failure(QString("%1 could not be opened: %2. Check that the file exists and try again.").arg(fileName, file.errorString()));
+
+    QJsonParseError parseError;
+    const auto document = QJsonDocument::fromJson(file.readAll(), &parseError);
+    if (parseError.error != QJsonParseError::NoError) return failure(QString("%1 is not valid JSON: %2 at character %3. Fix the file or restore a backup.").arg(fileName, parseError.errorString(), QString::number(parseError.offset)));
+    if (!document.isObject()) return failure(QString("%1 must contain a JSON object with the scene in it.").arg(fileName));
+    const auto root = document.object();
+
+    const auto schema = root.value("schemaVersion");
+    const auto version = schema.toInt(-1);
+    if (!schema.isDouble() || version < OldestLoadableSchema || version > CurrentSchema) return failure(QString("%1 needs a schemaVersion from %2 to %3, the versions this Studio supports.").arg(fileName).arg(OldestLoadableSchema).arg(CurrentSchema));
+
+    SceneSet set;
+    if (version < SceneSetSchema) {
+        // An older project is one scene with the file's own fields.
+        Scene scene;
+        const auto problem = parseSceneObject(root, version, fileName, scene);
+        if (!problem.isEmpty()) return failure(problem);
+        set.scenes = {scene};
+        set.startScene = scene.id;
+    } else {
+        const auto scenes = root.value("scenes");
+        if (!scenes.isArray()) return failure(QString("%1 has no scenes list. Add a \"scenes\" list to the file.").arg(fileName));
+        const auto startScene = root.value("startScene");
+        if (!startScene.isString()) return failure(QString("%1 needs startScene to name one of its scenes.").arg(fileName));
+        set.startScene = startScene.toString();
+        for (const auto& value : scenes.toArray()) {
+            if (!value.isObject()) return failure(QString("%1: each scene must be a JSON object.").arg(fileName));
+            const auto object = value.toObject();
+            Scene scene;
+            scene.id = object.value("id").toString();
+            scene.name = object.value("name").toString();
+            const auto problem = parseSceneObject(object, version, fileName, scene);
+            if (!problem.isEmpty()) return failure(problem);
+            set.scenes.append(scene);
+        }
+    }
+    const auto problem = validateSceneSet(set);
+    if (!problem.isEmpty()) return failure(problem);
+    return {set, {}};
+}
+
+SceneLoadResult loadScene(const QString& path) {
+    const auto loaded = loadSceneSet(path);
+    if (!loaded.set) return failure(loaded.error);
+    const auto found = std::ranges::find(loaded.set->scenes, loaded.set->startScene, &Scene::id);
+    return {found != loaded.set->scenes.end() ? *found : loaded.set->scenes.first(), {}};
+}
+
+bool saveSceneSet(const QString& path, const SceneSet& set, QString& error) {
+    error = validateSceneSet(set);
+    if (!error.isEmpty()) return false;
+
+    QJsonArray scenes;
+    for (const auto& scene : set.scenes) scenes.append(sceneToJson(scene));
+    const QJsonObject root{{"schemaVersion", CurrentSchema}, {"startScene", set.startScene}, {"scenes", scenes}};
     const auto contents = QJsonDocument(root).toJson();
 
     QSaveFile file(path);
@@ -894,6 +1031,13 @@ bool saveScene(const QString& path, const Scene& scene, QString& error) {
         return false;
     }
     return true;
+}
+
+bool saveScene(const QString& path, const Scene& scene, QString& error) {
+    SceneSet set;
+    set.scenes = {scene};
+    set.startScene = scene.id;
+    return saveSceneSet(path, set, error);
 }
 
 QByteArray textLiteral(const QString& text) {
@@ -906,6 +1050,22 @@ QByteArray textLiteral(const QString& text) {
         previous = character;
     }
     return escaped;
+}
+
+QStringList sceneImageSources(const SceneSet& set) {
+    QStringList sources;
+    for (const auto& scene : set.scenes) {
+        for (const auto& source : sceneImageSources(scene)) {
+            if (!sources.contains(source)) sources << source;
+        }
+    }
+    return sources;
+}
+
+int sceneItemCount(const SceneSet& set) {
+    int count = 0;
+    for (const auto& scene : set.scenes) count += static_cast<int>(scene.items.size());
+    return count;
 }
 
 QStringList sceneImageSources(const Scene& scene) {
@@ -1055,9 +1215,26 @@ QByteArray tilemapTables(const Scene& scene, const QList<SceneImageData>& images
     return text;
 }
 
-QByteArray generateSceneHeader(const Scene& scene, const QList<SceneImageData>& images) {
-    if (!validateScene(scene).isEmpty() || !imagesMatchScene(scene, images) || !sceneImagesProblem(scene, images).isEmpty()) return {};
+namespace {
+
+// Every scene's items in one list, in scene order. Generated tables and item indexes are numbered across
+// the whole game, so a scene is just a slice of them (see the Scenes table in the generated header).
+Scene flattened(const SceneSet& set) {
+    Scene flat;
+    flat.background = set.scenes.first().background;
+    for (const auto& scene : set.scenes) flat.items += scene.items;
+    return flat;
+}
+
+const Scene& startSceneOf(const SceneSet& set) {
+    const auto found = std::ranges::find(set.scenes, set.startScene, &Scene::id);
+    return found != set.scenes.end() ? *found : set.scenes.first();
+}
+
+QByteArray flatSceneHeader(const Scene& scene, const SceneSet& set, const QList<SceneImageData>& images) {
+    if (!imagesMatchScene(scene, images) || !sceneImagesProblem(scene, images).isEmpty()) return {};
     const auto imageSources = sceneImageSources(scene);
+    const auto& start = startSceneOf(set);
 
     QByteArray header = R"cpp(// Generated by AnyDevKit Studio from scene.json. Do not edit.
 #pragma once
@@ -1085,6 +1262,8 @@ struct Item {
     bool screenFixed = false; // stays at the same place on the screen as the camera moves
     bool pixelated = false; // drawn with nearest-neighbour sampling, on whole pixels
     bool flipped = false; // drawn mirrored left to right when the game starts
+    std::int32_t body = -1; // index into Bodies for a moving body
+    bool solid = false; // a wall or platform that moving bodies collide with
 };
 
 // Row by row, top row first, 4 bytes per pixel: red, green, blue, alpha, with alpha already applied.
@@ -1119,12 +1298,25 @@ struct Tilemap {
     std::uint32_t reservedQuads, firstSolid, solidCount;
 };
 
+// How a moving body behaves. gravityPercent, moveSpeed and jumpHeight are the numbers from scene.json.
+struct Body {
+    std::int32_t gravityPercent, moveSpeed, jumpHeight;
+    bool platformer;
+};
+
+// One scene of the game: which of Items are its own, its world and where its camera starts.
+struct SceneInfo {
+    std::uint32_t firstItem, itemCount;
+    float worldWidth, worldHeight, cameraStartX, cameraStartY;
+    std::array<float, 3> background;
+};
+
 )cpp";
-    header += "inline constexpr float WorldWidth = " + floatLiteral(scene.worldWidth) + ";\n";
-    header += "inline constexpr float WorldHeight = " + floatLiteral(scene.worldHeight) + ";\n";
-    header += "inline constexpr float CameraStartX = " + floatLiteral(scene.cameraX) + ";\n";
-    header += "inline constexpr float CameraStartY = " + floatLiteral(scene.cameraY) + ";\n";
-    header += "inline constexpr std::array<float, 3> Background{" + colorLiterals(scene.background) + "};\n";
+    header += "inline constexpr float WorldWidth = " + floatLiteral(start.worldWidth) + ";\n";
+    header += "inline constexpr float WorldHeight = " + floatLiteral(start.worldHeight) + ";\n";
+    header += "inline constexpr float CameraStartX = " + floatLiteral(start.cameraX) + ";\n";
+    header += "inline constexpr float CameraStartY = " + floatLiteral(start.cameraY) + ";\n";
+    header += "inline constexpr std::array<float, 3> Background{" + colorLiterals(start.background) + "};\n";
     header += "inline constexpr std::size_t ImageCount = " + QByteArray::number(images.size()) + ";\n";
     header += "extern const std::array<Image, ImageCount> Images; // defined in src/GeneratedImages.cpp\n";
     int particleEffects = 0;
@@ -1145,6 +1337,33 @@ struct Tilemap {
     }
     header += spriteTables(scene, images);
     header += tilemapTables(scene, images);
+
+    int bodyCount = 0;
+    int solidCount = 0;
+    QByteArray bodies;
+    for (const auto& item : scene.items) {
+        if (item.physics == SolidPhysics) ++solidCount;
+        if (item.physics != BodyPhysics) continue;
+        ++bodyCount;
+        bodies += "    {" + QByteArray::number(item.gravityScale) + ", " + QByteArray::number(item.moveSpeed) + ", " + QByteArray::number(item.jumpHeight) + (item.platformer ? ", true" : ", false") + "},\n";
+    }
+    header += "inline constexpr std::size_t BodyCount = " + QByteArray::number(bodyCount) + ";\n";
+    header += bodyCount == 0 ? QByteArray("inline constexpr std::array<Body, 0> Bodies{};\n") : "inline constexpr std::array<Body, " + QByteArray::number(bodyCount) + "> Bodies{{\n" + bodies + "}};\n";
+    header += "inline constexpr std::size_t SolidItemCount = " + QByteArray::number(solidCount) + ";\n";
+
+    QByteArray sceneLines;
+    int firstItem = 0;
+    int startIndex = 0;
+    for (qsizetype index = 0; index < set.scenes.size(); ++index) {
+        const auto& oneScene = set.scenes[index];
+        if (oneScene.id == set.startScene) startIndex = static_cast<int>(index);
+        sceneLines += "    {" + QByteArray::number(firstItem) + ", " + QByteArray::number(oneScene.items.size()) + ", " + floatLiteral(oneScene.worldWidth) + ", " + floatLiteral(oneScene.worldHeight) + ", " + floatLiteral(oneScene.cameraX) + ", " + floatLiteral(oneScene.cameraY) + ", {" + colorLiterals(oneScene.background) + "}},\n";
+        firstItem += static_cast<int>(oneScene.items.size());
+    }
+    header += "inline constexpr std::size_t SceneCount = " + QByteArray::number(set.scenes.size()) + ";\n";
+    header += "inline constexpr std::size_t StartScene = " + QByteArray::number(startIndex) + ";\n";
+    header += "inline constexpr std::array<SceneInfo, " + QByteArray::number(set.scenes.size()) + "> Scenes{{\n" + sceneLines + "}};\n";
+
     if (scene.items.isEmpty()) {
         header += "inline constexpr std::array<Item, 0> Items{};\n";
     } else {
@@ -1152,12 +1371,15 @@ struct Tilemap {
         int particleIndex = 0;
         int tilemapIndex = 0;
         int spriteIndex = 0;
+        int bodyIndex = 0;
         for (const auto& item : scene.items) {
             const auto isSheet = isSpriteSheet(item);
-            header += itemLine(item, imageSources, particleIndex, tilemapIndex, isSheet ? spriteIndex : -1);
+            const auto isBody = item.physics == BodyPhysics;
+            header += itemLine(item, imageSources, particleIndex, tilemapIndex, isSheet ? spriteIndex : -1, isBody ? bodyIndex : -1);
             if (item.type == ParticlesType) ++particleIndex;
             if (item.type == TilemapType) ++tilemapIndex;
             if (isSheet) ++spriteIndex;
+            if (isBody) ++bodyIndex;
         }
         header += "}};\n";
     }
@@ -1165,13 +1387,35 @@ struct Tilemap {
     return header;
 }
 
+}
+
+QByteArray generateSceneHeader(const SceneSet& set, const QList<SceneImageData>& images) {
+    if (!validateSceneSet(set).isEmpty()) return {};
+    return flatSceneHeader(flattened(set), set, images);
+}
+
+QByteArray generateSceneHeader(const Scene& scene, const QList<SceneImageData>& images) {
+    SceneSet set;
+    set.scenes = {scene};
+    set.startScene = scene.id;
+    return generateSceneHeader(set, images);
+}
+
 bool writeGeneratedScene(const QString& projectRoot, const Scene& scene, const QList<SceneImageData>& images, QString& error) {
+    SceneSet set;
+    set.scenes = {scene};
+    set.startScene = scene.id;
+    return writeGeneratedScene(projectRoot, set, images, error);
+}
+
+bool writeGeneratedScene(const QString& projectRoot, const SceneSet& set, const QList<SceneImageData>& images, QString& error) {
     error.clear();
+    const auto scene = validateSceneSet(set).isEmpty() ? flattened(set) : Scene{};
     if (const auto problem = sceneImagesProblem(scene, images); !problem.isEmpty()) {
         error = problem;
         return false;
     }
-    const auto header = generateSceneHeader(scene, images);
+    const auto header = generateSceneHeader(set, images);
     if (header.isEmpty()) {
         error = "The scene could not be exported because it has a problem or its images do not match. Check the scene and try again.";
         return false;
@@ -1317,6 +1561,20 @@ bool sceneRuntimeNeedsUpdate(const QString& projectRoot, const Scene& scene) {
         return item.type == TilemapType || item.frameWidth != 0 || item.frameHeight != 0 || !item.animations.isEmpty() || item.pixelated || item.flipX || item.screenFixed;
     });
     return (usesWorld || usesWorldItem) && sceneRuntimeLacksWorld(projectRoot);
+}
+
+bool sceneRuntimeLacksPhysics(const QString& projectRoot) {
+    QFile file(QDir::cleanPath(QDir(projectRoot).absolutePath()) + "/include/Scene/SceneState.hpp");
+    if (!file.open(QIODevice::ReadOnly)) return false;
+    return !file.readAll().contains("Scene/Physics2D.hpp");
+}
+
+bool sceneSetUsesPhysics(const SceneSet& set) {
+    if (set.scenes.size() > 1) return true;
+    for (const auto& scene : set.scenes) {
+        if (std::ranges::any_of(scene.items, [](const SceneItem& item) { return !item.physics.isEmpty(); })) return true;
+    }
+    return false;
 }
 
 bool sceneRuntimeLacksWorld(const QString& projectRoot) {

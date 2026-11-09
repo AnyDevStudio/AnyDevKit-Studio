@@ -183,10 +183,11 @@ private slots:
         QFile file(sceneFile(directory));
         QVERIFY(file.open(QIODevice::ReadOnly));
         const auto root = QJsonDocument::fromJson(file.readAll()).object();
-        QCOMPARE(root.value("schemaVersion").toInt(), 5);
+        QCOMPARE(root.value("schemaVersion").toInt(), 6);
         // One row per string, so a tilemap reads and diffs by row.
-        QCOMPARE(root.value("items").toArray()[0].toObject().value("tiles").toArray().size(), 2);
-        QCOMPARE(root.value("items").toArray()[0].toObject().value("tiles").toArray()[0].toString(), QString("-1*4"));
+        const auto savedItems = root.value("scenes").toArray()[0].toObject().value("items").toArray();
+        QCOMPARE(savedItems[0].toObject().value("tiles").toArray().size(), 2);
+        QCOMPARE(savedItems[0].toObject().value("tiles").toArray()[0].toString(), QString("-1*4"));
 
         const auto reloaded = loadScene(sceneFile(directory));
         QVERIFY2(reloaded.scene.has_value(), qPrintable(reloaded.error));

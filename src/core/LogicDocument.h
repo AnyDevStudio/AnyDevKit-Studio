@@ -31,6 +31,7 @@ class LogicDocument : public QAbstractListModel {
     Q_PROPERTY(QVariantList variables READ variables NOTIFY programChanged)
     Q_PROPERTY(QVariantList sounds READ sounds NOTIFY programChanged)
     Q_PROPERTY(QVariantList sceneItems READ sceneItems NOTIFY sceneItemsChanged)
+    Q_PROPERTY(QVariantList scenes READ scenes NOTIFY sceneListChanged)
     Q_PROPERTY(double canvasWidth READ canvasWidth WRITE setCanvasWidth NOTIFY layoutChanged)
     Q_PROPERTY(double contentWidth READ contentWidth NOTIFY layoutChanged)
     Q_PROPERTY(double contentHeight READ contentHeight NOTIFY layoutChanged)
@@ -74,6 +75,7 @@ public:
         SoundRole,
         AnimationRole,
         FlippedRole,
+        SceneRole,
     };
 
     explicit LogicDocument(QObject* parent = nullptr);
@@ -87,6 +89,11 @@ public:
     bool open(const QString& path);
     void close();
     void setScene(const Scene& scene);
+    // The whole project and the scene being edited. Logic belongs per scene, so changing scene shows that scene's blocks.
+    void setSceneSet(const SceneSet& set, int currentIndex);
+    QVariantList scenes() const; // [{id, name}], for the Go to scene block
+    // Copies the blocks of one scene under a new scene's id, with new block ids, for a duplicated scene.
+    bool duplicateSceneLogic(const QString& sceneId, const QString& copyId);
     const LogicProgram& program() const;
 
     bool isLoaded() const;
@@ -162,6 +169,7 @@ signals:
     void problemsChanged();
     void selectionChanged();
     void sceneItemsChanged();
+    void sceneListChanged();
     void layoutChanged();
     void dragChanged();
     // A variable's name changed, also by undoing; text in the scene follows it.
@@ -184,6 +192,8 @@ private:
     QString insertInto(const QString& type, const QString& parentId, int index);
     bool commit(const LogicProgram& candidate);
     void afterChange();
+    void showLogicOfScene(const QString& sceneId);
+    QStringList projectSceneIds() const;
     void refreshProblems();
     void applyLayout(const LogicLayout& next);
     void syncRows();
@@ -196,6 +206,8 @@ private:
     LogicProgram document;
     QList<LogicProgram> history;
     Scene scene;
+    bool sceneKnown = false; // setScene has said which scene is showing
+    SceneSet sceneChoices;
     bool loaded = false;
     QString message;
     QString failure;

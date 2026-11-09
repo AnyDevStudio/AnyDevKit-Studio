@@ -6,6 +6,7 @@
 #include "GeneratedVariables.hpp"
 #include "Save/SaveData.hpp"
 #include "Scene/Particles.hpp"
+#include "Scene/Physics2D.hpp"
 #include "Scene/World2D.hpp"
 #include <array>
 #include <cstddef>
@@ -15,7 +16,9 @@
 #include <string_view>
 
 // Current state of every item in GeneratedScene::Items, indexed the same way, and the game's variables.
-// The block logic in GeneratedLogic.hpp changes it through the Logic section below.
+// GeneratedScene::Items holds every scene's items in one list; only the scene that is showing runs and is
+// drawn, and its slice is given by CurrentSceneInfo(). The block logic in GeneratedLogic.hpp changes it
+// through the Logic section below.
 class SceneState final {
 public:
     using Position = std::array<float, 2>;
@@ -24,8 +27,10 @@ public:
     using Colors = std::array<Color, GeneratedScene::Items.size()>;
     using Visibility = std::array<bool, GeneratedScene::Items.size()>;
     using SaveMailbox = SaveData::Mailbox<GeneratedVariables::VariableCount>;
-    SceneState(int width, int height, Audio::Mixer* mixer = nullptr, SaveMailbox* saves = nullptr); // also runs the "When the game starts" blocks
+    SceneState(int width, int height, Audio::Mixer* mixer = nullptr, SaveMailbox* saves = nullptr); // also runs the start scene's "When the game starts" blocks
     void Update(double seconds, Position direction, std::uint32_t buttons);
+    std::size_t CurrentScene() const; // an index into GeneratedScene::Scenes
+    const GeneratedScene::SceneInfo& CurrentSceneInfo() const;
     const Positions& Current() const;
     const Colors& CurrentColors() const;
     const Visibility& CurrentVisibility() const;
@@ -63,6 +68,16 @@ public:
     // The camera keeps this item centered until SetCameraPosition, always inside the world.
     void CameraFollow(std::size_t item);
     void SetCameraPosition(float x, float y);
+    // Physics: only a moving body has any of this; anything else reads as false or does nothing.
+    bool Landed(std::size_t item) const;   // landed on the ground this frame
+    bool HitSolid(std::size_t item) const; // hit a solid this frame
+    bool LeftWorld(std::size_t item) const; // left the world this frame
+    bool OnGround(std::size_t item) const;
+    void SetVelocity(std::size_t item, float x, float y); // units per second
+    void Jump(std::size_t item);
+    // Scenes change after the blocks of the frame have run. Variables keep their values.
+    void GoToScene(std::size_t scene);
+    void RestartScene();
 
     // Rectangles to draw for a particles item this frame, and none for any other item.
     std::span<const Particles::Quad> ParticleQuads(std::size_t item) const;
@@ -71,7 +86,7 @@ public:
     std::string_view CurrentText(std::size_t item) const;
 
 private:
-    void clampToBounds(std::size_t item, Position& position) const; // the world, or the screen for a screen-fixed item
+    void clampToBounds(std::size_t item, Position& position) const; // the current scene's world, or the screen for a screen-fixed item
     void limitPosition(std::size_t item, Position& position) const;
     float drawnWidth(std::size_t item) const; // follows the current text of an item that shows variables
     void rebuildText();
@@ -84,7 +99,13 @@ private:
     };
     std::unique_ptr<ParticleWorld> particleWorld;
     void startParticles();
+    void resetParticlesOf(std::size_t item);
     void applyLoadedVariables();
+    void enterScene(std::size_t scene);
+    void stepPhysics(double seconds, Position direction, std::uint32_t buttons);
+    void clearBodyEvents();
+    Physics2D::Body* bodyOf(std::size_t item);
+    const Physics2D::Body* bodyOf(std::size_t item) const;
     Audio::Mixer* audioMixer = nullptr;
     SaveMailbox* saveMailbox = nullptr;
     Particles::Emitter* emitterFor(std::size_t item);
@@ -96,6 +117,15 @@ private:
     std::array<World2D::AnimationPlayer, GeneratedScene::SpriteCount> animations{};
     World2D::Point camera{0.0f, 0.0f};
     std::int32_t followedItem = -1;
+    std::size_t currentScene = GeneratedScene::StartScene;
+    std::int32_t pendingScene = -1; // a scene to enter after this frame's blocks
+    std::array<Physics2D::Body, GeneratedScene::BodyCount> bodies{};
+    std::array<Position, GeneratedScene::BodyCount> syncedPositions{}; // where the physics last put each body
+    std::array<Physics2D::Aabb, GeneratedScene::SolidItemCount> solidBoxes{};
+    std::array<Physics2D::TileLayer, GeneratedScene::TilemapCount> tileLayers{};
+    Physics2D::FixedClock physicsClock{};
+    bool jumpWasHeld = false;
+    bool jumpPressPending = false;
     GeneratedLogic::Memory logicMemory{};
     std::uint32_t heldButtons = 0;
     std::array<std::int32_t, GeneratedVariables::VariableCount> variables = GeneratedVariables::InitialValues;

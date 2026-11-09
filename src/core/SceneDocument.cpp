@@ -142,14 +142,16 @@ QHash<int, QByteArray> SceneDocument::roleNames() const {
 bool SceneDocument::open(const QString& newPath) {
     close();
     if (!QFile::exists(newPath)) return false;
-    const auto result = loadScene(newPath);
-    if (!result.scene) {
+    const auto result = loadSceneSet(newPath);
+    if (!result.set) {
         setError(result.error);
         return false;
     }
     beginResetModel();
     path = newPath;
-    document = *result.scene;
+    scenes = *result.set;
+    currentIndex = std::max(indexOfSceneId(scenes.startScene), 0);
+    document = scenes.scenes[currentIndex];
     loaded = true;
     refreshImageProblems();
     endResetModel();
@@ -158,12 +160,15 @@ bool SceneDocument::open(const QString& newPath) {
     emit countChanged();
     emit backgroundChanged();
     emit worldChanged();
+    emit scenesChanged();
     return true;
 }
 
 void SceneDocument::close() {
     beginResetModel();
     path.clear();
+    scenes = {};
+    currentIndex = 0;
     document = {};
     history.clear();
     loaded = false;
@@ -182,6 +187,7 @@ void SceneDocument::close() {
     emit undoChanged();
     emit imagesChanged();
     emit worldChanged();
+    emit scenesChanged();
 }
 
 void SceneDocument::setError(const QString& text) {
@@ -191,6 +197,29 @@ void SceneDocument::setError(const QString& text) {
 }
 
 const Scene& SceneDocument::scene() const { return document; }
+
+SceneSet SceneDocument::sceneSet() const {
+    auto copy = scenes;
+    if (currentIndex >= 0 && currentIndex < copy.scenes.size()) copy.scenes[currentIndex] = document;
+    return copy;
+}
+
+QVariantList SceneDocument::sceneList() const {
+    QVariantList list;
+    for (const auto& scene : scenes.scenes) list.append(QVariantMap{{"id", scene.id}, {"name", scene.name}, {"isStart", scene.id == scenes.startScene}});
+    return list;
+}
+
+int SceneDocument::currentSceneIndex() const { return currentIndex; }
+int SceneDocument::startSceneIndex() const { return indexOfSceneId(scenes.startScene); }
+QString SceneDocument::currentSceneName() const { return currentIndex >= 0 && currentIndex < scenes.scenes.size() ? scenes.scenes[currentIndex].name : QString(); }
+
+int SceneDocument::indexOfSceneId(const QString& id) const {
+    for (int index = 0; index < scenes.scenes.size(); ++index) {
+        if (scenes.scenes[index].id == id) return index;
+    }
+    return -1;
+}
 bool SceneDocument::isLoaded() const { return loaded; }
 int SceneDocument::count() const { return rowCount(); }
 QString SceneDocument::background() const { return document.background; }
@@ -278,6 +307,11 @@ QVariantMap SceneDocument::selected() const {
         {"text", item.text},
         {"scale", item.scale},
         {"controllable", item.controllable},
+        {"physics", item.physics},
+        {"gravityScale", item.gravityScale},
+        {"platformer", item.platformer},
+        {"moveSpeed", item.moveSpeed},
+        {"jumpHeight", item.jumpHeight},
         {"preset", item.preset},
         {"palette", item.palette},
         {"amount", item.amount},
@@ -304,7 +338,7 @@ QSize SceneDocument::itemBounds(const SceneItem& item) const {
 }
 
 void SceneDocument::pushUndo() {
-    history.append(document);
+    history.append({sceneSet(), currentIndex});
     if (history.size() > MaximumUndoSteps) history.removeFirst();
     emit undoChanged();
 }
@@ -319,8 +353,142 @@ bool SceneDocument::commit(const Scene& candidate) {
     pushUndo();
     document = candidate;
     refreshImageProblems();
+    persist();
+    return true;
+}
+
+// Writes the scene being edited back into the project and saves the project.
+bool SceneDocument::persist() {
+    scenes.scenes[currentIndex] = document;
     QString failure;
-    setError(saveScene(path, document, failure) ? QString() : failure);
+    const auto saved = saveSceneSet(path, scenes, failure);
+    setError(saved ? QString() : failure);
+    return saved;
+}
+
+void SceneDocument::showScene(int index) {
+    beginResetModel();
+    currentIndex = index;
+    document = scenes.scenes[currentIndex];
+    selection = -1;
+    hiddenItems.clear();
+    refreshImageProblems();
+    endResetModel();
+    emit countChanged();
+    emit backgroundChanged();
+    emit worldChanged();
+    emit selectionChanged();
+    emit scenesChanged();
+}
+
+QString SceneDocument::newSceneId() const {
+    for (int number = 1;; ++number) {
+        const auto id = QString("scene-%1").arg(number);
+        if (indexOfSceneId(id) < 0) return id;
+    }
+}
+
+QString SceneDocument::newSceneName() const {
+    for (int number = static_cast<int>(scenes.scenes.size()) + 1;; ++number) {
+        const auto name = QString("Scene %1").arg(number);
+        if (std::ranges::none_of(scenes.scenes, [&](const Scene& scene) { return scene.name.toCaseFolded() == name.toCaseFolded(); })) return name;
+    }
+}
+
+int SceneDocument::addScene() {
+    if (!loaded || changing) return -1;
+    if (scenes.scenes.size() >= MaximumScenes) {
+        setError(QString("A project can hold at most %1 scenes. Delete a scene to add another.").arg(MaximumScenes));
+        return -1;
+    }
+    pushUndo();
+    Scene scene;
+    scene.id = newSceneId();
+    scene.name = newSceneName();
+    scenes.scenes.append(scene);
+    const auto index = static_cast<int>(scenes.scenes.size()) - 1;
+    showScene(index);
+    persist();
+    return index;
+}
+
+bool SceneDocument::renameScene(int index, const QString& name) {
+    if (index < 0 || index >= scenes.scenes.size() || changing) return false;
+    const auto trimmed = name.trimmed();
+    auto candidate = sceneSet();
+    candidate.scenes[index].name = trimmed;
+    if (const auto problem = validateSceneSet(candidate); !problem.isEmpty()) {
+        setError(problem);
+        return false;
+    }
+    pushUndo();
+    scenes.scenes[index].name = trimmed;
+    document.name = scenes.scenes[currentIndex].name;
+    persist();
+    emit scenesChanged();
+    return true;
+}
+
+int SceneDocument::duplicateScene(int index) {
+    if (index < 0 || index >= scenes.scenes.size() || changing) return -1;
+    if (scenes.scenes.size() >= MaximumScenes) {
+        setError(QString("A project can hold at most %1 scenes. Delete a scene to make room for a copy.").arg(MaximumScenes));
+        return -1;
+    }
+    pushUndo();
+    auto copy = sceneSet().scenes[index];
+    const auto sourceId = copy.id;
+    copy.id = newSceneId();
+    const auto suffix = QString(" copy");
+    for (int number = 1;; ++number) {
+        const auto ending = number == 1 ? suffix : suffix + QString(" %1").arg(number);
+        const auto candidateName = copy.name.left(MaximumSceneNameLength - ending.size()) + ending;
+        if (std::ranges::none_of(scenes.scenes, [&](const Scene& scene) { return scene.name.toCaseFolded() == candidateName.toCaseFolded(); })) {
+            copy.name = candidateName;
+            break;
+        }
+    }
+    const auto row = index + 1;
+    scenes.scenes.insert(row, copy);
+    if (currentIndex >= row) ++currentIndex;
+    emit sceneDuplicated(sourceId, copy.id);
+    showScene(row);
+    persist();
+    return row;
+}
+
+bool SceneDocument::deleteScene(int index) {
+    if (index < 0 || index >= scenes.scenes.size() || changing) return false;
+    if (scenes.scenes.size() == 1) {
+        setError("A project needs at least one scene, so the last scene cannot be deleted.");
+        return false;
+    }
+    pushUndo();
+    const auto wasStart = scenes.scenes[index].id == scenes.startScene;
+    scenes.scenes[currentIndex] = document;
+    scenes.scenes.removeAt(index);
+    if (wasStart) scenes.startScene = scenes.scenes.first().id;
+    const auto newCurrent = currentIndex > index ? currentIndex - 1 : std::min(currentIndex, static_cast<int>(scenes.scenes.size()) - 1);
+    showScene(newCurrent);
+    persist();
+    return true;
+}
+
+bool SceneDocument::setStartScene(int index) {
+    if (index < 0 || index >= scenes.scenes.size() || changing) return false;
+    if (scenes.scenes[index].id == scenes.startScene) return true;
+    pushUndo();
+    scenes.startScene = scenes.scenes[index].id;
+    persist();
+    emit scenesChanged();
+    return true;
+}
+
+bool SceneDocument::selectScene(int index) {
+    if (index < 0 || index >= scenes.scenes.size() || changing) return false;
+    if (index == currentIndex) return true;
+    scenes.scenes[currentIndex] = document;
+    showScene(index);
     return true;
 }
 
@@ -699,8 +867,7 @@ void SceneDocument::endChange() {
         emit undoChanged();
         return;
     }
-    QString failure;
-    setError(saveScene(path, document, failure) ? QString() : failure);
+    persist();
 }
 
 void SceneDocument::moveItem(int index, double x, double y) {
@@ -730,7 +897,8 @@ void SceneDocument::resizeItem(int index, double width, double height, bool keep
     if (item.type != "rectangle" && item.type != "image" && item.type != "particles") return;
     if (keepAspect) {
         // During a drag the shape the drag started with, since the current size is already rounded.
-        const auto& start = changing && index < history.last().items.size() ? history.last().items[index] : item;
+        const auto& startItems = history.isEmpty() ? document.items : history.last().set.scenes[history.last().current].items;
+        const auto& start = changing && index < startItems.size() ? startItems[index] : item;
         const auto bounds = itemBounds(item);
         const auto largest = std::min((bounds.width() - item.x) / start.width, (bounds.height() - item.y) / start.height);
         const auto smallest = std::max(MinimumSize / start.width, MinimumSize / start.height);
@@ -803,7 +971,28 @@ bool SceneDocument::setItemValue(int index, const QString& property, const QVari
     static const QStringList particleSettings{"preset", "palette", "looping", "amount", "spread", "speed", "gravity", "pixelSize"};
     if (particleSettings.contains(property) && item.type != "particles") return false;
 
-    if (property == "preset") {
+    static const QStringList physicsNumbers{"gravityScale", "moveSpeed", "jumpHeight"};
+    if (property == "physics") {
+        const auto mode = value.toString();
+        item.physics = mode == "solid" || mode == "body" ? mode : QString();
+        if (!item.physics.isEmpty()) item.controllable = false;
+    } else if (property == "platformer") {
+        item.platformer = value.toBool();
+    } else if (physicsNumbers.contains(property)) {
+        bool isNumber = false;
+        const auto number = value.toDouble(&isNumber);
+        if (!isNumber || !std::isfinite(number) || number != std::floor(number)) {
+            setError(QString("%1 must be a whole number.").arg(property));
+            return false;
+        }
+        const auto whole = static_cast<int>(std::clamp(number, -1e8, 1e8));
+        if (property == "gravityScale") item.gravityScale = whole;
+        else if (property == "moveSpeed") item.moveSpeed = whole;
+        else item.jumpHeight = whole;
+    } else if (property == "controllable") {
+        item.controllable = value.toBool();
+        if (item.controllable) item.physics.clear();
+    } else if (property == "preset") {
         // A preset brings a whole look with it. The area is the preset's own, centered where the item was.
         const auto centerX = item.x + item.width / 2;
         const auto centerY = item.y + item.height / 2;
@@ -828,7 +1017,6 @@ bool SceneDocument::setItemValue(int index, const QString& property, const QVari
     } else if (property == "name") item.name = value.toString();
     else if (property == "text") item.text = value.toString();
     else if (property == "color") item.color = value.toString();
-    else if (property == "controllable") item.controllable = value.toBool();
     else if (property == "x" || property == "y" || property == "width" || property == "height" || property == "scale") {
         const auto number = value.toDouble();
         if (!std::isfinite(number)) {
@@ -879,17 +1067,22 @@ void SceneDocument::renameVariable(const QString& name, const QString& newName) 
         }
     };
     const auto before = document.items;
-    renameIn(document);
-    for (auto& snapshot : history) renameIn(snapshot);
+    if (loaded) {
+        scenes.scenes[currentIndex] = document;
+        for (auto& each : scenes.scenes) renameIn(each);
+        document = scenes.scenes[currentIndex];
+    } else {
+        renameIn(document);
+    }
+    for (auto& snapshot : history) {
+        for (auto& each : snapshot.set.scenes) renameIn(each);
+    }
     QList<int> changed;
     for (int row = 0; row < document.items.size(); ++row) {
         if (document.items[row].text != before[row].text) changed.append(row);
     }
     if (changed.isEmpty()) return;
-    if (loaded) {
-        QString failure;
-        setError(saveScene(path, document, failure) ? QString() : failure);
-    }
+    if (loaded) persist();
     for (const auto row : changed) notifyItem(row);
 }
 
@@ -986,18 +1179,21 @@ void SceneDocument::undo() {
     if (changing || history.isEmpty()) return;
     setNotice({}, false);
     const auto selectedId = isValidIndex(selection) ? document.items[selection].id : QString();
+    const auto step = history.takeLast();
     beginResetModel();
-    document = history.takeLast();
+    scenes = step.set;
+    currentIndex = step.current;
+    document = scenes.scenes[currentIndex];
     selection = indexOfItem(selectedId);
     refreshImageProblems();
     endResetModel();
-    QString failure;
-    setError(saveScene(path, document, failure) ? QString() : failure);
+    persist();
     emit undoChanged();
     emit countChanged();
     emit backgroundChanged();
     emit worldChanged();
     emit selectionChanged();
+    emit scenesChanged();
 }
 
 }

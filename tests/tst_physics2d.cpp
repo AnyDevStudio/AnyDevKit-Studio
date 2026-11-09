@@ -791,6 +791,53 @@ void soakOnRandomWorlds(int rounds, int stepsPerRound, bool quiet) {
     if (!quiet) std::printf("soak finished: %d rounds of %d steps\n", rounds, stepsPerRound);
 }
 
+// Whatever speeds and jumps are asked for, a body shut in by a wall and a floor stays on its own side of
+// them: an overlap check alone cannot see a body that went straight through in one step.
+void soakNeverCrossesAWallOrFloor(int rounds, int stepsPerRound) {
+    std::mt19937 random(0xBADC0DE);
+    const auto roll = [&random](int lowest, int highest) { return lowest + static_cast<int>(random() % static_cast<std::uint32_t>(highest - lowest + 1)); };
+    constexpr int WorldWide = 1280;
+    constexpr int WorldTall = 640;
+    for (int round = 0; round < rounds; ++round) {
+        const int cell = std::array{4, 8, 16, 32, 64}[static_cast<std::size_t>(roll(0, 4))];
+        const int columns = WorldWide / cell;
+        const int rows = 2 * WorldTall / cell; // the map reaches a whole world above the top, as high as a body can go
+        const int wallColumn = roll(columns / 3, 2 * columns / 3);
+        std::vector<std::int32_t> cells(static_cast<std::size_t>(columns * rows), EmptyTile);
+        for (int row = 0; row < rows; ++row) cells[static_cast<std::size_t>(row * columns + wallColumn)] = SolidTile;
+        for (int column = 0; column < columns; ++column) cells[static_cast<std::size_t>((rows - 1) * columns + column)] = SolidTile;
+        std::array<std::uint16_t, 1> solid{SolidTile};
+
+        Sim sim;
+        sim.width = U(WorldWide);
+        sim.height = U(WorldTall);
+        const auto wallLeft = U(wallColumn * cell);
+        const auto floorTop = U(WorldTall - cell);
+        const bool useItems = roll(0, 1) == 0;
+        if (useItems) {
+            sim.solids = {{wallLeft, -U(WorldTall), wallLeft + U(1), U(WorldTall)}, {0, floorTop, U(WorldWide), floorTop + U(1)}};
+        } else {
+            sim.layers = {TileLayer{cells.data(), static_cast<std::uint32_t>(columns), static_cast<std::uint32_t>(rows), cell, cell, 0, -U(WorldTall), solid.data(), 1}};
+        }
+        const BodyConfig config{roll(0, 300), true, roll(60, 3000), roll(16, 2000)};
+        const auto size = roll(1, std::min(100, wallColumn * cell - 1));
+        sim.bodies = {MakeBody(config, U(roll(0, wallColumn * cell - size)), U(roll(0, WorldTall - cell - size)), U(size), U(size))};
+
+        for (int step = 0; step < stepsPerRound; ++step) {
+            auto& body = sim.bodies[0];
+            if (roll(0, 40) == 0) SetVelocity(body, roll(-30000, 30000), roll(-30000, 30000));
+            if (roll(0, 40) == 0) Jump(body);
+            Step(sim.View(), {roll(-1000, 1000), roll(0, 1) == 0, roll(0, 5) == 0});
+            if (body.x + body.width > wallLeft || body.y + body.height > floorTop || body.outside) {
+                ++failures;
+                std::printf("FAIL round %d step %d: cell %d body at %lld,%lld size %d went past the wall or floor\n", round, step, cell, static_cast<long long>(body.x), static_cast<long long>(body.y), size);
+                return;
+            }
+        }
+    }
+    std::printf("wall soak finished: %d rounds of %d steps\n", rounds, stepsPerRound);
+}
+
 }
 
 int main(int argc, char** argv) {
@@ -842,6 +889,7 @@ int main(int argc, char** argv) {
         rounds = 80;
     }
     soakOnRandomWorlds(rounds, steps, false);
+    soakNeverCrossesAWallOrFloor(rounds, steps);
     if (failures != 0) {
         std::printf("%d checks failed\n", failures);
         return 1;
