@@ -83,4 +83,5 @@ inline constexpr std::array<Item, 2> Items{{
 ```
 
 Color channels are the `#RRGGBB` bytes divided by 255. For text items `width` and `height` hold the
-drawn size from the rule above. An empty scene is `inline constexpr std::array<Item, 0> Items{};`.
+drawn size from the rule above. In a text literal `"` and `\\` are escaped, and so is every `?` that
+follows another `?`, because `??=` and similar sequences are trigraphs. An empty scene is `inline constexpr std::array<Item, 0> Items{};`.

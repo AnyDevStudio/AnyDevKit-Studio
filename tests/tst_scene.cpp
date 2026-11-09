@@ -481,6 +481,31 @@ private slots:
         QCOMPARE(generateSceneHeader(Scene{}), expected);
     }
 
+    void headerCannotFormTrigraphs_data() {
+        QTest::addColumn<QString>("text");
+        QTest::addColumn<QByteArray>("literal");
+        QTest::newRow("a title with ??!") << "Really??!" << QByteArray(R"("Really?\?!")");
+        QTest::newRow("??= like a hash") << "??=" << QByteArray(R"("?\?=")");
+        QTest::newRow("three in a row") << "Eh???" << QByteArray(R"("Eh?\?\?")");
+        QTest::newRow("before an escaped backslash") << "??\\" << QByteArray(R"("?\?\\")");
+        QTest::newRow("a single question mark is untouched") << "Why? No?" << QByteArray(R"("Why? No?")");
+    }
+
+    void headerCannotFormTrigraphs() {
+        QFETCH(QString, text);
+        QFETCH(QByteArray, literal);
+
+        SceneItem item;
+        item.id = "item-1";
+        item.type = "text";
+        item.text = text;
+        Scene scene;
+        scene.items = {item};
+
+        const auto header = generateSceneHeader(scene);
+        QVERIFY2(header.contains(literal), header.constData());
+    }
+
     void escapesQuotesAndBackslashes() {
         Scene scene;
         scene.items = {label("t", "T", "say \"hi\" \\ bye\\")};

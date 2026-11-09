@@ -164,9 +164,12 @@ QByteArray colorLiterals(const QString& color) {
 
 QByteArray escapedText(const QString& text) {
     QByteArray escaped;
+    auto previous = '\0';
     for (const char character : text.toLatin1()) {
-        if (character == '"' || character == '\\') escaped += '\\';
+        // A second '?' is escaped because "??=" and friends are trigraphs, which the game's -Werror rejects.
+        if (character == '"' || character == '\\' || (character == '?' && previous == '?')) escaped += '\\';
         escaped += character;
+        previous = character;
     }
     return escaped;
 }
