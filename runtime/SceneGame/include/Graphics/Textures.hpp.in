@@ -1,0 +1,50 @@
+#ifndef @NAME@_Graphics_Textures_hpp
+#define @NAME@_Graphics_Textures_hpp
+#include <array>
+#include <cstddef>
+#include <cstdint>
+
+// The GPU layout of a scene image and the resource descriptors that point at it. Images stay in
+// SW_LINEAR, one mip and one layer, so no tiling code is needed: the bytes in memory are the rows.
+namespace Textures {
+
+constexpr std::size_t BytesPerTexel = 4;
+// Linear rows and base addresses are multiples of 256 bytes on this GPU generation.
+constexpr std::size_t RowAlignment = 256;
+constexpr std::size_t BaseAlignment = 256;
+constexpr std::uint32_t Format8888Unorm = 56;
+
+constexpr std::size_t PitchBytes(std::uint32_t width) {
+    return (static_cast<std::size_t>(width) * BytesPerTexel + RowAlignment - 1) & ~(RowAlignment - 1);
+}
+
+constexpr std::size_t SurfaceBytes(std::uint32_t width, std::uint32_t height) {
+    return PitchBytes(width) * height;
+}
+
+// The eight dwords of a sampled-image descriptor (T#). Fields follow Mesa's GFX10 texture
+// descriptor (RESOURCE_LEVEL and PERF_MOD included) and AnyPS5's decoder for the same words.
+constexpr std::array<std::uint32_t, 8> TextureDescriptor(std::uint64_t address, std::uint32_t width, std::uint32_t height) {
+    const std::uint64_t base = address >> 8;
+    const std::uint32_t widthMinusOne = width - 1;
+    const std::uint32_t heightMinusOne = height - 1;
+    std::array<std::uint32_t, 8> words{};
+    words[0] = static_cast<std::uint32_t>(base);
+    words[1] = static_cast<std::uint32_t>((base >> 32) & 0xff) | (Format8888Unorm << 20) | ((widthMinusOne & 3u) << 30);
+    words[2] = (widthMinusOne >> 2) | (heightMinusOne << 14) | (1u << 31);
+    // DST_SEL R,G,B,A in the low bits; base and last level 0; SW_LINEAR is 0; TYPE 9 is 2D.
+    words[3] = 4u | (5u << 3) | (6u << 6) | (7u << 9) | (9u << 28);
+    words[5] = 4u << 20;
+    return words;
+}
+
+// The four dwords of a sampler descriptor (S#): clamp to the last texel, bilinear, no mipmaps.
+constexpr std::array<std::uint32_t, 4> BilinearClampSampler() {
+    return {2u | (2u << 3) | (2u << 6), 0u, (1u << 20) | (1u << 22), 0u};
+}
+
+// S# then T#, matching the --descriptor layout of ScreenImage.frag in CMakeLists.txt.
+constexpr std::size_t TableBytes = 16 + 32;
+
+}
+#endif

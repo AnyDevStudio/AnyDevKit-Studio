@@ -22,7 +22,9 @@ namespace Studio {
 
 namespace {
 
-constexpr int SupportedSchema = 1;
+// The version saved today. Version 1 files have no image items and still load.
+constexpr int CurrentSchema = 2;
+constexpr int OldestLoadableSchema = 1;
 constexpr int MaximumItems = 256;
 constexpr int MaximumTextLength = 64;
 constexpr int MaximumScale = 40;
@@ -31,7 +33,16 @@ constexpr double MaximumCoordinate = 1e38;
 
 constexpr auto RectangleType = "rectangle";
 constexpr auto TextType = "text";
+constexpr auto ImageType = "image";
 constexpr auto SceneFileName = "scene.json";
+constexpr auto ImageFolderPrefix = "assets/";
+constexpr auto GeneratedHeaderPath = "src/GeneratedScene.hpp";
+constexpr auto GeneratedImageSourcePath = "src/GeneratedImages.cpp";
+constexpr auto GeneratedImageFolder = "src/GeneratedImages";
+// Limits for decoded images: the T# width and height fields allow more, but one scene has to fit
+// in GPU memory next to everything else, and every byte also ends up in the game's executable.
+constexpr int MaximumImageDimension = 4096;
+constexpr qint64 MaximumTotalImageBytes = 256 * 1024 * 1024;
 constexpr auto BackupFolderName = ".studio-backup";
 
 SceneLoadResult failure(const QString& message) {
@@ -66,6 +77,16 @@ bool isDisplayableText(const QString& text) {
     return true;
 }
 
+// Path rules checked without touching the disk; imageFileProblem looks at the actual files.
+bool isImageSource(const QString& source) {
+    if (!source.startsWith(ImageFolderPrefix) || source.contains('\\') || source.contains(':')) return false;
+    if (!source.endsWith(".png", Qt::CaseInsensitive)) return false;
+    for (const auto& part : source.split('/')) {
+        if (part.isEmpty() || part == "." || part == "..") return false;
+    }
+    return true;
+}
+
 bool isUsableNumber(double value) {
     return std::isfinite(value) && std::abs(value) <= MaximumCoordinate;
 }
@@ -75,15 +96,21 @@ QString validateItem(const SceneItem& item, qsizetype index, QSet<QString>& used
     if (usedIds.contains(item.id)) return itemError(item, index, QString("id \"%1\" is already used. Give each item its own id.").arg(item.id));
     usedIds.insert(item.id);
 
-    if (item.type != RectangleType && item.type != TextType) return itemError(item, index, "type must be \"rectangle\" or \"text\".");
+    const auto isImage = item.type == ImageType;
+    if (item.type != RectangleType && item.type != TextType && !isImage) return itemError(item, index, "type must be \"rectangle\", \"text\" or \"image\".");
 
     for (const auto& [field, value] : {std::pair<const char*, double>{"x", item.x}, {"y", item.y}}) {
         if (!isUsableNumber(value)) return itemError(item, index, QString("%1 must be a number between -1e38 and 1e38.").arg(field));
     }
-    if (item.type == RectangleType) {
+    if (item.type == RectangleType || isImage) {
         for (const auto& [field, value] : {std::pair<const char*, double>{"width", item.width}, {"height", item.height}}) {
             if (!isUsableNumber(value) || value <= 0) return itemError(item, index, QString("%1 must be a number above 0 and at most 1e38.").arg(field));
         }
+    }
+
+    if (isImage) {
+        if (!isImageSource(item.source)) return itemError(item, index, "source must be a .png file inside the project's assets folder, for example assets/logo.png.");
+        return {};
     }
 
     if (!isColor(item.color)) return itemError(item, index, "color must look like #RRGGBB, for example #FFD23F.");
@@ -121,6 +148,7 @@ QString parseItem(const QJsonValue& value, qsizetype index, SceneItem& item) {
         item.width = numberOrInvalid(object.value("width"));
         item.height = numberOrInvalid(object.value("height"));
     }
+    if (item.type == ImageType) item.source = object.value("source").toString();
 
     const auto controllable = object.value("controllable");
     if (!controllable.isUndefined() && !controllable.isBool()) return itemError(item, index, "controllable must be true or false.");
@@ -135,9 +163,10 @@ QJsonObject itemToJson(const SceneItem& item) {
         {"name", item.name},
         {"x", item.x},
         {"y", item.y},
-        {"color", item.color},
         {"controllable", item.controllable},
     };
+    if (item.type != ImageType) object.insert("color", item.color);
+    if (item.type == ImageType) object.insert("source", item.source);
     if (item.type == TextType) {
         object.insert("scale", item.scale);
         object.insert("text", item.text);
@@ -171,17 +200,19 @@ QByteArray escapedText(const QString& text) {
     return escaped;
 }
 
-QByteArray itemLine(const SceneItem& item) {
+QByteArray itemLine(const SceneItem& item, const QStringList& imageSources) {
     const auto isText = item.type == TextType;
+    const auto isImage = item.type == ImageType;
     const auto width = isText ? double((item.text.size() * 6 - 1) * item.scale) : item.width;
     const auto height = isText ? double(7 * item.scale) : item.height;
     QByteArray line = "    {Kind::";
-    line += isText ? "Text" : "Rectangle";
+    line += isText ? "Text" : isImage ? "Image" : "Rectangle";
     for (const auto value : {item.x, item.y, width, height}) line += ", " + floatLiteral(value);
-    line += ", " + colorLiterals(item.color);
+    line += ", " + (isImage ? QByteArray("0.0f, 0.0f, 0.0f") : colorLiterals(item.color));
     line += ", " + floatLiteral(isText ? item.scale : 0);
     line += ", \"" + (isText ? escapedText(item.text) : QByteArray()) + "\", ";
     line += item.controllable ? "true" : "false";
+    if (isImage) line += ", " + QByteArray::number(imageSources.indexOf(item.source));
     line += "},\n";
     return line;
 }
@@ -230,6 +261,25 @@ bool writeFile(const QString& path, const QByteArray& contents, QString& problem
     return true;
 }
 
+// True when `images` holds exactly the scene's sources, in order, each with a full set of pixels.
+bool imagesMatchScene(const Scene& scene, const QList<SceneImageData>& images) {
+    const auto sources = sceneImageSources(scene);
+    if (images.size() != sources.size()) return false;
+    for (qsizetype index = 0; index < images.size(); ++index) {
+        const auto& image = images[index];
+        if (image.source != sources[index] || image.width < 1 || image.height < 1) return false;
+        if (image.pixels.size() != qint64(image.width) * image.height * 4) return false;
+    }
+    return true;
+}
+
+// Leaves an identical file alone so its timestamp does not trigger a needless rebuild.
+bool writeIfChanged(const QString& path, const QByteArray& contents, QString& problem) {
+    QFile existing(path);
+    if (existing.size() == contents.size() && existing.open(QIODevice::ReadOnly) && existing.readAll() == contents) return true;
+    return writeFile(path, contents, problem);
+}
+
 QString newBackupFolderName(const QString& root) {
     auto moment = QDateTime::currentDateTime();
     auto name = moment.toString("yyyyMMdd-HHmmss");
@@ -266,7 +316,8 @@ SceneLoadResult loadScene(const QString& path) {
     const auto root = document.object();
 
     const auto schema = root.value("schemaVersion");
-    if (!schema.isDouble() || schema.toInt(-1) != SupportedSchema) return failure(QString("%1 needs schemaVersion %2, the only version this Studio supports.").arg(fileName).arg(SupportedSchema));
+    const auto version = schema.toInt(-1);
+    if (!schema.isDouble() || version < OldestLoadableSchema || version > CurrentSchema) return failure(QString("%1 needs schemaVersion %2 or %3, the versions this Studio supports.").arg(fileName).arg(OldestLoadableSchema).arg(CurrentSchema));
     if (!root.value("items").isArray()) return failure(QString("%1 has no items list. Add \"items\": [] to the file.").arg(fileName));
 
     Scene scene;
@@ -276,6 +327,7 @@ SceneLoadResult loadScene(const QString& path) {
         SceneItem item;
         const auto problem = parseItem(items.at(index), index, item);
         if (!problem.isEmpty()) return failure(problem);
+        if (version < CurrentSchema && item.type == ImageType) return failure(QString("%1 uses an image item, which needs schemaVersion %2. Change schemaVersion to %2 and try again.").arg(fileName).arg(CurrentSchema));
         scene.items.append(item);
     }
 
@@ -290,7 +342,7 @@ bool saveScene(const QString& path, const Scene& scene, QString& error) {
 
     QJsonArray items;
     for (const auto& item : scene.items) items.append(itemToJson(item));
-    const QJsonObject root{{"schemaVersion", SupportedSchema}, {"background", scene.background}, {"items", items}};
+    const QJsonObject root{{"schemaVersion", CurrentSchema}, {"background", scene.background}, {"items", items}};
     const auto contents = QJsonDocument(root).toJson();
 
     QSaveFile file(path);
@@ -301,19 +353,80 @@ bool saveScene(const QString& path, const Scene& scene, QString& error) {
     return true;
 }
 
-QByteArray generateSceneHeader(const Scene& scene) {
-    if (!validateScene(scene).isEmpty()) return {};
+QStringList sceneImageSources(const Scene& scene) {
+    QStringList sources;
+    for (const auto& item : scene.items) {
+        if (item.type == ImageType && !sources.contains(item.source)) sources << item.source;
+    }
+    return sources;
+}
+
+QString imageSizeProblem(int width, int height, qint64 bytesSoFar) {
+    if (width < 1 || height < 1) return "it is empty. Choose an image that has pixels";
+    if (width > MaximumImageDimension || height > MaximumImageDimension) return QString("it is %1x%2 pixels, and an image can be at most %3 pixels on each side. Scale it down and try again").arg(width).arg(height).arg(MaximumImageDimension);
+    if (bytesSoFar + qint64(width) * height * 4 > MaximumTotalImageBytes) return QString("the scene's images would use more than %1 MB of GPU memory. Remove or shrink some images and try again").arg(MaximumTotalImageBytes / (1024 * 1024));
+    return {};
+}
+
+QString imageFileProblem(const QString& projectRoot, const QString& source) {
+    const auto root = QDir::cleanPath(QDir(projectRoot).absolutePath());
+    if (!isImageSource(source) || !isInsideDirectory(root + '/' + source, root)) return QString("%1 is not a .png file inside the project's assets folder.").arg(source);
+    const auto parts = source.split('/');
+    auto current = root;
+    for (qsizetype index = 0; index < parts.size(); ++index) {
+        current += '/' + parts[index];
+        const QFileInfo info(current);
+        const auto shown = parts.mid(0, index + 1).join('/');
+        if (info.isSymLink() || info.isJunction()) return QString("%1 is a link, so the image %2 was not read. Replace the link with a regular file or folder and try again.").arg(shown, source);
+        if (!info.exists()) return QString("%1 could not be found. Add the file to the project or remove the image from the scene.").arg(source);
+        const auto isLast = index == parts.size() - 1;
+        if (isLast && !info.isFile()) return QString("%1 is a folder, not an image file. Choose a .png file.").arg(source);
+        if (!isLast && !info.isDir()) return QString("%1 is a file, but the image %2 needs a folder there.").arg(shown, source);
+    }
+    return {};
+}
+
+QByteArray generateImageSource(const QList<SceneImageData>& images) {
+    QByteArray source = "// Generated by AnyDevKit Studio from scene.json. Do not edit.\n#include \"GeneratedScene.hpp\"\n\n";
+    if (!images.isEmpty()) {
+        // Pixels are raw files pulled in by the assembler, so the compiler never parses them.
+        source += "// SCENE_IMAGE_DIRECTORY comes from CMakeLists.txt and points at src/GeneratedImages.\n";
+    }
+    for (qsizetype index = 0; index < images.size(); ++index) {
+        const auto number = QByteArray::number(index);
+        const auto symbol = "StudioSceneImage" + number;
+        source += "__asm__(\".pushsection .rodata\\n.balign 16\\n.hidden " + symbol + "\\n" + symbol + ":\\n.incbin \\\"\" SCENE_IMAGE_DIRECTORY \"/image-" + number + ".rgba\\\"\\n.popsection\\n\");\n";
+        source += "extern \"C\" const std::uint8_t " + symbol + "[];\n";
+    }
+    source += "\nnamespace GeneratedScene {\n\n";
+    if (images.isEmpty()) {
+        source += "const std::array<Image, 0> Images{};\n";
+    } else {
+        source += "const std::array<Image, " + QByteArray::number(images.size()) + "> Images{{\n";
+        for (qsizetype index = 0; index < images.size(); ++index) {
+            source += "    {StudioSceneImage" + QByteArray::number(index) + ", " + QByteArray::number(images[index].width) + ", " + QByteArray::number(images[index].height) + "},\n";
+        }
+        source += "}};\n";
+    }
+    source += "\n}\n";
+    return source;
+}
+
+QByteArray generateSceneHeader(const Scene& scene, const QList<SceneImageData>& images) {
+    if (!validateScene(scene).isEmpty() || !imagesMatchScene(scene, images)) return {};
+    const auto imageSources = sceneImageSources(scene);
 
     QByteArray header = R"cpp(// Generated by AnyDevKit Studio from scene.json. Do not edit.
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <string_view>
 
 namespace GeneratedScene {
 
-enum class Kind : std::uint8_t { Rectangle, Text };
+enum class Kind : std::uint8_t { Rectangle, Text, Image };
 
 struct Item {
     Kind kind;
@@ -322,19 +435,70 @@ struct Item {
     float textScale;
     std::string_view text;
     bool controllable;
+    std::int32_t image = -1; // index into Images for an image item
+};
+
+// Row by row, top row first, 4 bytes per pixel: red, green, blue, alpha, with alpha already applied.
+struct Image {
+    const std::uint8_t* pixels;
+    std::uint32_t width, height;
 };
 
 )cpp";
     header += "inline constexpr std::array<float, 3> Background{" + colorLiterals(scene.background) + "};\n";
+    header += "inline constexpr std::size_t ImageCount = " + QByteArray::number(images.size()) + ";\n";
+    header += "extern const std::array<Image, ImageCount> Images; // defined in src/GeneratedImages.cpp\n";
     if (scene.items.isEmpty()) {
         header += "inline constexpr std::array<Item, 0> Items{};\n";
     } else {
         header += "inline constexpr std::array<Item, " + QByteArray::number(scene.items.size()) + "> Items{{\n";
-        for (const auto& item : scene.items) header += itemLine(item);
+        for (const auto& item : scene.items) header += itemLine(item, imageSources);
         header += "}};\n";
     }
     header += "\n}\n";
     return header;
+}
+
+bool writeGeneratedScene(const QString& projectRoot, const Scene& scene, const QList<SceneImageData>& images, QString& error) {
+    error.clear();
+    const auto header = generateSceneHeader(scene, images);
+    if (header.isEmpty()) {
+        error = "The scene could not be exported because it has a problem or its images do not match. Check the scene and try again.";
+        return false;
+    }
+    const auto root = QDir::cleanPath(QDir(projectRoot).absolutePath());
+
+    QList<RuntimeFile> files{{GeneratedHeaderPath, header}, {GeneratedImageSourcePath, generateImageSource(images)}};
+    QSet<QString> keptImages;
+    for (qsizetype index = 0; index < images.size(); ++index) {
+        const auto name = QString("image-%1.rgba").arg(index);
+        files.append({QString(GeneratedImageFolder) + '/' + name, images[index].pixels});
+        keptImages.insert(name);
+    }
+
+    for (const auto& file : files) {
+        const auto problem = checkTargetPath(root, file.relativePath);
+        if (!problem.isEmpty()) {
+            error = problem;
+            return false;
+        }
+    }
+    for (const auto& file : files) {
+        QString problem;
+        if (!writeIfChanged(root + '/' + file.relativePath, file.contents, problem)) {
+            error = QString("%1 could not be written: %2.").arg(file.relativePath, problem);
+            return false;
+        }
+    }
+
+    // Pixels of images the scene no longer uses would keep bloating the build; only this folder's own files go.
+    const QFileInfo folderInfo(root + '/' + GeneratedImageFolder);
+    if (!folderInfo.isDir() || folderInfo.isSymLink() || folderInfo.isJunction()) return true;
+    const QDir imageFolder(folderInfo.filePath());
+    for (const auto& name : imageFolder.entryList({"image-*.rgba"}, QDir::Files)) {
+        if (!keptImages.contains(name)) QFile::remove(imageFolder.filePath(name));
+    }
+    return true;
 }
 
 bool installSceneRuntime(const QString& runtimeDirectory, const QString& projectRoot, const QString& projectName, QString& error) {

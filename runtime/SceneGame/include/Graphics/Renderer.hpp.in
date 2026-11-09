@@ -30,6 +30,7 @@ private:
         Frame* Frames = nullptr;
         std::uint32_t* Descriptor = nullptr;
         ShaderRegister* Contexts = nullptr;
+        ShaderRegister* ImageContexts = nullptr;
         std::size_t Bytes = 0;
         bool Pending = false;
     };
@@ -40,14 +41,19 @@ private:
     void selectSlot(std::size_t index);
     void waitSlot(DrawSlot& slot);
     Shader* createShader(std::span<const std::uint8_t> header, std::span<const std::uint8_t> code);
+    void uploadImages();
     Memory memory;
     std::unique_ptr<Pipeline> pipeline;
     Shader* vertex;
     Shader* fragment;
+    Shader* imageFragment = nullptr;
+    std::unique_ptr<Pipeline> imagePipeline;
+    std::uint32_t* imageTables = nullptr;
     std::uint32_t* commands;
     std::uint64_t* fence;
     Frame* frames;
     std::uint32_t* descriptor;
     ShaderRegister* contexts;
+    ShaderRegister* imageContexts = nullptr;
 };
 #endif
