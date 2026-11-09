@@ -1,4 +1,5 @@
 #include "BuildRunner.h"
+#include "CodeEditors.h"
 #include "Project.h"
 
 #include <QDir>
@@ -151,6 +152,79 @@ private slots:
         environment.insert("PATH", "/usr/bin");
         const auto result = withToolDirectories(environment, {"/first", "/second"});
         QCOMPARE(result.value("PATH"), QString("/first") + QDir::listSeparator() + "/second" + QDir::listSeparator() + "/usr/bin");
+    }
+
+    void findsEditorsOnPath() {
+        QTemporaryDir directory;
+#ifdef Q_OS_WIN
+        const QString fake = directory.path() + "/code.exe";
+#else
+        const QString fake = directory.path() + "/code";
+#endif
+        writeText(fake);
+        QFile::setPermissions(fake, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
+        const auto editors = detectCodeEditors({{directory.path()}, {}, {}});
+        QCOMPARE(editors.size(), 1);
+        QCOMPARE(editors[0].id, QString("vscode"));
+        QCOMPARE(editors[0].name, QString("VS Code"));
+        QCOMPARE(editors[0].program, fake);
+    }
+
+    void findsMacApplications() {
+        QTemporaryDir directory;
+        QVERIFY(QDir().mkpath(directory.path() + "/Visual Studio Code.app"));
+        QVERIFY(QDir().mkpath(directory.path() + "/Xcode.app"));
+        const auto editors = detectCodeEditors({{}, {directory.path()}, {}});
+        QCOMPARE(editors.size(), 2);
+        QCOMPARE(editors[0].id, QString("vscode"));
+        QCOMPARE(editors[0].program, QString("open"));
+        QCOMPARE(editors[0].launcherArguments, QStringList({"-a", directory.path() + "/Visual Studio Code.app"}));
+        QCOMPARE(editors[1].id, QString("xcode"));
+    }
+
+    void findsVisualStudioOfAnyYearAndEdition() {
+        QTemporaryDir directory;
+        const auto devenv = directory.path() + "/Microsoft Visual Studio/2022/Community/Common7/IDE/devenv.exe";
+        writeText(devenv);
+        const auto editors = detectCodeEditors({{}, {}, {directory.path()}});
+        QCOMPARE(editors.size(), 1);
+        QCOMPARE(editors[0].id, QString("visualstudio"));
+        QCOMPARE(editors[0].name, QString("Visual Studio"));
+        QCOMPARE(editors[0].program, devenv);
+    }
+
+    void listsEachEditorOnce() {
+        QTemporaryDir directory;
+#ifdef Q_OS_WIN
+        const QString fake = directory.path() + "/code.exe";
+#else
+        const QString fake = directory.path() + "/code";
+#endif
+        writeText(fake);
+        QFile::setPermissions(fake, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
+        QVERIFY(QDir().mkpath(directory.path() + "/Visual Studio Code.app"));
+        QCOMPARE(detectCodeEditors({{directory.path()}, {directory.path()}, {}}).size(), 1);
+    }
+
+    void opensFileInsideTheProjectFolder() {
+        const CodeEditor vscode{"vscode", "VS Code", "/bin/code", {}};
+        const auto launch = editorLaunch(vscode, "/game", "/game/src/Main.cpp");
+        QCOMPARE(launch.program, QString("/bin/code"));
+        QCOMPARE(launch.arguments, QStringList({"/game", "/game/src/Main.cpp"}));
+        QCOMPARE(editorLaunch(vscode, "/game").arguments, QStringList({"/game"}));
+    }
+
+    void visualStudioUsesItsEditSwitchForFiles() {
+        const CodeEditor visualStudio{"visualstudio", "Visual Studio", "C:/VS/devenv.exe", {}};
+        QCOMPARE(editorLaunch(visualStudio, "C:/game", "C:/game/a.cpp").arguments, QStringList({"/Edit", "C:/game/a.cpp"}));
+        QCOMPARE(editorLaunch(visualStudio, "C:/game").arguments, QStringList({"C:/game"}));
+    }
+
+    void macApplicationsKeepTheirLauncherArguments() {
+        const CodeEditor editor{"vscode", "VS Code", "open", {"-a", "/Applications/Visual Studio Code.app"}};
+        const auto launch = editorLaunch(editor, "/game", "/game/a.cpp");
+        QCOMPARE(launch.program, QString("open"));
+        QCOMPARE(launch.arguments, QStringList({"-a", "/Applications/Visual Studio Code.app", "/game", "/game/a.cpp"}));
     }
 
     void runsStepsAndForwardsOutput() {
