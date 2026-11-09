@@ -84,6 +84,7 @@ more actions.
 | `addScore`    | Add to score      | `value`                 | adds `value`, which can be negative    |
 | `setScore`    | Set score         | `value`                 | replaces the score                     |
 | `ifScore`     | If score          | `comparison`, `value`, `actions` | runs `actions` when the score compares true |
+| `burstParticles` | Burst particles from item | `item` | plays that Particles item once, at its current position, on top of anything already running. The item must be a Particles item |
 
 `comparison` is one of `equal`, `notEqual`, `less`, `lessOrEqual`, `greater`, `greaterOrEqual`.
 
@@ -94,8 +95,8 @@ more actions.
   across saves, so an editor can refer to a block.
 - Events go at the top level only. Actions go inside an event or inside `ifScore`.
 - `item` and `otherItem` are `id` values from `scene.json`. A build fails when one is missing or not
-  in the scene, or when an event's two items are the same. A file in that state can still be opened
-  and saved, so it can be repaired.
+  in the scene, when an event's two items are the same, or when `burstParticles` names an item that is
+  not a Particles item. A file in that state can still be opened and saved, so it can be repaired.
 - `x` and `y` are numbers from -1000000 to 1000000. `color` is `#RRGGBB`.
 - `value` is a whole number from -1000000000 to 1000000000.
 - Limits: 128 events, 2048 blocks in total, blocks nested at most 8 levels deep counting the event as
@@ -131,7 +132,12 @@ Limits at run time:
 - The score stops at the largest or smallest 32-bit whole number instead of overflowing.
 
 A hidden item is not drawn but keeps its position, can still be moved and still follows the
-controller if it is `controllable`.
+controller if it is `controllable`. A hidden Particles item also stops making new particles; the ones
+already alive keep aging out.
+
+`burstParticles` on a one-shot Particles item (`looping` is `false` in [scene-format.md](scene-format.md))
+means the item waits for the block instead of also playing when the game starts: the generated `OnStart`
+calls `world.AwaitBurst(i)` for it.
 
 ## src/GeneratedLogic.hpp
 

@@ -122,6 +122,31 @@ Block ifScore(const QString& id, ScoreComparison comparison, int value, const QL
     return block;
 }
 
+SceneItem particlesItem(const QString& id, const QString& preset, bool looping) {
+    SceneItem item;
+    item.id = id;
+    item.type = "particles";
+    item.name = id;
+    item.x = 800;
+    item.y = 400;
+    item.width = 200;
+    item.height = 200;
+    applyParticlePreset(item, preset);
+    item.x = 800;
+    item.y = 400;
+    item.width = 200;
+    item.height = 200;
+    item.amount = 200;
+    item.looping = looping;
+    return item;
+}
+
+Scene burstScene(bool looping) {
+    auto scene = gameScene();
+    scene.items.append(particlesItem("fx", "sparks", looping));
+    return scene;
+}
+
 // Uses every event, action, and a nested If score.
 LogicProgram everyBlockProgram() {
     LogicProgram program;
@@ -319,7 +344,7 @@ void show(const SceneState& scene) {
     }
     std::printf("\n");
 }
-void frame(SceneState& scene, std::uint32_t buttons = 0, float directionX = 0.0f, double seconds = 0.0) {
+[[maybe_unused]] void frame(SceneState& scene, std::uint32_t buttons = 0, float directionX = 0.0f, double seconds = 0.0) {
     scene.Update(seconds, {directionX, 0.0f}, buttons);
     show(scene);
 }
@@ -352,7 +377,7 @@ HarnessResult runHarness(const Scene& scene, const QByteArray& logicHeader, cons
     const auto root = directory.path();
     const QString runtime = QString(STUDIO_TEST_SOURCE_DIR) + "/runtime/SceneGame";
 
-    for (const auto& relative : {QString("include/Scene/SceneState.hpp"), QString("src/Scene/SceneState.cpp"), QString("include/Input/Buttons.hpp")}) {
+    for (const auto& relative : {QString("include/Scene/SceneState.hpp"), QString("include/Scene/Particles.hpp"), QString("src/Scene/SceneState.cpp"), QString("include/Input/Buttons.hpp")}) {
         auto contents = readBytes(runtime + '/' + relative + ".in");
         if (contents.isEmpty()) {
             result.buildOutput = "missing runtime file " + relative;
@@ -398,7 +423,7 @@ class TstBlocks : public QObject {
 
 private slots:
     void catalogDescribesEveryBlockOnce() {
-        QCOMPARE(blockCatalog().size(), 12);
+        QCOMPARE(blockCatalog().size(), 13);
         QSet<QString> names;
         QSet<QString> titles;
         for (const auto& info : blockCatalog()) {
@@ -408,8 +433,8 @@ private slots:
             titles.insert(info.title);
             QCOMPARE(blockInfo(info.type).jsonName, info.jsonName);
         }
-        QCOMPARE(names.size(), 12);
-        QCOMPARE(titles.size(), 12);
+        QCOMPARE(names.size(), 13);
+        QCOMPARE(titles.size(), 13);
         QCOMPARE(buttonCatalog().size(), 8);
         QCOMPARE(comparisonCatalog().size(), 6);
         QVERIFY(blockInfo(BlockType::EveryFrame).isEvent);
@@ -797,6 +822,80 @@ private slots:
             "score=116 [100.0,100.0 1 0.00,0.00,0.00] [80.0,100.0 0 1.00,0.00,0.00] [0.0,0.0 1 0.00,0.00,1.00]",
         };
         QCOMPARE(result.lines, expected);
+    }
+
+    void burstParticlesLoadsAndSaves() {
+        const auto result = loadAction(QJsonObject{{"id", "b"}, {"type", "burstParticles"}, {"item", "fx"}});
+        QVERIFY2(result.program.has_value(), qPrintable(result.error));
+        const auto& block = result.program->events.first().children.first();
+        QCOMPARE(block.item, QString("fx"));
+        QCOMPARE(blockInfo(block.type).title, QString("Burst particles from item"));
+        QCOMPARE(blockInfo(block.type).jsonName, QString("burstParticles"));
+        QVERIFY(blockInfo(block.type).usesItem);
+    }
+
+    void burstNeedsAParticlesItem() {
+        LogicProgram program;
+        program.events = {eventBlock("e", BlockType::EveryFrame, {itemBlock("b", BlockType::BurstParticles, "coin")})};
+        const auto problems = validateLogic(program, burstScene(true));
+        QCOMPARE(problems.size(), qsizetype(1));
+        QVERIFY2(problems.first().message.contains("Particles"), qPrintable(problems.first().message));
+        QCOMPARE(problems.first().blockId, QString("b"));
+        QVERIFY(generateLogicHeader(program, burstScene(true)).isEmpty());
+    }
+
+    void burstGeneratesItsCall() {
+        LogicProgram program;
+        program.events = {touch("t", "player", "coin", {itemBlock("b", BlockType::BurstParticles, "fx")})};
+        const auto header = generateLogicHeader(program, burstScene(true));
+        QVERIFY2(header.contains("world.BurstParticles(3); // b"), header.constData());
+        QVERIFY(!header.contains("AwaitBurst"));
+    }
+
+    void aOneShotItemTheBlocksBurstWaitsForTheBlock() {
+        LogicProgram program;
+        program.events = {touch("t", "player", "coin", {itemBlock("b", BlockType::BurstParticles, "fx")})};
+        const auto header = generateLogicHeader(program, burstScene(false));
+        QVERIFY2(header.contains("world.AwaitBurst(3);"), header.constData());
+        // Waiting has to be set up before the first frame, in OnStart.
+        QVERIFY(header.indexOf("world.AwaitBurst(3);") < header.indexOf("OnFrame"));
+    }
+
+    void runtimeBurstsWhenTouched() {
+        if (!hasPosixCompiler()) QSKIP("The generated logic is only compiled here with a GCC style compiler.");
+        LogicProgram program;
+        program.events = {touch("t", "player", "coin", {itemBlock("b", BlockType::BurstParticles, "fx")})};
+        const auto header = generateLogicHeader(program, burstScene(false));
+        QVERIFY(!header.isEmpty());
+        const auto result = runHarness(burstScene(false), header, R"cpp(
+    scene.Update(0.5, {0.0f, 0.0f}, 0);
+    std::printf("waiting=%zu\n", scene.ParticleQuads(3).size());
+    scene.SetPosition(0, 400.0f, 100.0f);
+    scene.Update(1.0 / 120.0, {0.0f, 0.0f}, 0);
+    std::printf("burst=%zu\n", scene.ParticleQuads(3).size());
+    scene.Update(5.0, {0.0f, 0.0f}, 0);
+    scene.Update(5.0, {0.0f, 0.0f}, 0);
+    std::printf("after=%d\n", scene.ParticleQuads(3).size() <= 200 ? 1 : 0);)cpp");
+        QVERIFY2(result.built, qPrintable(result.buildOutput));
+        const auto lines = result.lines.mid(1); // the first line is the state before any frame
+        QCOMPARE(lines.size(), qsizetype(3));
+        QCOMPARE(lines[0], QString("waiting=0"));
+        QVERIFY2(lines[1] != "burst=0", qPrintable(lines[1]));
+        QCOMPARE(lines[2], QString("after=1"));
+    }
+
+    void runtimeRunsLoopingParticlesWithoutBlocks() {
+        if (!hasPosixCompiler()) QSKIP("The generated logic is only compiled here with a GCC style compiler.");
+        const auto result = runHarness(burstScene(true), generateEmptyLogicHeader(), R"cpp(
+    for (int index = 0; index < 120; ++index) scene.Update(1.0 / 60.0, {0.0f, 0.0f}, 0);
+    const auto quads = scene.ParticleQuads(3);
+    std::printf("quads=%d\n", quads.size() > 0 && quads.size() <= 200 ? 1 : 0);
+    std::printf("capacity=%d\n", static_cast<int>(GeneratedScene::ParticleCapacity));
+    scene.SetVisible(3, false);
+    scene.Update(1.0 / 60.0, {0.0f, 0.0f}, 0);
+    std::printf("hidden=%zu\n", scene.ParticleQuads(3).size());)cpp");
+        QVERIFY2(result.built, qPrintable(result.buildOutput));
+        QCOMPARE(result.lines.mid(1), QStringList({"quads=1", "capacity=200", "hidden=0"}));
     }
 
     void runtimeWithEmptyLogicBehavesAsBefore() {
