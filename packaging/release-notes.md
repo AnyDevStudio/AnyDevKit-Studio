@@ -1,6 +1,10 @@
-> **Alpha.** Expect rough edges. Scenes with images, text, shapes, controller movement and logic blocks have
-> run in AnyPS5 on a Mac. Nothing has been run on a real PS5, and sound, saving, tilemaps, sprites, physics and
-> multiple scenes build for PS5 but have not yet been seen running.
+> **Alpha.** Expect rough edges. Scenes with images, text, shapes, tilemaps, sprite sheets, controller movement
+> and logic blocks have run in AnyPS5 on a Mac. Nothing has been run on a real PS5, and sound and saving build
+> for PS5 but have not yet been confirmed working there.
+
+New in this version: top-down controls for moving bodies, a When a button is pressed event, stick directions as
+buttons, and If distance between, Chase and Put item blocks. [Greenhollow](https://github.com/AnyDevStudio/Greenhollow)
+is a small RPG made with them.
 
 Packages for macOS, Windows and Linux. Qt is included, so there is nothing else to install to open
 Studio. To build PS5 packages you also need the AnyDevKit SDK and its tools: the Set up PS5 tools
