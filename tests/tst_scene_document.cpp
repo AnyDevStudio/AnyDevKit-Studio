@@ -247,6 +247,109 @@ private slots:
         QVERIFY(document.selected().isEmpty());
     }
 
+    void addingParticlesUsesFireworksDefaults() {
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        const auto index = document.addItem("particles", 960, 540);
+        QCOMPARE(index, 0);
+        QCOMPARE(document.data(document.index(0), SceneDocument::TypeRole).toString(), QString("particles"));
+        const auto selected = document.selected();
+        QCOMPARE(selected.value("preset").toString(), QString("fireworks"));
+        QVERIFY(selected.value("amount").toInt() > 0);
+        QVERIFY(selected.value("looping").toBool());
+        QVERIFY(selected.value("name").toString().startsWith("Particles"));
+        const auto saved = savedScene(directory).items.first();
+        QCOMPARE(saved.preset, QString("fireworks"));
+        QVERIFY(saved.x >= 0);
+        QVERIFY(saved.x + saved.width <= 1920);
+        QVERIFY(saved.y + saved.height <= 1080);
+    }
+
+    void aPresetAppliesItsLookInOneUndo() {
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        document.addItem("particles", 960, 540);
+        const auto before = document.selected();
+        QVERIFY(document.setItemValue(0, "preset", "snow"));
+        const auto selected = document.selected();
+        QCOMPARE(selected.value("preset").toString(), QString("snow"));
+        QCOMPARE(selected.value("width").toDouble(), 1920.0);
+        QCOMPARE(selected.value("height").toDouble(), 1080.0);
+        QCOMPARE(selected.value("x").toDouble(), 0.0);
+        QVERIFY(selected.value("amount").toInt() != before.value("amount").toInt());
+        document.undo();
+        QCOMPARE(document.selected().value("preset").toString(), QString("fireworks"));
+    }
+
+    void particleSettingsAreEditable() {
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        document.addItem("particles", 960, 540);
+        QVERIFY(document.setItemValue(0, "palette", "fire"));
+        QVERIFY(document.setItemValue(0, "amount", 1234));
+        QVERIFY(document.setItemValue(0, "spread", 77));
+        QVERIFY(document.setItemValue(0, "speed", 55));
+        QVERIFY(document.setItemValue(0, "gravity", -40));
+        QVERIFY(document.setItemValue(0, "pixelSize", 4));
+        QVERIFY(document.setItemValue(0, "looping", false));
+        const auto saved = savedScene(directory).items.first();
+        QCOMPARE(saved.palette, QString("fire"));
+        QCOMPARE(saved.amount, 1234);
+        QCOMPARE(saved.spread, 77);
+        QCOMPARE(saved.speed, 55);
+        QCOMPARE(saved.gravity, -40);
+        QCOMPARE(saved.pixelSize, 4);
+        QVERIFY(!saved.looping);
+    }
+
+    void badParticleSettingsAreRefusedAndExplained() {
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        document.addItem("particles", 960, 540);
+        QVERIFY(!document.setItemValue(0, "amount", 0));
+        QVERIFY2(document.error().contains("amount"), qPrintable(document.error()));
+        QVERIFY(!document.setItemValue(0, "preset", "lava"));
+        QVERIFY(document.error().contains("preset"));
+        QVERIFY(!document.setItemValue(0, "amount", QStringLiteral("many")));
+        QCOMPARE(savedScene(directory).items.first().preset, QString("fireworks"));
+    }
+
+    void particleSettingsDoNotApplyToOtherItems() {
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        document.addItem("rectangle", 960, 540);
+        QVERIFY(!document.setItemValue(0, "preset", "snow"));
+        QVERIFY(!document.setItemValue(0, "amount", 5));
+        QCOMPARE(document.selected().value("width").toDouble(), 200.0);
+    }
+
+    void particlesCanBeResizedOnTheStage() {
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        document.addItem("particles", 960, 540);
+        document.resizeItem(0, 300, 200);
+        QCOMPARE(document.selected().value("width").toDouble(), 300.0);
+        QCOMPARE(document.selected().value("height").toDouble(), 200.0);
+    }
+
+    void aSceneOverTheBlockBudgetIsRefused() {
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        document.addItem("particles", 960, 540);
+        QVERIFY(document.setItemValue(0, "amount", 8000));
+        document.addItem("particles", 960, 540);
+        QVERIFY(document.setItemValue(1, "amount", 7990));
+        QVERIFY(document.addItem("particles", 960, 540) == -1);
+        QVERIFY2(document.error().contains("16000"), qPrintable(document.error()));
+    }
+
     void closeForgetsTheScene() {
         QTemporaryDir directory;
         SceneDocument document;

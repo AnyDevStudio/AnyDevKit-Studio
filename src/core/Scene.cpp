@@ -14,7 +14,9 @@
 #include <QSaveFile>
 #include <QSet>
 
+#include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <utility>
 
@@ -22,9 +24,12 @@ namespace Studio {
 
 namespace {
 
-// The version saved today. Version 1 files have no image items and still load.
-constexpr int CurrentSchema = 2;
+// The version saved today. Older files still load: version 1 cannot hold images, and neither 1 nor 2
+// can hold particles.
+constexpr int CurrentSchema = 3;
 constexpr int OldestLoadableSchema = 1;
+constexpr int ImageSchema = 2;
+constexpr int ParticleSchema = 3;
 constexpr int MaximumItems = 256;
 constexpr int MaximumTextLength = 64;
 constexpr int MaximumScale = 40;
@@ -34,6 +39,15 @@ constexpr double MaximumCoordinate = 1e38;
 constexpr auto RectangleType = "rectangle";
 constexpr auto TextType = "text";
 constexpr auto ImageType = "image";
+constexpr auto ParticlesType = "particles";
+constexpr int MaximumParticleAmount = 8000;
+constexpr int MinimumParticleSpeed = 10;
+constexpr int MaximumParticleSpeed = 300;
+constexpr int MaximumParticleGravity = 300;
+constexpr int MinimumPixelSize = 2;
+constexpr int MaximumPixelSize = 32;
+// A value outside every range: a number of the wrong type in scene.json becomes this.
+constexpr int InvalidNumber = std::numeric_limits<int>::min();
 constexpr auto SceneFileName = "scene.json";
 constexpr auto ImageFolderPrefix = "assets/";
 constexpr auto GeneratedHeaderPath = "src/GeneratedScene.hpp";
@@ -91,18 +105,31 @@ bool isUsableNumber(double value) {
     return std::isfinite(value) && std::abs(value) <= MaximumCoordinate;
 }
 
+QString validateParticles(const SceneItem& item, qsizetype index) {
+    if (!particlePresetNames().contains(item.preset)) return itemError(item, index, "preset must be one of: " + particlePresetNames().join(", ") + ".");
+    if (!particlePaletteNames().contains(item.palette)) return itemError(item, index, "palette must be one of: " + particlePaletteNames().join(", ") + ".");
+    const auto outside = [](int value, int lowest, int highest) { return value < lowest || value > highest; };
+    if (outside(item.amount, 1, MaximumParticleAmount)) return itemError(item, index, QString("amount must be a whole number from 1 to %1.").arg(MaximumParticleAmount));
+    if (outside(item.spread, 0, 100)) return itemError(item, index, "spread must be a whole number from 0 to 100.");
+    if (outside(item.speed, MinimumParticleSpeed, MaximumParticleSpeed)) return itemError(item, index, QString("speed must be a whole number from %1 to %2.").arg(MinimumParticleSpeed).arg(MaximumParticleSpeed));
+    if (outside(item.gravity, -MaximumParticleGravity, MaximumParticleGravity)) return itemError(item, index, QString("gravity must be a whole number from -%1 to %1.").arg(MaximumParticleGravity));
+    if (outside(item.pixelSize, MinimumPixelSize, MaximumPixelSize)) return itemError(item, index, QString("pixelSize must be a whole number from %1 to %2.").arg(MinimumPixelSize).arg(MaximumPixelSize));
+    return {};
+}
+
 QString validateItem(const SceneItem& item, qsizetype index, QSet<QString>& usedIds) {
     if (item.id.isEmpty()) return itemError(item, index, "id must be a non-empty string.");
     if (usedIds.contains(item.id)) return itemError(item, index, QString("id \"%1\" is already used. Give each item its own id.").arg(item.id));
     usedIds.insert(item.id);
 
     const auto isImage = item.type == ImageType;
-    if (item.type != RectangleType && item.type != TextType && !isImage) return itemError(item, index, "type must be \"rectangle\", \"text\" or \"image\".");
+    const auto isParticles = item.type == ParticlesType;
+    if (item.type != RectangleType && item.type != TextType && !isImage && !isParticles) return itemError(item, index, "type must be \"rectangle\", \"text\", \"image\" or \"particles\".");
 
     for (const auto& [field, value] : {std::pair<const char*, double>{"x", item.x}, {"y", item.y}}) {
         if (!isUsableNumber(value)) return itemError(item, index, QString("%1 must be a number between -1e38 and 1e38.").arg(field));
     }
-    if (item.type == RectangleType || isImage) {
+    if (item.type == RectangleType || isImage || isParticles) {
         for (const auto& [field, value] : {std::pair<const char*, double>{"width", item.width}, {"height", item.height}}) {
             if (!isUsableNumber(value) || value <= 0) return itemError(item, index, QString("%1 must be a number above 0 and at most 1e38.").arg(field));
         }
@@ -115,6 +142,7 @@ QString validateItem(const SceneItem& item, qsizetype index, QSet<QString>& used
 
     if (!isColor(item.color)) return itemError(item, index, "color must look like #RRGGBB, for example #FFD23F.");
 
+    if (isParticles) return validateParticles(item, index);
     if (item.type == TextType) {
         if (!isDisplayableText(item.text)) return itemError(item, index, "text must be 1 to 64 printable characters.");
         if (item.scale < 1 || item.scale > MaximumScale) return itemError(item, index, "scale must be a whole number from 1 to 40.");
@@ -124,6 +152,11 @@ QString validateItem(const SceneItem& item, qsizetype index, QSet<QString>& used
 
 double numberOrInvalid(const QJsonValue& value) {
     return value.isDouble() ? value.toDouble() : std::numeric_limits<double>::quiet_NaN();
+}
+
+int wholeNumberOrInvalid(const QJsonValue& value) {
+    if (!value.isDouble() || value.toDouble() != std::floor(value.toDouble()) || std::abs(value.toDouble()) > 1e8) return InvalidNumber;
+    return static_cast<int>(value.toDouble());
 }
 
 // Values of the wrong JSON type become values validateScene rejects, so each rule has one message.
@@ -149,6 +182,18 @@ QString parseItem(const QJsonValue& value, qsizetype index, SceneItem& item) {
         item.height = numberOrInvalid(object.value("height"));
     }
     if (item.type == ImageType) item.source = object.value("source").toString();
+    if (item.type == ParticlesType) {
+        item.preset = object.value("preset").toString();
+        item.palette = object.value("palette").toString();
+        item.amount = wholeNumberOrInvalid(object.value("amount"));
+        item.spread = wholeNumberOrInvalid(object.value("spread"));
+        item.speed = wholeNumberOrInvalid(object.value("speed"));
+        item.gravity = wholeNumberOrInvalid(object.value("gravity"));
+        item.pixelSize = wholeNumberOrInvalid(object.value("pixelSize"));
+        const auto looping = object.value("looping");
+        if (!looping.isBool()) return itemError(item, index, "looping must be true or false.");
+        item.looping = looping.toBool();
+    }
 
     const auto controllable = object.value("controllable");
     if (!controllable.isUndefined() && !controllable.isBool()) return itemError(item, index, "controllable must be true or false.");
@@ -167,6 +212,16 @@ QJsonObject itemToJson(const SceneItem& item) {
     };
     if (item.type != ImageType) object.insert("color", item.color);
     if (item.type == ImageType) object.insert("source", item.source);
+    if (item.type == ParticlesType) {
+        object.insert("preset", item.preset);
+        object.insert("palette", item.palette);
+        object.insert("amount", item.amount);
+        object.insert("spread", item.spread);
+        object.insert("speed", item.speed);
+        object.insert("gravity", item.gravity);
+        object.insert("pixelSize", item.pixelSize);
+        object.insert("looping", item.looping);
+    }
     if (item.type == TextType) {
         object.insert("scale", item.scale);
         object.insert("text", item.text);
@@ -203,19 +258,21 @@ QByteArray escapedText(const QString& text) {
     return escaped;
 }
 
-QByteArray itemLine(const SceneItem& item, const QStringList& imageSources) {
+QByteArray itemLine(const SceneItem& item, const QStringList& imageSources, int particleIndex) {
     const auto isText = item.type == TextType;
     const auto isImage = item.type == ImageType;
+    const auto isParticles = item.type == ParticlesType;
     const auto width = isText ? double((item.text.size() * 6 - 1) * item.scale) : item.width;
     const auto height = isText ? double(7 * item.scale) : item.height;
     QByteArray line = "    {Kind::";
-    line += isText ? "Text" : isImage ? "Image" : "Rectangle";
+    line += isText ? "Text" : isImage ? "Image" : isParticles ? "Particles" : "Rectangle";
     for (const auto value : {item.x, item.y, width, height}) line += ", " + floatLiteral(value);
     line += ", " + (isImage ? QByteArray("0.0f, 0.0f, 0.0f") : colorLiterals(item.color));
     line += ", " + floatLiteral(isText ? item.scale : 0);
     line += ", \"" + (isText ? escapedText(item.text) : QByteArray()) + "\", ";
     line += item.controllable ? "true" : "false";
     if (isImage) line += ", " + QByteArray::number(imageSources.indexOf(item.source));
+    if (isParticles) line += ", -1, " + QByteArray::number(particleIndex);
     line += "},\n";
     return line;
 }
@@ -300,11 +357,62 @@ QString validateScene(const Scene& scene) {
     if (!isColor(scene.background)) return "Background color must look like #RRGGBB, for example #151C3A.";
     if (scene.items.size() > MaximumItems) return QString("The scene has %1 items, but a scene can hold at most %2. Remove some items and try again.").arg(scene.items.size()).arg(MaximumItems);
     QSet<QString> usedIds;
+    bool hasParticles = false;
     for (qsizetype index = 0; index < scene.items.size(); ++index) {
         const auto problem = validateItem(scene.items[index], index, usedIds);
         if (!problem.isEmpty()) return problem;
+        hasParticles = hasParticles || scene.items[index].type == ParticlesType;
+    }
+    // Only scenes with particles are bound by this, so scenes from before particles keep working.
+    if (hasParticles && sceneQuadCount(scene) > MaximumSceneBlocks) {
+        return QString("This scene would draw %1 blocks, but a scene with particles can draw at most %2. Lower Amount on a particles item or remove some text.").arg(sceneQuadCount(scene)).arg(MaximumSceneBlocks);
     }
     return {};
+}
+
+int sceneQuadCount(const Scene& scene) {
+    qint64 total = 1; // the background
+    for (const auto& item : scene.items) {
+        if (item.type == TextType) total += item.text.size();
+        else if (item.type == ParticlesType) total += item.amount;
+        else total += 1;
+    }
+    return static_cast<int>(std::min<qint64>(total, std::numeric_limits<int>::max()));
+}
+
+QStringList particlePresetNames() { return {"fireworks", "fountain", "sparks", "snow", "rain"}; }
+QStringList particlePaletteNames() { return {"color", "festival", "fire", "ice"}; }
+
+void applyParticlePreset(SceneItem& item, const QString& preset) {
+    const struct Look {
+        const char* name;
+        const char* palette;
+        const char* color;
+        int amount, spread, speed, gravity, pixelSize;
+        double width, height;
+    } looks[] = {
+        {"fireworks", "festival", "#FFD23F", 600, 50, 100, 100, 12, 1400, 900},
+        {"fountain", "color", "#67E3C8", 800, 12, 100, 100, 10, 300, 500},
+        {"sparks", "fire", "#FF9A3C", 300, 100, 100, 100, 8, 240, 240},
+        {"snow", "color", "#F3F1E2", 900, 40, 100, 100, 8, 1920, 1080},
+        {"rain", "color", "#8FC7FF", 1400, 10, 100, 100, 6, 1920, 1080},
+    };
+    for (const auto& look : looks) {
+        if (preset != look.name) continue;
+        item.preset = preset;
+        item.palette = look.palette;
+        item.color = look.color;
+        item.amount = look.amount;
+        item.spread = look.spread;
+        item.speed = look.speed;
+        item.gravity = look.gravity;
+        item.pixelSize = look.pixelSize;
+        item.looping = true;
+        item.width = look.width;
+        item.height = look.height;
+        return;
+    }
+    item.preset = preset; // an unknown name is left for validation to reject
 }
 
 SceneLoadResult loadScene(const QString& path) {
@@ -330,7 +438,8 @@ SceneLoadResult loadScene(const QString& path) {
         SceneItem item;
         const auto problem = parseItem(items.at(index), index, item);
         if (!problem.isEmpty()) return failure(problem);
-        if (version < CurrentSchema && item.type == ImageType) return failure(QString("%1 uses an image item, which needs schemaVersion %2. Change schemaVersion to %2 and try again.").arg(fileName).arg(CurrentSchema));
+        if (version < ImageSchema && item.type == ImageType) return failure(QString("%1 uses an image item, which needs schemaVersion %2. Change schemaVersion to %2 and try again.").arg(fileName).arg(ImageSchema));
+        if (version < ParticleSchema && item.type == ParticlesType) return failure(QString("%1 uses a particles item, which needs schemaVersion %2. Change schemaVersion to %2 and try again.").arg(fileName).arg(ParticleSchema));
         scene.items.append(item);
     }
 
@@ -415,6 +524,22 @@ QByteArray generateImageSource(const QList<SceneImageData>& images) {
     return source;
 }
 
+// Stable across runs and across saves, so a scene's particles play the same way every time.
+std::uint32_t particleSeed(const QString& id) {
+    std::uint32_t hash = 2166136261u;
+    for (const char byte : id.toUtf8()) hash = (hash ^ static_cast<unsigned char>(byte)) * 16777619u;
+    return hash;
+}
+
+QByteArray particleEffectLine(const SceneItem& item) {
+    QByteArray line = "    {" + QByteArray::number(particlePresetNames().indexOf(item.preset));
+    line += ", " + QByteArray::number(particlePaletteNames().indexOf(item.palette));
+    line += ", " + QByteArray::number(item.amount) + ", " + QByteArray::number(particleSeed(item.id)) + "u";
+    for (const auto value : {item.spread / 100.0, item.speed / 100.0, item.gravity / 100.0, double(item.pixelSize)}) line += ", " + floatLiteral(value);
+    line += item.looping ? ", true},\n" : ", false},\n";
+    return line;
+}
+
 QByteArray generateSceneHeader(const Scene& scene, const QList<SceneImageData>& images) {
     if (!validateScene(scene).isEmpty() || !imagesMatchScene(scene, images)) return {};
     const auto imageSources = sceneImageSources(scene);
@@ -429,7 +554,7 @@ QByteArray generateSceneHeader(const Scene& scene, const QList<SceneImageData>& 
 
 namespace GeneratedScene {
 
-enum class Kind : std::uint8_t { Rectangle, Text, Image };
+enum class Kind : std::uint8_t { Rectangle, Text, Image, Particles };
 
 struct Item {
     Kind kind;
@@ -439,6 +564,7 @@ struct Item {
     std::string_view text;
     bool controllable;
     std::int32_t image = -1; // index into Images for an image item
+    std::int32_t particles = -1; // index into ParticleEffects for a particles item
 };
 
 // Row by row, top row first, 4 bytes per pixel: red, green, blue, alpha, with alpha already applied.
@@ -447,15 +573,44 @@ struct Image {
     std::uint32_t width, height;
 };
 
+// One particles item. preset and palette are the numbers of Particles::Preset and Particles::Palette
+// in the runtime. spread, speed and gravity are the percentages of scene.json divided by 100.
+struct ParticleEffect {
+    std::uint8_t preset, palette;
+    std::uint32_t amount, seed;
+    float spread, speed, gravity, pixelSize;
+    bool looping;
+};
+
 )cpp";
     header += "inline constexpr std::array<float, 3> Background{" + colorLiterals(scene.background) + "};\n";
     header += "inline constexpr std::size_t ImageCount = " + QByteArray::number(images.size()) + ";\n";
     header += "extern const std::array<Image, ImageCount> Images; // defined in src/GeneratedImages.cpp\n";
+    int particleEffects = 0;
+    qint64 particleCapacity = 0;
+    QByteArray particleLines;
+    for (const auto& item : scene.items) {
+        if (item.type != ParticlesType) continue;
+        ++particleEffects;
+        particleCapacity += item.amount;
+        particleLines += particleEffectLine(item);
+    }
+    header += "inline constexpr std::size_t ParticleEffectCount = " + QByteArray::number(particleEffects) + ";\n";
+    header += "inline constexpr std::size_t ParticleCapacity = " + QByteArray::number(particleCapacity) + "; // the sum of every amount, sized before the first frame\n";
+    if (particleEffects == 0) {
+        header += "inline constexpr std::array<ParticleEffect, 0> ParticleEffects{};\n";
+    } else {
+        header += "inline constexpr std::array<ParticleEffect, " + QByteArray::number(particleEffects) + "> ParticleEffects{{\n" + particleLines + "}};\n";
+    }
     if (scene.items.isEmpty()) {
         header += "inline constexpr std::array<Item, 0> Items{};\n";
     } else {
         header += "inline constexpr std::array<Item, " + QByteArray::number(scene.items.size()) + "> Items{{\n";
-        for (const auto& item : scene.items) header += itemLine(item, imageSources);
+        int particleIndex = 0;
+        for (const auto& item : scene.items) {
+            header += itemLine(item, imageSources, particleIndex);
+            if (item.type == ParticlesType) ++particleIndex;
+        }
         header += "}};\n";
     }
     header += "\n}\n";

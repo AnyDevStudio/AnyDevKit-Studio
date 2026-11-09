@@ -31,6 +31,7 @@ public:
         TextRole,
         ScaleRole,
         ControllableRole,
+        ParticlesRole, // a map with every particles setting, for the stage preview
     };
 
     explicit SceneDocument(QObject* parent = nullptr);
