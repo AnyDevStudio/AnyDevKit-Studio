@@ -824,6 +824,27 @@ private slots:
         QVERIFY(document.scene().items[0].pixelated);
     }
 
+    void settingAFrameSizeShowsOneFrameUnsquashed() {
+        QTemporaryDir directory;
+        SceneDocument document;
+        Scene scene;
+        auto sheet = makeSprite("hero", "assets/hero.png");
+        sheet.frameWidth = 0;
+        sheet.frameHeight = 0;
+        sheet.animations.clear();
+        sheet.animation.clear();
+        sheet.width = 64;
+        sheet.height = 16;
+        scene.items = {sheet};
+        openWithImages(directory, document, scene);
+        QVERIFY(document.setItemValue(0, "frameWidth", 16));
+        QCOMPARE(document.scene().items[0].width, 16.0);
+        QCOMPARE(document.scene().items[0].height, 16.0);
+        QVERIFY(document.setItemValue(0, "frameHeight", 32));
+        QCOMPARE(document.scene().items[0].width, 8.0);
+        QCOMPARE(document.scene().items[0].height, 16.0);
+    }
+
     void selectedExposesSpritesAndTilemapsToTheInterface() {
         QTemporaryDir directory;
         SceneDocument document;

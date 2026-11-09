@@ -953,6 +953,8 @@ bool SceneDocument::setItemValue(int index, const QString& property, const QVari
                     if (item.frameWidth == 0) item.frameWidth = whole;
                     if (item.frameHeight == 0) item.frameHeight = whole;
                     item.pixelated = true;
+                    // The item showed the whole sheet; keep its height and give it one frame's shape.
+                    if (item.frameWidth > 0 && item.frameHeight > 0) item.width = std::round(item.height * item.frameWidth / item.frameHeight);
                 }
             } else if (property == "tileWidth" || property == "tileHeight" || property == "tileScale") {
                 (property == "tileWidth" ? item.tileWidth : property == "tileHeight" ? item.tileHeight : item.tileScale) = whole;
