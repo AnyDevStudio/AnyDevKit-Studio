@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Layouts
+import QtQuick.Window
 import AnyDevKitStudio
 
 Item {
@@ -7,6 +8,13 @@ Item {
 
     required property SceneDocument scene
     required property StudioController studio
+
+    // The stage is limited by its width at most window sizes, so the height left over below it
+    // goes to the layers. Room stays for the notice banner below the stage.
+    readonly property real layerPanelHeight: {
+        const stageHeight = Math.max(0, middle.width - 56) * 9 / 16
+        return Math.round(Math.min(300, Math.max(168, middle.height - stageHeight - 76)))
+    }
 
     // An image first needs a file, so it goes through the picker instead of appearing straight away.
     function place(kind, centerX, centerY) {
@@ -130,6 +138,12 @@ Item {
         onActivated: view.scene.undo()
     }
 
+    Shortcut {
+        sequences: ["Ctrl+D"]
+        enabled: view.visible && view.scene.selectedIndex >= 0 && !(view.Window.activeFocusItem instanceof TextInput)
+        onActivated: view.scene.duplicateItem(view.scene.selectedIndex)
+    }
+
     RowLayout {
         anchors.fill: parent
         spacing: 0
@@ -168,14 +182,31 @@ Item {
             }
         }
 
-        SceneStage {
-            id: stageArea
+        ColumnLayout {
+            id: middle
 
-            scene: view.scene
             Layout.fillWidth: true
             Layout.fillHeight: true
-            Layout.margins: 28
-            onImageFileDropped: (file, centerX, centerY) => view.studio.addSceneImage(file, centerX, centerY)
+            spacing: 0
+
+            SceneStage {
+                id: stageArea
+
+                scene: view.scene
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                Layout.leftMargin: 28
+                Layout.rightMargin: 28
+                Layout.topMargin: 20
+                Layout.bottomMargin: 4
+                onImageFileDropped: (file, centerX, centerY) => view.studio.addSceneImage(file, centerX, centerY)
+            }
+
+            LayerPanel {
+                Layout.fillWidth: true
+                Layout.preferredHeight: view.layerPanelHeight
+                scene: view.scene
+            }
         }
 
         Rectangle {
