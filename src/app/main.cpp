@@ -1,13 +1,18 @@
+#include "ExportFormat.h"
 #include "ReducedMotion.h"
 #include "StudioController.h"
 
 #include <QCommandLineParser>
+#include <QFile>
 #include <QGuiApplication>
 #include <QIcon>
 #include <QImage>
 #include <QQmlApplicationEngine>
 #include <QQuickStyle>
 #include <QQuickWindow>
+#include <QSettings>
+#include <QStringListModel>
+#include <QTextStream>
 #include <QTimer>
 
 int main(int argc, char** argv) {
@@ -18,6 +23,12 @@ int main(int argc, char** argv) {
     QGuiApplication::setWindowIcon(QIcon(":/qt/qml/AnyDevKitStudio/assets/icon/app-icon.png"));
     QQuickStyle::setStyle("Basic");
 
+    // Lets automated runs use their own settings and leave the person's preferences alone.
+    if (const auto settingsDirectory = qEnvironmentVariable("ANYDEVKIT_STUDIO_SETTINGS_DIR"); !settingsDirectory.isEmpty()) {
+        QSettings::setDefaultFormat(QSettings::IniFormat);
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settingsDirectory);
+    }
+
     QCommandLineParser parser;
     parser.setApplicationDescription("Desktop studio for AnyDevKit projects.");
     parser.addHelpOption();
@@ -27,11 +38,19 @@ int main(int argc, char** argv) {
     const QCommandLineOption screenshotOption("screenshot", "Save the window as an image, then exit.", "file");
     const QCommandLineOption delayOption("screenshot-delay", "Take the screenshot this many milliseconds after start, even during a build.", "ms");
     const QCommandLineOption newGameOption("new-game", "Start on the new game form.");
-    parser.addOptions({openOption, buildOption, screenshotOption, delayOption, newGameOption});
+    const QCommandLineOption formatOption("export-format", "Export format for the opened project: ffpfsc, zip or pkg.", "format");
+    const QCommandLineOption logOption("build-log", "Write the build log to this file when Studio exits.", "file");
+    parser.addOptions({openOption, buildOption, screenshotOption, delayOption, newGameOption, formatOption, logOption});
     parser.process(application);
+
+    if (parser.isSet(formatOption) && !Studio::exportFormatFromId(parser.value(formatOption))) {
+        QTextStream(stderr) << "Unknown export format: " << parser.value(formatOption) << "\n";
+        return 2;
+    }
 
     Studio::StudioController studio;
     if (parser.isSet(openOption)) studio.openPath(parser.value(openOption));
+    if (parser.isSet(formatOption)) studio.setExportFormat(parser.value(formatOption));
 
     QQmlApplicationEngine engine;
     QObject::connect(&engine, &QQmlApplicationEngine::objectCreationFailed, &application, [] { QCoreApplication::exit(1); }, Qt::QueuedConnection);
@@ -60,5 +79,10 @@ int main(int argc, char** argv) {
         screenshot();
     }
 
-    return application.exec();
+    const auto exitCode = application.exec();
+    if (parser.isSet(logOption)) {
+        QFile logFile(parser.value(logOption));
+        if (logFile.open(QIODevice::WriteOnly | QIODevice::Text)) logFile.write(studio.log()->stringList().join('\n').toUtf8() + '\n');
+    }
+    return exitCode;
 }

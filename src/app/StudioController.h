@@ -2,6 +2,7 @@
 
 #include "BuildRunner.h"
 #include "CodeEditors.h"
+#include "ExportFormat.h"
 #include "GamePageDocument.h"
 #include "LogicDocument.h"
 #include "NewGame.h"
@@ -56,6 +57,14 @@ class StudioController : public QObject {
     Q_PROPERTY(QVariantList stages READ stages NOTIFY buildChanged)
     Q_PROPERTY(QString outputName READ outputName NOTIFY buildChanged)
     Q_PROPERTY(QString outputSize READ outputSize NOTIFY buildChanged)
+    Q_PROPERTY(QVariantList exportFormats READ exportFormats CONSTANT)
+    Q_PROPERTY(QString exportFormat READ exportFormat WRITE setExportFormat NOTIFY exportFormatChanged)
+    Q_PROPERTY(QString buildActionLabel READ buildActionLabel NOTIFY buildChanged)
+    Q_PROPERTY(QString pkgPasscodeModuli READ pkgPasscodeModuli NOTIFY pkgKeysChanged)
+    Q_PROPERTY(QString pkgMountModulus READ pkgMountModulus NOTIFY pkgKeysChanged)
+    Q_PROPERTY(bool pkgPasscodeSaved READ pkgPasscodeSaved NOTIFY pkgKeysChanged)
+    Q_PROPERTY(bool pkgImageSeedSaved READ pkgImageSeedSaved NOTIFY pkgKeysChanged)
+    Q_PROPERTY(QStringList pkgKeyIssues READ pkgKeyIssues NOTIFY pkgKeysChanged)
     Q_PROPERTY(QStringListModel* log READ log CONSTANT)
     Q_PROPERTY(Studio::SceneDocument* scene READ scene CONSTANT)
     Q_PROPERTY(Studio::LogicDocument* logic READ logic CONSTANT)
@@ -88,6 +97,15 @@ public:
     QVariantList stages() const;
     QString outputName() const;
     QString outputSize() const;
+    QVariantList exportFormats() const;
+    QString exportFormat() const;
+    void setExportFormat(const QString& id);
+    QString buildActionLabel() const;
+    QString pkgPasscodeModuli() const;
+    QString pkgMountModulus() const;
+    bool pkgPasscodeSaved() const;
+    bool pkgImageSeedSaved() const;
+    QStringList pkgKeyIssues() const;
     QStringListModel* log();
     SceneDocument* scene();
     LogicDocument* logic();
@@ -114,6 +132,10 @@ public:
     Q_INVOKABLE void build();
     Q_INVOKABLE void cancelBuild();
     Q_INVOKABLE void revealOutput() const;
+    // `which` is "passcodeModuli" or "mountModulus" for files, "passcode" or "imageSeed" for values.
+    Q_INVOKABLE void rememberPkgKeyFile(const QString& which, const QString& path);
+    Q_INVOKABLE void rememberPkgSecret(const QString& which, const QString& value);
+    Q_INVOKABLE void forgetPkgKeys();
     Q_INVOKABLE void openFile(const QString& relativePath);
     Q_INVOKABLE void copyLog() const;
     Q_INVOKABLE QString gameNameProblem(const QString& name, const QString& noun = "game") const;
@@ -135,6 +157,8 @@ signals:
     void projectChanged();
     void openErrorChanged();
     void buildChanged();
+    void exportFormatChanged();
+    void pkgKeysChanged();
     void buildFinished(bool success);
     void logicBlockedBuild();
     void editorChanged();
@@ -149,6 +173,8 @@ private:
     bool exportScene();
     void openLogic();
     void resetBuild();
+    QString exportProblem() const;
+    void pkgKeysUpdated();
     void setStageState(int index, const QString& state);
     void appendLog(const QStringList& lines);
     void setNewGameError(const QString& error);
@@ -163,6 +189,9 @@ private:
     LogicDocument logicDocument;
     GamePageDocument gamePageDocument;
     QVariantList stageEntries;
+    ExportFormat selectedFormat = ExportFormat::Ffpfsc;
+    PkgKeys pkgKeys;
+    QList<BuildStep> plannedSteps;
     QString state = "idle";
     QString message;
     QString size;

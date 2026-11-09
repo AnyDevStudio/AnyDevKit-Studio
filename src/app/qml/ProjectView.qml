@@ -24,7 +24,7 @@ Item {
 
     Connections {
         target: view.studio
-        function onBuildChanged() { if (view.studio.building || view.studio.buildState === "failed") view.mode = "build" }
+        function onBuildChanged() { if (view.studio.building || view.studio.buildState === "failed" || view.studio.buildState === "blocked") view.mode = "build" }
         function onLogicBlockedBuild() {
             view.mode = "logic"
             logicView.showFirstProblem()
@@ -97,8 +97,10 @@ Item {
                     }
 
                     Text {
+                        Layout.fillWidth: true
                         text: view.studio.titleId + "   Version " + view.studio.contentVersion
                         color: Theme.muted
+                        elide: Text.ElideRight
                         font.family: Theme.body
                         font.pixelSize: 14
                     }
@@ -113,12 +115,17 @@ Item {
                     ModeTab { target: "build"; text: "Code and build" }
                 }
 
+                ExportFormatPicker {
+                    studio: view.studio
+                    Layout.alignment: Qt.AlignVCenter
+                }
+
                 PillButton {
                     objectName: "buildButton"
                     primary: true
                     visible: !view.studio.building
                     enabled: !view.studio.gamePage.busy
-                    text: view.studio.buildState === "idle" ? "Build PS5 package" : "Build again"
+                    text: view.studio.buildActionLabel
                     onClicked: {
                         gamePageView.commitPendingName()
                         logicView.commitPendingEdits()
@@ -281,6 +288,12 @@ Item {
                         Layout.fillWidth: true
                     }
 
+                    PkgKeysPanel {
+                        studio: view.studio
+                        visible: view.studio.exportFormat === "pkg"
+                        Layout.fillWidth: true
+                    }
+
                     RowLayout {
                         Layout.fillWidth: true
                         spacing: 16
@@ -289,7 +302,7 @@ Item {
                         Text {
                             Layout.fillWidth: true
                             text: view.studio.buildState === "done" && view.studio.outputName ? view.studio.outputName + " is ready, " + view.studio.outputSize + "." : view.studio.buildMessage
-                            color: view.studio.buildState === "done" ? Theme.good : view.studio.buildState === "failed" ? Theme.bad : Theme.muted
+                            color: view.studio.buildState === "done" ? Theme.good : view.studio.buildState === "failed" || view.studio.buildState === "blocked" ? Theme.bad : Theme.muted
                             wrapMode: Text.WordWrap
                             font.family: Theme.body
                             font.weight: Font.Medium

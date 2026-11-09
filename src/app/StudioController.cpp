@@ -7,6 +7,7 @@
 #include "SceneImageImport.h"
 
 #include <QClipboard>
+#include <QCryptographicHash>
 #include <QDesktopServices>
 #include <QDir>
 #include <QFileInfo>
@@ -26,6 +27,15 @@ constexpr int MaximumLogLines = 20000;
 constexpr auto SdkRootSetting = "adk/sdkRoot";
 constexpr auto ProjectsFolderSetting = "newGame/projectsFolder";
 constexpr auto DependencyRootSetting = "adk/dependencyRoot";
+constexpr auto PkgModuliSetting = "export/pkg/passcodeModuli";
+constexpr auto PkgMountSetting = "export/pkg/mountModulus";
+constexpr auto PkgPasscodeSetting = "export/pkg/passcode";
+constexpr auto PkgImageSeedSetting = "export/pkg/imageSeed";
+
+// Project paths contain the separators QSettings gives a meaning to, so the key uses a hash.
+QString exportFormatSetting(const QString& root) {
+    return "export/format/" + QString::fromLatin1(QCryptographicHash::hash(root.toUtf8(), QCryptographicHash::Sha256).toHex().left(32));
+}
 
 }
 
@@ -35,21 +45,24 @@ StudioController::StudioController(QObject* parent) : QObject(parent) {
     if (std::ranges::any_of(detectedEditors, [&](const CodeEditor& editor) { return editor.id == saved; })) editorId = saved;
     savedSdkRoot = QSettings().value(SdkRootSetting).toString();
     savedDependencyRoot = QSettings().value(DependencyRootSetting).toString();
+    pkgKeys.passcodeModuliPath = QSettings().value(PkgModuliSetting).toString();
+    pkgKeys.mountModulusPath = QSettings().value(PkgMountSetting).toString();
+    pkgKeys.passcode = QSettings().value(PkgPasscodeSetting).toString();
+    pkgKeys.imageSeed = QSettings().value(PkgImageSeedSetting).toString();
 
     connect(&gameCreator, &BuildRunner::outputLine, this, [this](const QString& line) { gameCreatorOutput << line; });
     connect(&gameCreator, &BuildRunner::finished, this, &StudioController::finishCreatingGame);
 
     connect(&runner, &BuildRunner::stepStarted, this, [this](int index) {
         setStageState(index, "running");
-        const auto step = ps5BuildSteps(*project).at(index);
-        appendLog({"$ " + QFileInfo(step.program).fileName() + ' ' + step.arguments.join(' ')});
+        appendLog({"$ " + describeBuildStep(plannedSteps.at(index))});
     });
     connect(&runner, &BuildRunner::stepFinished, this, [this](int index, bool success) { setStageState(index, success ? "done" : "failed"); });
     connect(&runner, &BuildRunner::outputLine, this, [this](const QString& line) { appendLog({line}); });
     connect(&runner, &BuildRunner::finished, this, [this](bool success, const QString& text) {
         message = text;
         state = success ? "done" : text.startsWith("Cancelled") ? "cancelled" : "failed";
-        const QFileInfo output(project ? project->outputPath : QString());
+        const QFileInfo output(project ? exportOutputPath(*project, selectedFormat) : QString());
         size = success && output.exists() ? QLocale::system().formattedDataSize(output.size(), 1, QLocale::DataSizeSIFormat) : QString();
         emit buildChanged();
         emit buildFinished(success);
@@ -85,8 +98,34 @@ bool StudioController::building() const { return runner.isRunning(); }
 QString StudioController::buildState() const { return state; }
 QString StudioController::buildMessage() const { return message; }
 QVariantList StudioController::stages() const { return stageEntries; }
-QString StudioController::outputName() const { return project && !size.isEmpty() ? QFileInfo(project->outputPath).fileName() : QString(); }
+QString StudioController::outputName() const { return project && !size.isEmpty() ? QFileInfo(exportOutputPath(*project, selectedFormat)).fileName() : QString(); }
 QString StudioController::outputSize() const { return size; }
+QString StudioController::exportFormat() const { return exportFormatInfo(selectedFormat).id; }
+QString StudioController::pkgPasscodeModuli() const { return pkgKeys.passcodeModuliPath; }
+QString StudioController::pkgMountModulus() const { return pkgKeys.mountModulusPath; }
+bool StudioController::pkgPasscodeSaved() const { return !pkgKeys.passcode.isEmpty(); }
+bool StudioController::pkgImageSeedSaved() const { return !pkgKeys.imageSeed.isEmpty(); }
+QStringList StudioController::pkgKeyIssues() const { return pkgKeyProblems(pkgKeys); }
+
+QVariantList StudioController::exportFormats() const {
+    QVariantList entries;
+    for (const auto& info : Studio::exportFormats()) entries.append(QVariantMap{{"id", info.id}, {"label", info.label}});
+    return entries;
+}
+
+void StudioController::setExportFormat(const QString& id) {
+    const auto format = exportFormatFromId(id);
+    if (!format || *format == selectedFormat || runner.isRunning()) return;
+    selectedFormat = *format;
+    if (project) QSettings().setValue(exportFormatSetting(project->root), id);
+    emit exportFormatChanged();
+    resetBuild();
+}
+
+QString StudioController::buildActionLabel() const {
+    const auto info = exportFormatInfo(selectedFormat);
+    return state == "idle" || state == "blocked" ? info.buildLabel : info.buildAgainLabel;
+}
 QStringListModel* StudioController::log() { return &logModel; }
 SceneDocument* StudioController::scene() { return &sceneDocument; }
 LogicDocument* StudioController::logic() { return &logicDocument; }
@@ -188,6 +227,8 @@ bool StudioController::openPath(const QString& path, const QString& tab) {
     if (!result.project) return false;
 
     project = result.project;
+    selectedFormat = exportFormatFromId(QSettings().value(exportFormatSetting(project->root)).toString()).value_or(ExportFormat::Ffpfsc);
+    emit exportFormatChanged();
     currentOpeningTab = tab;
     refreshFiles();
     sceneDocument.open(project->root + "/scene.json");
@@ -216,7 +257,7 @@ void StudioController::resetBuild() {
     logModel.setStringList({});
     stageEntries.clear();
     if (project) {
-        for (const auto& step : ps5BuildSteps(*project)) stageEntries.append(QVariantMap{{"title", step.title}, {"state", "waiting"}});
+        for (const auto& step : exportBuildSteps(*project, selectedFormat, pkgKeys)) stageEntries.append(QVariantMap{{"title", step.title}, {"state", "waiting"}});
     }
     emit buildChanged();
 }
@@ -224,17 +265,65 @@ void StudioController::resetBuild() {
 void StudioController::build() {
     if (!project || runner.isRunning() || gamePageDocument.isBusy()) return;
     resetBuild();
+    if (const auto problem = exportProblem(); !problem.isEmpty()) {
+        state = "blocked";
+        message = problem;
+        emit buildChanged();
+        emit buildFinished(false);
+        return;
+    }
     if (!exportScene()) {
         emit buildFinished(false);
         return;
     }
     state = "running";
-    runner.start(ps5BuildSteps(*project), project->root, withToolDirectories(QProcessEnvironment::systemEnvironment(), hostToolDirectories()));
+    plannedSteps = exportBuildSteps(*project, selectedFormat, pkgKeys);
+    runner.start(plannedSteps, project->root, withToolDirectories(QProcessEnvironment::systemEnvironment(), hostToolDirectories()));
     emit buildChanged();
 }
 
 void StudioController::cancelBuild() {
     runner.cancel();
+}
+
+QString StudioController::exportProblem() const {
+    const auto paths = checkExportPaths(*project, selectedFormat);
+    if (!paths.isEmpty()) return paths;
+    return selectedFormat == ExportFormat::Pkg ? describePkgKeyProblems(pkgKeyProblems(pkgKeys)) : QString();
+}
+
+void StudioController::pkgKeysUpdated() {
+    emit pkgKeysChanged();
+    if (state == "blocked") resetBuild();
+}
+
+void StudioController::rememberPkgKeyFile(const QString& which, const QString& path) {
+    if (runner.isRunning()) return;
+    const auto setting = which == "passcodeModuli" ? PkgModuliSetting : which == "mountModulus" ? PkgMountSetting : nullptr;
+    auto& target = which == "passcodeModuli" ? pkgKeys.passcodeModuliPath : pkgKeys.mountModulusPath;
+    if (!setting || target == path) return;
+    target = path;
+    QSettings().setValue(setting, path);
+    pkgKeysUpdated();
+}
+
+void StudioController::rememberPkgSecret(const QString& which, const QString& value) {
+    if (runner.isRunning()) return;
+    const auto setting = which == "passcode" ? PkgPasscodeSetting : which == "imageSeed" ? PkgImageSeedSetting : nullptr;
+    auto& target = which == "passcode" ? pkgKeys.passcode : pkgKeys.imageSeed;
+    const auto trimmed = value.trimmed();
+    if (!setting || trimmed.isEmpty() || target == trimmed) return;
+    target = trimmed;
+    QSettings().setValue(setting, trimmed);
+    pkgKeysUpdated();
+}
+
+void StudioController::forgetPkgKeys() {
+    if (runner.isRunning()) return;
+    pkgKeys = {};
+    QSettings settings;
+    for (const auto* key : {PkgModuliSetting, PkgMountSetting, PkgPasscodeSetting, PkgImageSeedSetting}) settings.remove(key);
+    pkgKeysUpdated();
 }
 
 void StudioController::setStageState(int index, const QString& newState) {
@@ -252,7 +341,7 @@ void StudioController::appendLog(const QStringList& lines) {
 }
 
 void StudioController::revealOutput() const {
-    if (project) QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(project->outputPath).absolutePath()));
+    if (project) QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(exportOutputPath(*project, selectedFormat)).absolutePath()));
 }
 
 void StudioController::openFile(const QString& relativePath) {

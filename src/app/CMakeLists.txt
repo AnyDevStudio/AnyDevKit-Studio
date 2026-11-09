@@ -23,6 +23,8 @@ qt_add_qml_module(AnyDevKitStudio
         qml/FileList.qml
         qml/LogPanel.qml
         qml/EditorPicker.qml
+        qml/ExportFormatPicker.qml
+        qml/PkgKeysPanel.qml
         qml/SceneStage.qml
         qml/SceneView.qml
         qml/SceneInspector.qml
