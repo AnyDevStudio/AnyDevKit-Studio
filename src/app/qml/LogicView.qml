@@ -279,6 +279,11 @@ Item {
                         font.pixelSize: 16
                     }
 
+                    VariablesPanel {
+                        Layout.fillWidth: true
+                        doc: view.doc
+                    }
+
                     Item {
                         id: paletteArea
                         objectName: "paletteArea"

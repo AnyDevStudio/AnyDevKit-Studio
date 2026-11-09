@@ -147,6 +147,7 @@ private:
     void launchEditor(const CodeEditor& editor, const QString& file);
     void refreshFiles();
     bool exportScene();
+    bool usesVariables() const;
     void openLogic();
     void resetBuild();
     void setStageState(int index, const QString& state);

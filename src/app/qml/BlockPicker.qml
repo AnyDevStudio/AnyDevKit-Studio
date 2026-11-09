@@ -2,7 +2,7 @@ import QtQuick
 import QtQuick.Layouts
 import QtQuick.Templates as T
 
-// A value inside a block chosen from a list: a scene item, a button or a comparison.
+// A value inside a block chosen from a list: a scene item, a variable, a button or a comparison.
 T.Button {
     id: picker
 
@@ -10,6 +10,7 @@ T.Button {
     property string current: ""
     property string shown: ""       // what the button says
     property string placeholder: "Choose"
+    property string emptyText: "Add an item in the Scene tab first."
     property bool invalid: false
     property real preferredWidth: 170
     signal chosen(string id)
@@ -91,7 +92,7 @@ T.Button {
                     visible: picker.choices.length === 0
                     width: parent.width
                     padding: 8
-                    text: "Add an item in the Scene tab first."
+                    text: picker.emptyText
                     color: Theme.muted
                     wrapMode: Text.WordWrap
                     font.family: Theme.body

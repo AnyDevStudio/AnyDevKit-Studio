@@ -58,6 +58,9 @@ StudioController::StudioController(QObject* parent) : QObject(parent) {
     connect(&sceneDocument, &QAbstractItemModel::rowsInserted, this, refreshLogicScene);
     connect(&sceneDocument, &QAbstractItemModel::rowsRemoved, this, refreshLogicScene);
     connect(&sceneDocument, &QAbstractItemModel::dataChanged, this, refreshLogicScene);
+    // The stage and the inspector show the logic's variables, and text follows a rename.
+    connect(&logicDocument, &LogicDocument::programChanged, this, [this] { sceneDocument.setVariables(logicDocument.program().variables); });
+    connect(&logicDocument, &LogicDocument::variableRenamed, &sceneDocument, &SceneDocument::renameVariable);
 
     connect(this, &StudioController::buildChanged, &gamePageDocument, [this] { gamePageDocument.setBuilding(runner.isRunning()); });
     connect(&gamePageDocument, &GamePageDocument::titleSaved, this, [this](const QString& title) {
@@ -167,10 +170,28 @@ bool StudioController::exportScene() {
         state = "failed";
         message = problem;
         emit buildChanged();
-        emit logicBlockedBuild();
+        // Only a block can be shown on the Logic tab; a text problem stays on the build page, named.
+        if (logicDocument.problemCount() > 0) emit logicBlockedBuild();
         return false;
     }
+
+    // A project that started with an older Studio needs game code that knows about variables.
+    if (usesVariables() && sceneRuntimeNeedsUpdate(project->root)) {
+        if (!installSceneRuntime(":/runtime/SceneGame", project->root, project->name, problem)) {
+            state = "failed";
+            message = problem;
+            emit buildChanged();
+            return false;
+        }
+        appendLog({"Updated this project's game code to show variables. Its previous files are in .studio-backup."});
+        refreshFiles();
+    }
     return true;
+}
+
+bool StudioController::usesVariables() const {
+    if (!logicDocument.program().variables.isEmpty()) return true;
+    return std::ranges::any_of(sceneDocument.scene().items, [](const SceneItem& item) { return item.type == "text" && textUsesVariables(item.text); });
 }
 
 bool StudioController::openFolder(const QUrl& folder) {

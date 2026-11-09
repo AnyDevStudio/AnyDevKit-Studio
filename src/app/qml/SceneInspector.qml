@@ -55,12 +55,32 @@ Flickable {
             onCommitted: (text) => inspector.set("name", text)
         }
 
-        Field {
+        Item {
             Layout.fillWidth: true
             visible: inspector.isText
-            label: "Text"
-            value: inspector.isText ? inspector.item.text : ""
-            onCommitted: (text) => inspector.set("text", text)
+            implicitHeight: textField.implicitHeight
+
+            Field {
+                id: textField
+
+                anchors.left: parent.left
+                anchors.right: parent.right
+                label: "Text"
+                maximumLength: 128 // {{ and }} count as one character, so the raw text can run longer than 64
+                value: inspector.isText ? inspector.item.text : ""
+                onCommitted: (text) => inspector.set("text", text)
+            }
+
+            BlockPicker {
+                objectName: "insertVariableButton"
+                anchors.right: parent.right
+                implicitHeight: 24
+                preferredWidth: 148
+                placeholder: "Insert variable"
+                choices: Array.from(inspector.scene.variableNames).map((name) => ({ id: name, name: name }))
+                emptyText: "Add a variable on the Logic tab first."
+                onChosen: (name) => textField.insertAtCursor("{" + name + "}")
+            }
         }
 
         RowLayout {

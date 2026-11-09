@@ -30,6 +30,7 @@ qt_add_qml_module(AnyDevKitStudio
         qml/ImageGlyph.qml
         qml/ImagePlaceholder.qml
         qml/LogicView.qml
+        qml/VariablesPanel.qml
         qml/LogicBlock.qml
         qml/BlockOutline.qml
         qml/BlockGlyph.qml
