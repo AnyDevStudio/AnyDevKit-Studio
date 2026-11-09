@@ -391,6 +391,9 @@ private slots:
     }
 
     void exportRefusesALinkThatLeavesTheProject() {
+#ifdef Q_OS_WIN
+        QSKIP("Creating symbolic links needs extra rights on Windows.");
+#endif
         QTemporaryDir directory;
         QTemporaryDir outside;
         const auto root = directory.path();

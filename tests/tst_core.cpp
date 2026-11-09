@@ -784,7 +784,7 @@ private slots:
         QVERIFY2(shown.contains("--passcode <hidden>"), qPrintable(shown));
         QVERIFY2(shown.contains("--image-seed <hidden>"), qPrintable(shown));
         QVERIFY2(shown.contains(keys.passcodeModuliPath), "Key file paths are not secret and help when a build fails.");
-        QVERIFY2(describeBuildStep(ffpfscSteps.last()).endsWith("adk package --target ps5"), "A step without secrets is shown as it runs.");
+        QVERIFY2(describeBuildStep(ffpfscSteps.last()).remove(".exe").endsWith("adk package --target ps5"), "A step without secrets is shown as it runs.");
     }
 
     void redactsSecretsWhereverTheyAppear() {

@@ -156,6 +156,8 @@ void twoThreadsNeverSeeATornSave() {
         values.fill(round);
         mailbox.PublishSave(values);
     }
+    // The writer can finish before the reader thread starts, so let the reader see the last save.
+    for (int wait = 0; wait < 5000 && taken.load() == 0; ++wait) std::this_thread::sleep_for(std::chrono::milliseconds(1));
     stop.store(true);
     worker.join();
     EXPECT(taken.load() >= 1);

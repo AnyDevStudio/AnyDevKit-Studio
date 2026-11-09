@@ -1187,7 +1187,8 @@ private slots:
     mixer.Mix(output);
     std::printf("after press: %d\n", output[0]);
     std::array<std::int32_t, 1> saved{};
-    std::printf("saved %d %d\n", mailbox.TakeSave(saved) ? 1 : 0, saved[0]);
+    const bool tookSave = mailbox.TakeSave(saved); // read before printing: argument order is unspecified
+    std::printf("saved %d %d\n", tookSave ? 1 : 0, saved[0]);
     std::printf("load requested %d\n", mailbox.TakeLoadRequest() ? 1 : 0);
     mailbox.PublishLoaded(std::array<std::int32_t, 1>{123});
     std::printf("before update %d\n", world.Variable(0));
