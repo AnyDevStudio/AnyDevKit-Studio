@@ -8,8 +8,15 @@ ColumnLayout {
     property string label
     property string value
     property int maximumLength: 64
+    property string hint
+    property string problem
+    readonly property string text: input.text
 
     signal committed(string text)
+    signal accepted()
+
+    function focusInput() { input.forceActiveFocus() }
+    function setText(newText) { value = newText; input.text = newText }
 
     spacing: 6
 
@@ -38,12 +45,23 @@ ColumnLayout {
         font.pixelSize: 15
         text: field.value
         onEditingFinished: if (text !== field.value) field.committed(text)
+        onAccepted: field.accepted()
 
         background: Rectangle {
             radius: 8
             color: Theme.ink
             border.width: input.activeFocus ? 2 : 1
-            border.color: input.activeFocus ? Theme.signal : Theme.line
+            border.color: input.activeFocus ? Theme.signal : field.problem.length > 0 ? Theme.bad : Theme.line
         }
+    }
+
+    Text {
+        Layout.fillWidth: true
+        visible: text.length > 0
+        text: field.problem || field.hint
+        color: field.problem.length > 0 ? Theme.bad : Theme.muted
+        wrapMode: Text.WordWrap
+        font.family: Theme.body
+        font.pixelSize: 13
     }
 }

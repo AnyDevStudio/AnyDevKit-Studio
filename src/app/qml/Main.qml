@@ -6,6 +6,7 @@ Window {
 
     required property StudioController studio
     required property bool reducedMotion
+    property bool startOnNewGame: false
 
     width: 1280
     height: 800
@@ -36,7 +37,7 @@ Window {
 
     Component {
         id: welcomeView
-        WelcomeView { studio: root.studio }
+        WelcomeView { studio: root.studio; newGameOpen: root.startOnNewGame }
     }
 
     Component {
@@ -46,7 +47,7 @@ Window {
 
     DropArea {
         anchors.fill: parent
-        enabled: !root.studio.building
+        enabled: !root.studio.building && !root.studio.creatingGame
         onDropped: (drop) => {
             if (drop.hasUrls) root.studio.openFolder(drop.urls[0])
         }

@@ -26,7 +26,8 @@ int main(int argc, char** argv) {
     const QCommandLineOption buildOption("build", "Build the opened project for PS5.");
     const QCommandLineOption screenshotOption("screenshot", "Save the window as an image, then exit.", "file");
     const QCommandLineOption delayOption("screenshot-delay", "Take the screenshot this many milliseconds after start, even during a build.", "ms");
-    parser.addOptions({openOption, buildOption, screenshotOption, delayOption});
+    const QCommandLineOption newGameOption("new-game", "Start on the new game form.");
+    parser.addOptions({openOption, buildOption, screenshotOption, delayOption, newGameOption});
     parser.process(application);
 
     Studio::StudioController studio;
@@ -34,7 +35,7 @@ int main(int argc, char** argv) {
 
     QQmlApplicationEngine engine;
     QObject::connect(&engine, &QQmlApplicationEngine::objectCreationFailed, &application, [] { QCoreApplication::exit(1); }, Qt::QueuedConnection);
-    engine.setInitialProperties({{"studio", QVariant::fromValue(&studio)}, {"reducedMotion", Studio::prefersReducedMotion()}});
+    engine.setInitialProperties({{"studio", QVariant::fromValue(&studio)}, {"reducedMotion", Studio::prefersReducedMotion()}, {"startOnNewGame", parser.isSet(newGameOption)}});
     engine.loadFromModule("AnyDevKitStudio", "Main");
 
     auto buildSucceeded = true;

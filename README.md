@@ -46,8 +46,8 @@ On macOS with Homebrew: `brew install cmake ninja qtbase qtdeclarative qtsvg`.
 
 Studio also needs what AnyDevKit needs to build a project: the
 [AnyDevKit SDK](https://github.com/boykopovar/AnyDevKit/releases/latest), its dependencies from
-`adk setup`, Ninja, LLD and Clang 18+ or GCC 14+. Create a project with `adk init` and open its
-folder in Studio.
+`adk setup`, Ninja, LLD and Clang 18+ or GCC 14+. Choose New game on the welcome screen, or create a
+project with `adk init` and open its folder in Studio.
 
 ### Apple Silicon
 

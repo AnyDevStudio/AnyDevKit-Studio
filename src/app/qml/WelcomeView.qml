@@ -6,6 +6,14 @@ Item {
     id: view
 
     required property StudioController studio
+    property bool newGameOpen: false
+
+    Component.onCompleted: if (newGameOpen) newGameForm.prepare()
+
+    function openNewGame() {
+        newGameOpen = true
+        newGameForm.prepare()
+    }
 
     FolderDialog {
         id: folderDialog
@@ -18,64 +26,101 @@ Item {
         anchors.margins: Math.max(40, parent.width * 0.06)
         spacing: Math.max(32, parent.width * 0.05)
 
-        ColumnLayout {
+        Item {
             Layout.fillHeight: true
             Layout.preferredWidth: parent.width * 0.54
             Layout.maximumWidth: parent.width * 0.54
-            spacing: 26
 
-            Item { Layout.fillHeight: true }
+            ColumnLayout {
+                anchors.fill: parent
+                visible: opacity > 0
+                opacity: view.newGameOpen ? 0 : 1
+                spacing: 26
 
-            Text {
-                Layout.fillWidth: true
-                text: "Make something\nfor PS5."
-                color: Theme.paper
-                font.family: Theme.display
-                font.pixelSize: Math.min(104, view.width * 0.053)
-                lineHeight: 0.94
-                wrapMode: Text.NoWrap
-            }
+                Behavior on opacity {
+                    NumberAnimation { duration: Theme.ms(180); easing.type: Easing.OutCubic }
+                }
 
-            Text {
-                Layout.fillWidth: true
-                Layout.maximumWidth: 520
-                text: "Open a folder made with adk init. Studio shows the project and builds its PS5 package."
-                color: Theme.muted
-                font.family: Theme.body
-                font.pixelSize: 19
-                lineHeight: 1.3
-                wrapMode: Text.WordWrap
-            }
+                Item { Layout.fillHeight: true }
 
-            RowLayout {
-                spacing: 18
-
-                PillButton {
-                    primary: true
-                    text: "Open project folder"
-                    onClicked: folderDialog.open()
+                Text {
+                    Layout.fillWidth: true
+                    text: "Make something\nfor PS5."
+                    color: Theme.paper
+                    font.family: Theme.display
+                    font.pixelSize: Math.min(104, view.width * 0.053)
+                    lineHeight: 0.94
+                    wrapMode: Text.NoWrap
                 }
 
                 Text {
-                    text: "or drop it anywhere here"
+                    Layout.fillWidth: true
+                    Layout.maximumWidth: 520
+                    text: "Start a new game or open a folder made with adk init. Studio designs the scene and builds its PS5 package."
                     color: Theme.muted
                     font.family: Theme.body
+                    font.pixelSize: 19
+                    lineHeight: 1.3
+                    wrapMode: Text.WordWrap
+                }
+
+                RowLayout {
+                    spacing: 18
+
+                    PillButton {
+                        primary: true
+                        text: "New game"
+                        onClicked: view.openNewGame()
+                    }
+
+                    PillButton {
+                        text: "Open project folder"
+                        onClicked: folderDialog.open()
+                    }
+
+                    Text {
+                        text: "or drop it anywhere here"
+                        color: Theme.muted
+                        font.family: Theme.body
+                        font.pixelSize: 15
+                    }
+                }
+
+                Text {
+                    Layout.fillWidth: true
+                    Layout.maximumWidth: 520
+                    visible: view.studio.openError.length > 0
+                    text: view.studio.openError
+                    color: Theme.bad
+                    font.family: Theme.body
                     font.pixelSize: 15
+                    wrapMode: Text.WordWrap
+                }
+
+                Item { Layout.fillHeight: true }
+            }
+
+            NewGameForm {
+                id: newGameForm
+
+                anchors.fill: parent
+                studio: view.studio
+                visible: opacity > 0
+                enabled: view.newGameOpen
+                opacity: view.newGameOpen ? 1 : 0
+                transform: Translate {
+                    x: view.newGameOpen ? 0 : 32
+
+                    Behavior on x {
+                        NumberAnimation { duration: Theme.ms(320); easing.type: Easing.OutBack; easing.overshoot: 1.2 }
+                    }
+                }
+                onCloseRequested: view.newGameOpen = false
+
+                Behavior on opacity {
+                    NumberAnimation { duration: Theme.ms(180); easing.type: Easing.OutCubic }
                 }
             }
-
-            Text {
-                Layout.fillWidth: true
-                Layout.maximumWidth: 520
-                visible: view.studio.openError.length > 0
-                text: view.studio.openError
-                color: Theme.bad
-                font.family: Theme.body
-                font.pixelSize: 15
-                wrapMode: Text.WordWrap
-            }
-
-            Item { Layout.fillHeight: true }
         }
 
         Item {
@@ -104,10 +149,10 @@ Item {
 
                     x: px * (screen.width - width)
                     y: py * (screen.height - height)
-                    text: "MyApp"
+                    text: view.newGameOpen && newGameForm.gameName.length > 0 && newGameForm.nameProblem.length === 0 ? newGameForm.gameName : "MyApp"
                     color: Theme.signal
                     font.family: Theme.display
-                    font.pixelSize: Math.max(20, screen.width * 0.09)
+                    font.pixelSize: Math.max(8, Math.min(screen.width * 0.09, screen.width * 1.15 / text.length))
                 }
 
                 FrameAnimation {
