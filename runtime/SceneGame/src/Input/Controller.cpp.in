@@ -1,0 +1,51 @@
+#include "Input/Controller.hpp"
+#include "prx/libScePad/libScePad.hpp"
+#include "prx/libSceSysmodule/libSceSysmodule.hpp"
+#include "prx/libSceUserService/libSceUserService.hpp"
+#include <cmath>
+
+namespace {
+
+constexpr std::uint32_t UserServiceModule = 0x80000011;
+constexpr std::uint32_t PadModule = 0x80000024;
+constexpr std::uint32_t ButtonUp = 0x10;
+constexpr std::uint32_t ButtonRight = 0x20;
+constexpr std::uint32_t ButtonDown = 0x40;
+constexpr std::uint32_t ButtonLeft = 0x80;
+constexpr float StickCenter = 128.0f;
+constexpr float StickRange = 127.0f;
+constexpr float StickDeadZone = 0.2f;
+
+std::array<float, 2> normalized(float x, float y) {
+    const float length = std::sqrt(x * x + y * y);
+    if (length == 0.0f) return {0.0f, 0.0f};
+    return {x / length, y / length};
+}
+
+}
+
+Controller::Controller() {
+    if (sceSysmoduleLoadModuleInternal(UserServiceModule) < 0) return;
+    if (sceSysmoduleLoadModuleInternal(PadModule) < 0) return;
+    if (sceUserServiceInitialize(nullptr) < 0) return;
+    int userId = 0;
+    if (sceUserServiceGetInitialUser(&userId) < 0) return;
+    if (scePadInit_nid_postfix() < 0) return;
+    const int handle = scePadOpen_nid_postfix(userId, 0, 0, nullptr);
+    if (handle >= 0) pad = handle;
+}
+
+std::array<float, 2> Controller::Direction() const {
+    if (pad < 0) return {0.0f, 0.0f};
+    PadData data{};
+    if (scePadReadState(pad, &data) < 0 || !data.connected) return {0.0f, 0.0f};
+
+    const float dpadX = static_cast<float>((data.buttons & ButtonRight) != 0) - static_cast<float>((data.buttons & ButtonLeft) != 0);
+    const float dpadY = static_cast<float>((data.buttons & ButtonDown) != 0) - static_cast<float>((data.buttons & ButtonUp) != 0);
+    if (dpadX != 0.0f || dpadY != 0.0f) return normalized(dpadX, dpadY);
+
+    const float stickX = (static_cast<float>(data.left_stick_x) - StickCenter) / StickRange;
+    const float stickY = (static_cast<float>(data.left_stick_y) - StickCenter) / StickRange;
+    if (stickX * stickX + stickY * stickY < StickDeadZone * StickDeadZone) return {0.0f, 0.0f};
+    return normalized(stickX, stickY);
+}

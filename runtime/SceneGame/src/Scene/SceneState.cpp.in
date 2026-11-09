@@ -1,0 +1,43 @@
+#include "Scene/SceneState.hpp"
+#include <algorithm>
+
+namespace {
+
+constexpr double UnitsPerSecond = 600.0;
+
+// An item larger than the stage cannot fit, so it may only slide while still covering the stage.
+float clampAxis(float value, float stage, float size) {
+    const float limit = stage - size;
+    return std::clamp(value, std::min(0.0f, limit), std::max(0.0f, limit));
+}
+
+}
+
+SceneState::SceneState(int width, int height) : stageWidth(static_cast<float>(width)), stageHeight(static_cast<float>(height)) {
+    auto position = positions.begin();
+    for (const auto& item : GeneratedScene::Items) {
+        *position = {item.x, item.y};
+        if (item.controllable) clampToStage(item, *position);
+        ++position;
+    }
+}
+
+void SceneState::Update(double seconds, Position direction) {
+    const auto distance = static_cast<float>(UnitsPerSecond * seconds);
+    auto position = positions.begin();
+    for (const auto& item : GeneratedScene::Items) {
+        if (item.controllable) {
+            (*position)[0] += direction[0] * distance;
+            (*position)[1] += direction[1] * distance;
+            clampToStage(item, *position);
+        }
+        ++position;
+    }
+}
+
+const SceneState::Positions& SceneState::Current() const { return positions; }
+
+void SceneState::clampToStage(const GeneratedScene::Item& item, Position& position) const {
+    position[0] = clampAxis(position[0], stageWidth, item.width);
+    position[1] = clampAxis(position[1], stageHeight, item.height);
+}

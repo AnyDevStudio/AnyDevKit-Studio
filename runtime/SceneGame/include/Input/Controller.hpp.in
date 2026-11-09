@@ -1,0 +1,15 @@
+#ifndef @NAME@_Input_Controller_hpp
+#define @NAME@_Input_Controller_hpp
+#include <array>
+
+// Reads the initial user's pad. Every failure is treated as "no input" so the game keeps drawing.
+class Controller final {
+public:
+    Controller();
+    // Unit direction from the D-pad or left stick, or {0, 0} when idle or unavailable. +y points down.
+    std::array<float, 2> Direction() const;
+
+private:
+    int pad = -1;
+};
+#endif

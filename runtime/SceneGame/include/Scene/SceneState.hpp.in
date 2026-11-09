@@ -1,0 +1,21 @@
+#ifndef @NAME@_Scene_SceneState_hpp
+#define @NAME@_Scene_SceneState_hpp
+#include "GeneratedScene.hpp"
+#include <array>
+
+// Current position of every item in GeneratedScene::Items, indexed the same way.
+class SceneState final {
+public:
+    using Position = std::array<float, 2>;
+    using Positions = std::array<Position, GeneratedScene::Items.size()>;
+    SceneState(int width, int height);
+    void Update(double seconds, Position direction);
+    const Positions& Current() const;
+
+private:
+    void clampToStage(const GeneratedScene::Item& item, Position& position) const;
+    Positions positions{};
+    float stageWidth;
+    float stageHeight;
+};
+#endif

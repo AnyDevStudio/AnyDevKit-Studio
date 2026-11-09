@@ -1,0 +1,20 @@
+#version 450
+layout(location = 0) in vec2 coordinate;
+layout(location = 1) flat in vec4 color;
+layout(location = 2) flat in uvec4 glyph;
+layout(location = 3) flat in uint mode;
+layout(location = 0) out vec4 outputColor;
+void main() {
+    if (mode == 0u) {
+        outputColor = vec4(mix(vec3(0.025, 0.04, 0.065), vec3(0.065, 0.10, 0.14), coordinate.y), 1.0);
+    } else if (mode == 2u) {
+        outputColor = color;
+    } else {
+        uvec2 cell = uvec2(floor(coordinate));
+        if (cell.x >= 5u || cell.y >= 7u) discard;
+        uint rows = cell.y < 4u ? glyph.x : glyph.y;
+        uint bit = (cell.y % 4u) * 5u + 4u - cell.x;
+        if ((rows & (1u << bit)) == 0u) discard;
+        outputColor = color;
+    }
+}
