@@ -59,6 +59,9 @@ qt_add_qml_module(AnyDevKitStudio
         assets/fonts/IBMPlexSans-SemiBold.ttf
         assets/fonts/IBMPlexMono-Regular.ttf
         assets/icon/app-icon.png
+        assets/defaults/icon0.png
+        assets/defaults/pic0.png
+        assets/defaults/pic1.png
 )
 
 # The game runtime that "Add the scene editor" installs into a project.

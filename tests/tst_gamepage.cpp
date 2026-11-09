@@ -70,6 +70,35 @@ class GamePageTests : public QObject {
     Q_OBJECT
 
 private slots:
+    void newProjectsGetTheStudioPictures() {
+        QTemporaryDir project, defaults;
+        for (const auto* name : {"icon0.png", "pic0.png", "pic1.png"}) {
+            QFile file(defaults.filePath(name));
+            QVERIFY(file.open(QIODevice::WriteOnly));
+            file.write(name);
+        }
+        const auto folder = project.filePath("app0/sce_sys");
+        QCOMPARE(installDefaultGamePictures(defaults.path(), folder), QString());
+        for (const auto* name : {"icon0.png", "pic0.png", "pic1.png"}) {
+            QFile file(folder + '/' + name);
+            QVERIFY(file.open(QIODevice::ReadOnly));
+            QCOMPARE(file.readAll(), QByteArray(name));
+            QVERIFY(QFileInfo(file).isWritable());
+        }
+    }
+
+    void theStudioPicturesNeverReplaceExistingOnes() {
+        QTemporaryDir project, defaults;
+        { QFile file(defaults.filePath("icon0.png")); QVERIFY(file.open(QIODevice::WriteOnly)); file.write("studio"); }
+        QVERIFY(QDir(project.path()).mkpath("sce_sys"));
+        const auto existing = project.filePath("sce_sys/icon0.png");
+        { QFile file(existing); QVERIFY(file.open(QIODevice::WriteOnly)); file.write("mine"); }
+        QCOMPARE(installDefaultGamePictures(defaults.path(), project.filePath("sce_sys")), QString());
+        QFile file(existing);
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        QCOMPARE(file.readAll(), QByteArray("mine"));
+    }
+
     void targetsMatchWhatAnyDevKitPackages() {
         QCOMPARE(target(GameImageKind::Icon).fileName, QString("icon0.png"));
         QCOMPARE(target(GameImageKind::Icon).size, QSize(512, 512));

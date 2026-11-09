@@ -28,6 +28,10 @@ QRect centerCropRect(const QSize& source, const QSize& target);
 // Crops to the target's proportions, scales to its exact size and flattens transparency onto black.
 QImage fitGameImage(const QImage& source, const QSize& target);
 
+// Copies Studio's pictures into a project's sce_sys folder, leaving any picture already there.
+// Returns a message for the person using Studio, or an empty string on success.
+QString installDefaultGamePictures(const QString& sourceFolder, const QString& targetFolder);
+
 struct TitleEdit {
     QByteArray json;
     QString error;

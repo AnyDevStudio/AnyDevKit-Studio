@@ -145,6 +145,19 @@ QList<GameImageTarget> gameImageTargets() {
     return {gameImageTarget(GameImageKind::Icon), gameImageTarget(GameImageKind::Background), gameImageTarget(GameImageKind::Splash)};
 }
 
+QString installDefaultGamePictures(const QString& sourceFolder, const QString& targetFolder) {
+    if (!QDir().mkpath(targetFolder)) return QString("Could not create %1.").arg(targetFolder);
+    for (const auto* name : {"icon0.png", "pic0.png", "pic1.png"}) {
+        const auto source = sourceFolder + '/' + name;
+        const auto target = targetFolder + '/' + name;
+        if (!QFile::exists(source) || QFile::exists(target)) continue;
+        if (!QFile::copy(source, target)) return QString("Could not add %1 to the project.").arg(name);
+        // Files copied out of Qt resources arrive read-only.
+        QFile::setPermissions(target, QFile::permissions(target) | QFile::WriteOwner);
+    }
+    return {};
+}
+
 QRect centerCropRect(const QSize& source, const QSize& target) {
     if (source.isEmpty() || target.isEmpty()) return {};
     const qint64 sourceWidth = source.width();

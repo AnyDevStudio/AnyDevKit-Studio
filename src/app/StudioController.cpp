@@ -1,5 +1,7 @@
 #include "StudioController.h"
 
+#include "GamePage.h"
+
 #include "Blocks.h"
 #include "SceneExport.h"
 #include "SceneImageImport.h"
@@ -391,6 +393,8 @@ void StudioController::finishCreatingGame(bool success, const QString& runnerMes
     }
 
     const auto directory = newGameDirectory(pendingGame);
+    // Pictures are a starting point, so a failure here must not stop the project from opening.
+    static_cast<void>(installDefaultGamePictures(":/qt/qml/AnyDevKitStudio/assets/defaults", directory + "/app0/sce_sys"));
     if (newGameSteps(pendingGame.type).contains(NewGameStep::AddSceneRuntime)) {
         QString error;
         if (!installSceneRuntime(":/runtime/SceneGame", directory, pendingGame.name, error, *starterSceneFor(pendingGame.type))) {
