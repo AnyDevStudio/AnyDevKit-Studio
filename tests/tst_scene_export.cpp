@@ -424,6 +424,39 @@ private slots:
         QCOMPARE(imported.source, QString("assets/full-0.png"));
     }
 
+    void exportsEveryScenesImagesOnceAndNumbersItemsAcrossScenes() {
+        QTemporaryDir project;
+        QImage red(8, 8, QImage::Format_RGBA8888);
+        red.fill(Qt::red);
+        QImage blue(4, 4, QImage::Format_RGBA8888);
+        blue.fill(Qt::blue);
+        writePng(project.path() + "/assets/red.png", red);
+        writePng(project.path() + "/assets/blue.png", blue);
+
+        Scene first;
+        first.id = "first";
+        first.name = "First";
+        first.items = {imageItem("a", "assets/red.png")};
+        Scene second;
+        second.id = "second";
+        second.name = "Second";
+        second.items = {imageItem("a", "assets/red.png"), imageItem("b", "assets/blue.png")};
+        SceneSet set;
+        set.scenes = {first, second};
+        set.startScene = "second";
+
+        QString error;
+        QVERIFY2(exportScene(project.path(), set, error), qPrintable(error));
+        const auto header = readBytes(project.path() + "/src/GeneratedScene.hpp");
+        QVERIFY2(header.contains("ImageCount = 2;"), header.constData());
+        QVERIFY2(header.contains("SceneCount = 2;"), header.constData());
+        QVERIFY2(header.contains("StartScene = 1;"), header.constData());
+        QVERIFY2(header.contains("std::array<Item, 3> Items"), header.constData());
+        QVERIFY(QFile::exists(project.path() + "/src/GeneratedImages/image-0.rgba"));
+        QVERIFY(QFile::exists(project.path() + "/src/GeneratedImages/image-1.rgba"));
+        QVERIFY(!QFile::exists(project.path() + "/src/GeneratedImages/image-2.rgba"));
+    }
+
     void exportsASceneWithoutImages() {
         QTemporaryDir directory;
         Scene scene;

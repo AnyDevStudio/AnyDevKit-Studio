@@ -109,12 +109,14 @@ StudioController::StudioController(QObject* parent) : QObject(parent), setupProb
         emit buildFinished(success);
     });
 
-    const auto refreshLogicScene = [this] { logicDocument.setScene(sceneDocument.scene()); };
+    const auto refreshLogicScene = [this] { logicDocument.setSceneSet(sceneDocument.sceneSet(), sceneDocument.currentSceneIndex()); };
     connect(&sceneDocument, &QAbstractItemModel::modelReset, this, refreshLogicScene);
     connect(&sceneDocument, &QAbstractItemModel::rowsInserted, this, refreshLogicScene);
     connect(&sceneDocument, &QAbstractItemModel::rowsRemoved, this, refreshLogicScene);
     connect(&sceneDocument, &QAbstractItemModel::rowsMoved, this, refreshLogicScene);
     connect(&sceneDocument, &QAbstractItemModel::dataChanged, this, refreshLogicScene);
+    connect(&sceneDocument, &SceneDocument::scenesChanged, this, refreshLogicScene);
+    connect(&sceneDocument, &SceneDocument::sceneDuplicated, &logicDocument, &LogicDocument::duplicateSceneLogic);
     // The stage and the inspector show the logic's variables, and text follows a rename.
     connect(&logicDocument, &LogicDocument::programChanged, this, [this] { sceneDocument.setVariables(logicDocument.program().variables); });
     connect(&logicDocument, &LogicDocument::variableRenamed, &sceneDocument, &SceneDocument::renameVariable);
@@ -279,8 +281,8 @@ void StudioController::openLogic() {
         logicDocument.close();
         return;
     }
+    logicDocument.setSceneSet(sceneDocument.sceneSet(), sceneDocument.currentSceneIndex());
     logicDocument.open(project->root + "/logic.json");
-    logicDocument.setScene(sceneDocument.scene());
 }
 
 void StudioController::refreshFiles() {
@@ -294,13 +296,14 @@ void StudioController::refreshFiles() {
 bool StudioController::exportScene() {
     if (!sceneDocument.isLoaded()) return true;
     QString problem;
-    if (!Studio::exportScene(project->root, sceneDocument.scene(), problem)) {
+    const auto scenes = sceneDocument.sceneSet();
+    if (!Studio::exportScene(project->root, scenes, problem)) {
         state = "failed";
         message = problem;
         emit buildChanged();
         return false;
     }
-    if (!exportLogicHeader(project->root, sceneDocument.scene(), problem)) {
+    if (!exportLogicHeader(project->root, scenes, problem)) {
         state = "failed";
         message = problem;
         emit buildChanged();
@@ -310,7 +313,7 @@ bool StudioController::exportScene() {
     }
 
     // A project that started with an older Studio needs game code that knows about what the scene uses.
-    if ((usesVariables() && sceneRuntimeNeedsUpdate(project->root)) || sceneRuntimeNeedsUpdate(project->root, sceneDocument.scene()) || (programUsesWorldBlocks(logicDocument.program()) && sceneRuntimeLacksWorld(project->root)) || (usesSoundFeatures() && soundRuntimeNeedsUpdate(project->root))) {
+    if ((usesVariables() && sceneRuntimeNeedsUpdate(project->root)) || sceneRuntimeNeedsUpdate(project->root, sceneDocument.scene()) || (programUsesWorldBlocks(logicDocument.program()) && sceneRuntimeLacksWorld(project->root)) || ((sceneSetUsesPhysics(scenes) || programUsesPhysicsBlocks(logicDocument.program())) && sceneRuntimeLacksPhysics(project->root)) || (usesSoundFeatures() && soundRuntimeNeedsUpdate(project->root))) {
         if (!installSceneRuntime(":/runtime/SceneGame", project->root, project->name, problem)) {
             state = "failed";
             message = problem;
@@ -331,12 +334,16 @@ bool StudioController::usesSoundFeatures() const {
             return block.type == BlockType::SaveVariables || block.type == BlockType::LoadVariables || block.type == BlockType::StopMusic || block.type == BlockType::SetVolume || self(self, block.children);
         });
     };
-    return uses(uses, program.events);
+    if (uses(uses, program.events)) return true;
+    return std::ranges::any_of(program.otherScenes, [&](const SceneLogic& other) { return uses(uses, other.events); });
 }
 
 bool StudioController::usesVariables() const {
     if (!logicDocument.program().variables.isEmpty()) return true;
-    return std::ranges::any_of(sceneDocument.scene().items, [](const SceneItem& item) { return item.type == "text" && textUsesVariables(item.text); });
+    for (const auto& scene : sceneDocument.sceneSet().scenes) {
+        if (std::ranges::any_of(scene.items, [](const SceneItem& item) { return item.type == "text" && textUsesVariables(item.text); })) return true;
+    }
+    return false;
 }
 
 bool StudioController::openFolder(const QUrl& folder) {

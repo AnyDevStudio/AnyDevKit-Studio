@@ -129,7 +129,7 @@ private slots:
     void paletteComesFromTheCatalogInGroups() {
         LogicDocument document;
         const auto groups = document.palette();
-        QCOMPARE(groups.size(), 6);
+        QCOMPARE(groups.size(), 8);
         QStringList keys;
         QStringList seen;
         for (const auto& group : groups) {
@@ -137,7 +137,7 @@ private slots:
             keys << map.value("key").toString();
             for (const auto& block : map.value("blocks").toList()) seen << block.toMap().value("type").toString();
         }
-        QCOMPARE(keys, QStringList({"events", "movement", "looks", "variables", "sound", "saving"}));
+        QCOMPARE(keys, QStringList({"events", "movement", "looks", "variables", "sound", "saving", "physics", "scenes"}));
         QStringList catalog;
         for (const auto& info : blockCatalog()) catalog << info.jsonName;
         auto sortedSeen = seen;

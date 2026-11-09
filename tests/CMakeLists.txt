@@ -44,6 +44,8 @@ function(studio_add_sanitized_test name)
 endfunction()
 studio_add_sanitized_test(tst_audio_mixer tst_audio_mixer.cpp)
 studio_add_sanitized_test(tst_save_format tst_save_format.cpp)
+# The 2D platformer physics from the game runtime, always under sanitizers, with a long soak of random worlds.
+studio_add_sanitized_test(tst_physics2d tst_physics2d.cpp)
 if(NOT MSVC)
     add_executable(tst_audio_mixer_tsan tst_audio_mixer.cpp)
     target_compile_features(tst_audio_mixer_tsan PRIVATE cxx_std_20)
@@ -94,6 +96,19 @@ qt_add_executable(tst_sprites_tilemap tst_sprites_tilemap.cpp)
 target_link_libraries(tst_sprites_tilemap PRIVATE studio_core Qt6::Test)
 add_test(NAME tst_sprites_tilemap COMMAND tst_sprites_tilemap)
 
+qt_add_executable(tst_scene_set tst_scene_set.cpp)
+target_link_libraries(tst_scene_set PRIVATE studio_core Qt6::Test)
+add_test(NAME tst_scene_set COMMAND tst_scene_set)
+
+qt_add_executable(tst_physics_blocks tst_physics_blocks.cpp)
+target_link_libraries(tst_physics_blocks PRIVATE studio_core Qt6::Test)
+target_compile_definitions(tst_physics_blocks PRIVATE
+    STUDIO_TEST_CXX="${CMAKE_CXX_COMPILER}"
+    STUDIO_TEST_SYSROOT="${CMAKE_OSX_SYSROOT}"
+    STUDIO_TEST_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
+)
+add_test(NAME tst_physics_blocks COMMAND tst_physics_blocks)
+
 # The camera, animation and tile culling from the game runtime, with no Qt so it can run under sanitizers.
 add_executable(tst_world2d tst_world2d.cpp)
 target_include_directories(tst_world2d PRIVATE "${PROJECT_SOURCE_DIR}/runtime/SceneGame/include")
@@ -105,3 +120,8 @@ add_test(NAME tst_setup COMMAND tst_setup)
 
 # qt_standard_project_setup makes Windows executables GUI apps, which hides test output.
 set_target_properties(tst_particles tst_core tst_scene tst_scene_document tst_gamepage tst_blocks tst_logic_document tst_scene_export tst_font_tables tst_sounds tst_world2d tst_sprites_tilemap tst_setup PROPERTIES WIN32_EXECUTABLE FALSE)
+
+set_target_properties(tst_scene_set tst_physics_blocks tst_particles tst_core tst_scene tst_scene_document tst_gamepage tst_blocks tst_logic_document tst_scene_export tst_font_tables tst_sounds tst_world2d tst_sprites_tilemap PROPERTIES WIN32_EXECUTABLE FALSE)
+
+# qt_standard_project_setup makes Windows executables GUI apps, which hides test output.
+set_target_properties(tst_particles tst_core tst_scene tst_scene_document tst_gamepage tst_blocks tst_logic_document tst_scene_export tst_font_tables tst_sounds tst_world2d tst_sprites_tilemap tst_setup tst_scene_set tst_physics_blocks PROPERTIES WIN32_EXECUTABLE FALSE)

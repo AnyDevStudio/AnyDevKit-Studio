@@ -33,6 +33,8 @@ Drag shapes and text onto the stage, press one button, and the same scene runs a
 | Sprites | Sprite sheets with named animations, sharp pixel scaling and flip | Working in Studio, builds for PS5, not yet seen running |
 | Tilemaps | Tile layers painted on the stage from a tileset palette, with a solid flag per tile | Working in Studio, builds for PS5, not yet seen running |
 | World and camera | A world larger than the screen, pan and zoom on the stage, camera blocks and screen-fixed items | Working in Studio, builds for PS5, not yet seen running |
+| Platformer physics | Static solids and moving bodies, platformer controls with coyote time, jump buffering and variable jump height, physics blocks | Tested on the host under sanitizers, builds for PS5, not yet played on a console or emulator |
+| Scenes | Add, rename, duplicate and delete scenes, pick the starting scene, Go to scene and Restart blocks | Working in Studio, builds for PS5, not yet seen running |
 | Game runtime | Draws the scene on AGC, the PS5 graphics API, with controller movement | Shapes and text run in AnyPS5, not yet on a console |
 | Image drawing | Textured images in the game | Builds for PS5, not yet seen running |
 | Sound | Import WAV, MP3 or OGG, then play effects and music from blocks | Builds for PS5, not yet heard on a console |

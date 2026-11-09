@@ -28,6 +28,21 @@ inline constexpr int MaximumTileScale = 16;
 inline constexpr int MaximumTilemapSide = 512;
 inline constexpr int MaximumSceneTileCells = 1048576;
 inline constexpr int MaximumTileIndex = 65535;
+// Scene limits. Budgets apply to each scene on its own.
+inline constexpr int MaximumScenes = 32;
+inline constexpr int MaximumSceneNameLength = 40;
+// Physics limits. The game checks every moving body against the solids of its scene, so a scene is held to this.
+inline constexpr int MaximumSceneBodies = 64;
+inline constexpr int MaximumSceneSolidItems = 128;
+inline constexpr int MaximumBodySide = 2048;
+inline constexpr int MaximumGravityScale = 300;
+inline constexpr int MinimumMoveSpeed = 60;
+inline constexpr int MaximumMoveSpeed = 3000;
+inline constexpr int MinimumJumpHeight = 16;
+inline constexpr int MaximumJumpHeight = 2000;
+inline constexpr int DefaultGravityScale = 100; // percent; a beginner's character feels right here
+inline constexpr int DefaultMoveSpeed = 600;    // units per second
+inline constexpr int DefaultJumpHeight = 260;   // units
 // Sprite sheet limits.
 inline constexpr int MaximumAnimationsPerSprite = 16;
 inline constexpr int MaximumFramesPerAnimation = 256;
@@ -68,7 +83,7 @@ struct SceneItem {
     int tileScale = 4; // drawn size of a tile is tileWidth * tileScale world units
     int columns = 0, rows = 0;
     QList<int> tiles; // columns * rows numbers, row by row, top row first; -1 is empty
-    QList<int> solidTiles; // tile indexes that block movement, sorted and unique. Kept for later use.
+    QList<int> solidTiles; // tile numbers that block moving bodies, sorted and unique
     // Particles items only. width and height are the area the effect happens in. The ranges are in
     // docs/scene-format.md.
     QString preset = "fireworks";
@@ -79,15 +94,32 @@ struct SceneItem {
     int gravity = 100;
     int pixelSize = 8;
     bool looping = true;
+    // Physics: empty for none, "solid" for a wall or platform, "body" for something that moves and collides.
+    // Rectangles and images only. The numbers below only matter for a body.
+    QString physics;
+    int gravityScale = DefaultGravityScale; // percent of normal gravity
+    bool platformer = false;                // moves with the stick or D-pad, jumps on Cross
+    int moveSpeed = DefaultMoveSpeed;       // units per second
+    int jumpHeight = DefaultJumpHeight;     // units
 };
 
+// One scene: its own items and world. A project is a list of scenes.
 struct Scene {
+    QString id = "scene-1";
+    QString name = "Scene 1";
     QString background = "#151C3A";
     int worldWidth = ScreenWidthUnits;  // the area the camera can show; older scenes are stage-sized
     int worldHeight = ScreenHeightUnits;
     double cameraX = 0; // where the camera starts, its top left corner in the world
     double cameraY = 0;
     QList<SceneItem> items;
+};
+
+// Every scene of a project, in the order the Scene tab lists them. Logic belongs per scene; variables are
+// shared by all of them (see Blocks.h).
+struct SceneSet {
+    QList<Scene> scenes;
+    QString startScene; // id of the scene the game starts in
 };
 
 // A named whole number. The list lives in logic.json (see Blocks.h); it is declared here because a
@@ -133,8 +165,18 @@ struct SceneLoadResult {
     QString error;
 };
 
+struct SceneSetLoadResult {
+    std::optional<SceneSet> set;
+    QString error;
+};
+
+// Reads scene.json. A file from before several scenes loads as one scene, so older projects keep working.
+SceneSetLoadResult loadSceneSet(const QString& path);
+// The scene the game starts in, from a file with one or several scenes.
 SceneLoadResult loadScene(const QString& path);
+bool saveSceneSet(const QString& path, const SceneSet& set, QString& error);
 bool saveScene(const QString& path, const Scene& scene, QString& error);
+QString validateSceneSet(const SceneSet& set); // empty string when valid
 // How many flat quads the game draws for this scene: the background, every item and every particle.
 int sceneQuadCount(const Scene& scene);
 QStringList particlePresetNames();
@@ -163,14 +205,19 @@ QString validateScene(const Scene& scene); // empty string when valid
 Scene starterScene(); // a 2D game: a player the controller moves and a title
 Scene appStarterScene(); // an app: a header title and labeled buttons, nothing moves
 QStringList sceneImageSources(const Scene& scene); // each image's source once, in the order first used
+QStringList sceneImageSources(const SceneSet& set); // the same across every scene, scenes in list order
+// How much of `set` a scene owns in the generated tables: items and generated tilemaps are numbered across all scenes.
+int sceneItemCount(const SceneSet& set);
 // Empty when the scene is invalid or `images` does not hold exactly the scene's sources, in that order.
 QByteArray generateSceneHeader(const Scene& scene, const QList<SceneImageData>& images = {});
+QByteArray generateSceneHeader(const SceneSet& set, const QList<SceneImageData>& images = {});
 QByteArray textLiteral(const QString& text); // the text as the contents of a C++ string literal
 // src/GeneratedImages.cpp, which also pulls in tilemapCount tile files named tilemap-N.tiles.
 QByteArray generateImageSource(const QList<SceneImageData>& images, int tilemapCount = 0);
 QString imageSizeProblem(int width, int height, qint64 bytesSoFar); // empty when the image fits the limits
 QString imageFileProblem(const QString& projectRoot, const QString& source); // empty when it is a regular file we may read
 bool writeGeneratedScene(const QString& projectRoot, const Scene& scene, const QList<SceneImageData>& images, QString& error);
+bool writeGeneratedScene(const QString& projectRoot, const SceneSet& set, const QList<SceneImageData>& images, QString& error);
 // A project that already has a scene.json keeps it, so `starter` is only written when there is none.
 bool installSceneRuntime(const QString& runtimeDirectory, const QString& projectRoot, const QString& projectName, QString& error, const Scene& starter = starterScene());
 // True when the project has game code from a Studio that predates variables. It builds fine until a
@@ -180,5 +227,8 @@ bool sceneRuntimeNeedsUpdate(const QString& projectRoot);
 bool sceneRuntimeLacksWorld(const QString& projectRoot);
 // The same, for a scene that uses a tilemap, a sprite sheet, a camera or anything else added with them.
 bool sceneRuntimeNeedsUpdate(const QString& projectRoot, const Scene& scene);
+// True when the project has game code from before physics and several scenes.
+bool sceneRuntimeLacksPhysics(const QString& projectRoot);
+bool sceneSetUsesPhysics(const SceneSet& set); // any solid or body, or more than one scene
 
 }

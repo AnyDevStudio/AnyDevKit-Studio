@@ -24,6 +24,7 @@ double fieldWidth(const BlockField& field) {
     if (field.kind == "color") return 40;
     if (field.kind == "animation") return 140;
     if (field.kind == "flip") return 118;
+    if (field.kind == "scene") return 168;
     return 120;
 }
 
@@ -94,6 +95,7 @@ QList<BlockField> blockFields(const BlockInfo& info) {
     QList<BlockField> fields;
     if (info.usesButton) fields.append({"button", "button", ""});
     if (info.usesItem) fields.append({"item", "item", ""});
+    if (info.usesScene) fields.append({"scene", "scene", ""});
     if (info.usesAnimation) fields.append({"animation", "animation", "plays"});
     if (info.usesFlipped) fields.append({"flipped", "flip", ""});
     if (info.usesOtherItem) fields.append({"otherItem", "item", "and"});
@@ -111,6 +113,8 @@ QList<BlockField> blockFields(const BlockInfo& info) {
 
 QString blockCategory(const BlockInfo& info) {
     if (info.isEvent) return "events";
+    if (info.type == BlockType::SetVelocity || info.type == BlockType::JumpItem || info.type == BlockType::IfOnGround) return "physics";
+    if (info.usesScene || info.type == BlockType::RestartScene) return "scenes";
     if (info.usesPosition) return "movement";
     if (info.usesVariable) return "variables";
     if (info.usesSound || info.type == BlockType::StopMusic || info.type == BlockType::SetVolume) return "sound";
@@ -125,6 +129,8 @@ QString blockCategoryTitle(const QString& category) {
     if (category == "variables") return "Variables";
     if (category == "sound") return "Sound";
     if (category == "saving") return "Saving";
+    if (category == "physics") return "Physics";
+    if (category == "scenes") return "Scenes";
     return category;
 }
 

@@ -1,0 +1,429 @@
+#pragma once
+// The platformer physics of the game. tests/tst_physics2d.cpp compiles this same file on the host under
+// sanitizers, so it stays free of @NAME@, Qt and the rest of the runtime. It uses only whole numbers and no
+// heap: positions and velocities are fixed point, so a simulation gives the same result on any machine
+// and at any frame rate, and it is safe to call from the frame loop.
+#include <algorithm>
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <span>
+
+namespace Physics2D {
+
+// One world unit is this many fixed point subunits.
+inline constexpr std::int64_t Scale = 65536;
+inline constexpr std::int32_t StepsPerSecond = 120;
+// Coyote time: a jump still counts this long after leaving the ground. Jump buffering: a jump pressed
+// this long before landing happens on landing. Both are in fixed steps, so 12 is a tenth of a second.
+inline constexpr std::int32_t CoyoteSteps = 12;
+inline constexpr std::int32_t JumpBufferSteps = 12;
+// A long hitch runs at most this many steps, a quarter of a second, instead of a slow catch-up.
+inline constexpr int MaximumStepsPerFrame = 30;
+// How fast bodies fall at gravity scale 100%, in units per second squared.
+inline constexpr std::int64_t BaseGravityUnits = 3600;
+inline constexpr std::int32_t TerminalSpeedUnits = 6000;
+inline constexpr std::int32_t MaximumStep = static_cast<std::int32_t>(TerminalSpeedUnits * Scale / StepsPerSecond);
+
+constexpr std::int32_t ToStep(std::int64_t unitsPerSecond) {
+    const auto step = unitsPerSecond * Scale / StepsPerSecond;
+    return static_cast<std::int32_t>(std::clamp<std::int64_t>(step, -MaximumStep, MaximumStep));
+}
+
+constexpr std::int64_t FloorDivide(std::int64_t value, std::int64_t divisor) {
+    const auto quotient = value / divisor;
+    return (value % divisor != 0 && value < 0) ? quotient - 1 : quotient;
+}
+
+// A position in fixed point as whole world units, always rounded down, so pixel art never shimmers.
+constexpr std::int64_t WholeUnits(std::int64_t fixed) { return FloorDivide(fixed, Scale); }
+
+constexpr std::int32_t GravityStepFor(std::int32_t gravityPercent) {
+    return static_cast<std::int32_t>(BaseGravityUnits * Scale / (StepsPerSecond * StepsPerSecond) * gravityPercent / 100);
+}
+
+// How high a jump goes with this velocity, moving after gravity each step as Step does.
+constexpr std::int64_t JumpApex(std::int64_t velocity, std::int64_t gravityStep) {
+    const auto steps = velocity / gravityStep;
+    return steps * velocity - gravityStep * steps * (steps + 1) / 2;
+}
+
+// The velocity, in subunits per step, that jumps as high as asked.
+constexpr std::int32_t JumpStepFor(std::int64_t heightUnits, std::int32_t gravityStep) {
+    if (heightUnits <= 0) return 0;
+    const auto height = heightUnits * Scale;
+    if (gravityStep <= 0) return static_cast<std::int32_t>(std::min<std::int64_t>(MaximumStep, height / 40));
+    std::int64_t low = 0;
+    std::int64_t high = MaximumStep;
+    while (low < high) {
+        const auto middle = low + (high - low) / 2;
+        if (JumpApex(middle, gravityStep) >= height) high = middle;
+        else low = middle + 1;
+    }
+    return static_cast<std::int32_t>(low);
+}
+
+// A rectangle in fixed point. Rectangles whose edges only meet do not overlap.
+struct Aabb {
+    std::int64_t left, top, right, bottom;
+};
+
+// One tilemap. Which tile numbers are solid is listed sorted in solid.
+struct TileLayer {
+    const std::int32_t* cells; // columns * rows of tile numbers, row by row; negative is empty
+    std::uint32_t columns, rows;
+    std::int32_t cellWidth, cellHeight; // world units
+    std::int64_t originX, originY;      // fixed point
+    const std::uint16_t* solid;
+    std::uint32_t solidCount;
+};
+
+constexpr bool IsSolidTile(const TileLayer& layer, std::uint32_t tile) {
+    std::uint32_t low = 0;
+    std::uint32_t high = layer.solidCount;
+    while (low < high) {
+        const auto middle = low + (high - low) / 2;
+        const auto value = static_cast<std::uint32_t>(layer.solid[middle]);
+        if (value == tile) return true;
+        if (value < tile) low = middle + 1;
+        else high = middle;
+    }
+    return false;
+}
+
+constexpr bool IsSolidCell(const TileLayer& layer, std::int64_t column, std::int64_t row) {
+    const auto tile = layer.cells[static_cast<std::size_t>(row) * layer.columns + static_cast<std::size_t>(column)];
+    return tile >= 0 && IsSolidTile(layer, static_cast<std::uint32_t>(tile));
+}
+
+struct BodyConfig {
+    std::int32_t gravityPercent;
+    bool platformer;
+    std::int32_t moveSpeed;  // units per second
+    std::int32_t jumpHeight; // units
+};
+
+struct Body {
+    BodyConfig config;
+    std::int64_t x, y, width, height;       // fixed point
+    std::int32_t velocityX, velocityY;      // fixed point subunits per step
+    std::int32_t gravityStep, jumpStep, moveStep;
+    std::int32_t coyote;                    // steps since the ground, above CoyoteSteps once a jump has used it
+    std::int32_t jumpBuffer;
+    bool jumpRequested;  // Jump asked this step
+    bool jumping;        // going up from a jump
+    bool variableJump;   // that jump came from the button, so letting go cuts it short
+    bool grounded;
+    bool touchingLeft, touchingRight, touchingTop;
+    bool started;        // has stepped at least once, so a resting start does not report a landing
+    bool outside;
+    // Reported to the block logic; the caller clears them after reading.
+    bool landed, hitSolid, leftWorld;
+};
+
+constexpr Body MakeBody(const BodyConfig& config, std::int64_t x, std::int64_t y, std::int64_t width, std::int64_t height) {
+    Body body{};
+    body.config = config;
+    body.x = x;
+    body.y = y;
+    body.width = width;
+    body.height = height;
+    body.gravityStep = GravityStepFor(config.gravityPercent);
+    body.jumpStep = JumpStepFor(config.jumpHeight, body.gravityStep);
+    body.moveStep = ToStep(config.moveSpeed);
+    body.coyote = CoyoteSteps + 1;
+    return body;
+}
+
+constexpr void SetVelocity(Body& body, std::int64_t unitsPerSecondX, std::int64_t unitsPerSecondY) {
+    body.velocityX = ToStep(unitsPerSecondX);
+    body.velocityY = ToStep(unitsPerSecondY);
+}
+
+// Jumps at the next step if the body is on the ground or just left it, as the button does.
+constexpr void Jump(Body& body) { body.jumpRequested = true; }
+
+// Moves a body somewhere a block put it. A body that had left the world may leave it again.
+constexpr void Teleport(Body& body, std::int64_t x, std::int64_t y) {
+    body.x = x;
+    body.y = y;
+    body.outside = false;
+}
+
+struct WorldView {
+    std::span<Body> bodies;
+    std::span<const Aabb> solids;
+    std::span<const TileLayer> layers;
+    std::int64_t width, height;
+};
+
+struct Input {
+    std::int32_t moveX = 0; // -1000 full left to 1000 full right
+    bool jumpHeld = false;
+    bool jumpPressed = false; // became held this frame
+};
+
+// Turns frame times into a whole number of fixed steps, carrying the remainder to the next frame.
+struct FixedClock {
+    double accumulated = 0.0;
+
+    constexpr int StepsFor(double seconds) {
+        accumulated += seconds;
+        const double step = 1.0 / StepsPerSecond;
+        int steps = 0;
+        while (accumulated >= step && steps < MaximumStepsPerFrame) {
+            accumulated -= step;
+            ++steps;
+        }
+        if (steps == MaximumStepsPerFrame) accumulated = 0.0; // a hitch is dropped, not caught up later
+        return steps;
+    }
+};
+
+// The distance a body can move along one axis, by leading edge against the near edges of solids and
+// tiles, so a fast body never passes through something thin. A negative delta moves left or up.
+inline std::int64_t Sweep(const WorldView& world, const Aabb& box, std::int64_t delta, bool horizontal, bool& blocked) {
+    const std::int64_t start = delta > 0 ? (horizontal ? box.right : box.bottom) : (horizontal ? box.left : box.top);
+    const std::int64_t crossLow = horizontal ? box.top : box.left;
+    const std::int64_t crossHigh = horizontal ? box.bottom : box.right;
+    std::int64_t limit = start + delta;
+
+    for (const auto& solid : world.solids) {
+        const auto solidCrossLow = horizontal ? solid.top : solid.left;
+        const auto solidCrossHigh = horizontal ? solid.bottom : solid.right;
+        if (!(solidCrossLow < crossHigh && crossLow < solidCrossHigh)) continue;
+        if (delta > 0) {
+            const auto nearEdge = horizontal ? solid.left : solid.top;
+            if (nearEdge >= start && nearEdge < limit) {
+                limit = nearEdge;
+                blocked = true;
+            }
+        } else {
+            const auto nearEdge = horizontal ? solid.right : solid.bottom;
+            if (nearEdge <= start && nearEdge > limit) {
+                limit = nearEdge;
+                blocked = true;
+            }
+        }
+    }
+
+    for (const auto& layer : world.layers) {
+        if (layer.columns == 0 || layer.rows == 0 || layer.cellWidth <= 0 || layer.cellHeight <= 0) continue;
+        const auto cellMain = static_cast<std::int64_t>(horizontal ? layer.cellWidth : layer.cellHeight) * Scale;
+        const auto cellCross = static_cast<std::int64_t>(horizontal ? layer.cellHeight : layer.cellWidth) * Scale;
+        const auto originMain = horizontal ? layer.originX : layer.originY;
+        const auto originCross = horizontal ? layer.originY : layer.originX;
+        const auto countMain = static_cast<std::int64_t>(horizontal ? layer.columns : layer.rows);
+        const auto countCross = static_cast<std::int64_t>(horizontal ? layer.rows : layer.columns);
+        const auto crossFirst = std::max<std::int64_t>(FloorDivide(crossLow - originCross, cellCross), 0);
+        const auto crossLast = std::min<std::int64_t>(FloorDivide(crossHigh - 1 - originCross, cellCross), countCross - 1);
+        if (crossFirst > crossLast) continue;
+
+        const auto solidAt = [&](std::int64_t main, std::int64_t cross) {
+            return horizontal ? IsSolidCell(layer, main, cross) : IsSolidCell(layer, cross, main);
+        };
+        if (delta > 0) {
+            const auto first = std::max<std::int64_t>(FloorDivide(start - 1 - originMain, cellMain) + 1, 0);
+            const auto last = std::min<std::int64_t>(FloorDivide(limit - 1 - originMain, cellMain), countMain - 1);
+            for (auto main = first; main <= last; ++main) {
+                bool hit = false;
+                for (auto cross = crossFirst; cross <= crossLast && !hit; ++cross) hit = solidAt(main, cross);
+                if (hit) {
+                    limit = originMain + main * cellMain;
+                    blocked = true;
+                    break;
+                }
+            }
+        } else {
+            const auto first = std::min<std::int64_t>(FloorDivide(start - originMain, cellMain) - 1, countMain - 1);
+            const auto last = std::max<std::int64_t>(FloorDivide(limit - originMain, cellMain), 0);
+            for (auto main = first; main >= last; --main) {
+                bool hit = false;
+                for (auto cross = crossFirst; cross <= crossLast && !hit; ++cross) hit = solidAt(main, cross);
+                if (hit) {
+                    limit = originMain + (main + 1) * cellMain;
+                    blocked = true;
+                    break;
+                }
+            }
+        }
+    }
+    return limit - start;
+}
+
+constexpr Aabb BoxOf(const Body& body) {
+    return {body.x, body.y, body.x + body.width, body.y + body.height};
+}
+
+// Moves a body out of a solid along the shortest way. A body only starts out inside something when it
+// was placed there by a person or a block.
+inline bool Separate(const Aabb& box, const Aabb& solid, std::int64_t& shiftX, std::int64_t& shiftY) {
+    if (!(box.left < solid.right && solid.left < box.right && box.top < solid.bottom && solid.top < box.bottom)) return false;
+    const auto left = box.right - solid.left;
+    const auto right = solid.right - box.left;
+    const auto up = box.bottom - solid.top;
+    const auto down = solid.bottom - box.top;
+    const auto smallest = std::min({up, left, right, down});
+    shiftX = shiftY = 0;
+    if (smallest == up) shiftY = -up;
+    else if (smallest == left) shiftX = -left;
+    else if (smallest == right) shiftX = right;
+    else shiftY = down;
+    return true;
+}
+
+inline bool ShiftOutOfSolids(const WorldView& world, Body& body) {
+    const auto box = BoxOf(body);
+    std::int64_t shiftX = 0;
+    std::int64_t shiftY = 0;
+    for (const auto& solid : world.solids) {
+        if (Separate(box, solid, shiftX, shiftY)) {
+            body.x += shiftX;
+            body.y += shiftY;
+            return true;
+        }
+    }
+    for (const auto& layer : world.layers) {
+        if (layer.columns == 0 || layer.rows == 0 || layer.cellWidth <= 0 || layer.cellHeight <= 0) continue;
+        const auto cellWidth = static_cast<std::int64_t>(layer.cellWidth) * Scale;
+        const auto cellHeight = static_cast<std::int64_t>(layer.cellHeight) * Scale;
+        const auto firstColumn = std::max<std::int64_t>(FloorDivide(box.left - layer.originX, cellWidth), 0);
+        const auto lastColumn = std::min<std::int64_t>(FloorDivide(box.right - 1 - layer.originX, cellWidth), layer.columns - 1);
+        const auto firstRow = std::max<std::int64_t>(FloorDivide(box.top - layer.originY, cellHeight), 0);
+        const auto lastRow = std::min<std::int64_t>(FloorDivide(box.bottom - 1 - layer.originY, cellHeight), layer.rows - 1);
+        for (auto row = firstRow; row <= lastRow; ++row) {
+            for (auto column = firstColumn; column <= lastColumn; ++column) {
+                if (!IsSolidCell(layer, column, row)) continue;
+                const Aabb cell{layer.originX + column * cellWidth, layer.originY + row * cellHeight, layer.originX + (column + 1) * cellWidth, layer.originY + (row + 1) * cellHeight};
+                if (Separate(box, cell, shiftX, shiftY)) {
+                    body.x += shiftX;
+                    body.y += shiftY;
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+constexpr std::int32_t MoveToward(std::int32_t value, std::int32_t target, std::int32_t amount) {
+    if (value < target) return std::min(target, value + amount);
+    return std::max(target, value - amount);
+}
+
+inline void StepBody(const WorldView& world, Body& body, const Input& input) {
+    if (body.outside) return;
+    for (int attempt = 0; attempt < 8 && ShiftOutOfSolids(world, body); ++attempt) {}
+
+    const bool wasGrounded = body.grounded;
+    const bool wasLeft = body.touchingLeft;
+    const bool wasRight = body.touchingRight;
+    const bool wasTop = body.touchingTop;
+
+    if (body.config.platformer) {
+        const auto target = static_cast<std::int32_t>(static_cast<std::int64_t>(input.moveX) * body.moveStep / 1000);
+        const auto acceleration = std::max(1, body.moveStep / (body.grounded ? 9 : 16));
+        body.velocityX = MoveToward(body.velocityX, target, acceleration);
+        if (input.jumpPressed) body.jumpBuffer = JumpBufferSteps;
+    }
+
+    const bool buttonJump = body.jumpBuffer > 0;
+    const bool canJump = body.grounded || body.coyote <= CoyoteSteps;
+    if ((buttonJump || body.jumpRequested) && canJump) {
+        body.velocityY = -body.jumpStep;
+        body.jumping = true;
+        body.variableJump = buttonJump;
+        body.jumpBuffer = 0;
+        body.coyote = CoyoteSteps + 1;
+        body.grounded = false;
+    } else if (body.jumpBuffer > 0) {
+        --body.jumpBuffer;
+    }
+    body.jumpRequested = false;
+
+    if (body.jumping && body.variableJump && !input.jumpHeld) {
+        const auto cut = body.jumpStep * 2 / 5;
+        if (body.velocityY < -cut) body.velocityY = -cut;
+        body.variableJump = false;
+    }
+    if (body.velocityY >= 0) body.jumping = false;
+
+    body.velocityY = std::clamp(body.velocityY + body.gravityStep, -MaximumStep, MaximumStep);
+    body.velocityX = std::clamp(body.velocityX, -MaximumStep, MaximumStep);
+
+    body.touchingLeft = body.touchingRight = body.touchingTop = false;
+    if (body.velocityX != 0) {
+        bool blocked = false;
+        const auto moved = Sweep(world, BoxOf(body), body.velocityX, true, blocked);
+        body.x += moved;
+        if (blocked) {
+            (body.velocityX > 0 ? body.touchingRight : body.touchingLeft) = true;
+            body.velocityX = 0;
+        }
+    }
+    if (body.config.platformer) {
+        // The world's sides act as walls for a player character. They are not solids, so no hit is reported.
+        const auto clampedX = std::clamp<std::int64_t>(body.x, 0, std::max<std::int64_t>(world.width - body.width, 0));
+        if (clampedX != body.x) {
+            body.x = clampedX;
+            body.velocityX = 0;
+        }
+    }
+
+    bool landedOnFloor = false;
+    if (body.velocityY != 0) {
+        bool blocked = false;
+        const auto moved = Sweep(world, BoxOf(body), body.velocityY, false, blocked);
+        body.y += moved;
+        if (blocked) {
+            if (body.velocityY > 0) landedOnFloor = true;
+            else body.touchingTop = true;
+            body.velocityY = 0;
+        }
+    }
+    if (body.config.platformer) {
+        const auto topLimit = -world.height;
+        if (body.y < topLimit) {
+            body.y = topLimit;
+            body.velocityY = 0;
+        }
+    }
+
+    // A body that rests without falling, with gravity off for example, still knows what is beneath it.
+    bool grounded = landedOnFloor;
+    if (!grounded && body.velocityY >= 0) {
+        bool below = false;
+        Sweep(world, BoxOf(body), 1, false, below);
+        grounded = below;
+    }
+    body.grounded = grounded;
+    body.coyote = grounded ? 0 : std::min(body.coyote + 1, CoyoteSteps + 1);
+    if (grounded) body.jumping = false;
+
+    if (body.started) {
+        if (grounded && !wasGrounded) body.landed = true;
+        const bool newContact = (grounded && !wasGrounded) || (body.touchingLeft && !wasLeft) || (body.touchingRight && !wasRight) || (body.touchingTop && !wasTop);
+        if (newContact) body.hitSolid = true;
+    }
+
+    const auto left = body.x;
+    const auto right = body.x + body.width;
+    const auto top = body.y;
+    const auto bottom = body.y + body.height;
+    const bool below = top >= world.height;
+    const bool beyondSidesOrAbove = !body.config.platformer && (left >= world.width || right <= 0 || bottom <= 0);
+    if (below || beyondSidesOrAbove) {
+        body.outside = true;
+        body.leftWorld = true;
+        body.velocityX = body.velocityY = 0;
+        body.grounded = false;
+    }
+    body.started = true;
+}
+
+// One fixed step for every body, each against the world's solids and tiles. Bodies do not collide with each other.
+inline void Step(const WorldView& world, const Input& input) {
+    for (auto& body : world.bodies) StepBody(world, body, input);
+}
+
+}

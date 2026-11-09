@@ -10,17 +10,21 @@ existed. The API for editors is in [src/core/Blocks.h](../src/core/Blocks.h).
 
 ## logic.json
 
-A program is a list of variables, a list of sounds and a tree of blocks. Events are the top level, each
-holding actions, and an `ifVariable` action can hold more actions.
+A program is a list of variables, a list of sounds and, for each scene, a tree of blocks. Logic belongs per
+scene; variables and sounds are shared by the whole project. Events are the top level, each holding actions,
+and an `ifVariable` or `ifOnGround` action can hold more actions.
 
 ```json
 {
-  "schemaVersion": 3,
+  "schemaVersion": 4,
   "variables": [
     { "name": "score", "initial": 0 }
   ],
   "sounds": [],
-  "events": [
+  "scenes": [
+    {
+      "scene": "scene-1",
+      "events": [
     {
       "id": "event-1",
       "type": "whenGameStarts",
@@ -62,9 +66,14 @@ holding actions, and an `ifVariable` action can hold more actions.
         }
       ]
     }
+      ]
+    }
   ]
 }
 ```
+
+`scenes` lists each scene's blocks by its `id` from [scene.json](scene-format.md). A scene with no blocks needs
+no entry, and an entry whose `scene` is empty means the project's first scene, as an older file's blocks do.
 
 ### Events
 
@@ -74,6 +83,9 @@ holding actions, and an `ifVariable` action can hold more actions.
 | `whileButtonHeld` | While a button is held | `button`              | every frame the button is down                        |
 | `everyFrame`      | Every frame            |                       | every frame                                           |
 | `whenItemsTouch`  | When two items touch   | `item`, `otherItem`   | once when the two items start touching                |
+| `whenItemLands`   | When item lands        | `item`                | when a moving body comes to rest on something, after being in the air |
+| `whenItemHitsSolid` | When item hits a solid | `item`              | when a moving body bumps into a solid or tile it was not already against |
+| `whenItemLeavesWorld` | When item leaves the world | `item`         | once when a moving body falls out of the world, for pits |
 
 `button` is one of `cross`, `circle`, `square`, `triangle`, `dpadUp`, `dpadDown`, `dpadLeft`,
 `dpadRight`. Every event needs an `actions` list, which may be empty.
@@ -101,6 +113,11 @@ holding actions, and an `ifVariable` action can hold more actions.
 | `flipItem` | Flip item | `item`, `flipped` | mirrors an image left to right (`true`) or back (`false`). The item must be an image |
 | `cameraFollow` | Camera follows item | `item` | keeps the camera centered on the item, every frame, as far as the world allows. The item must not have Stays on screen turned on |
 | `setCameraPosition` | Set camera position | `x`, `y` | puts the camera's top left corner at `x`, `y`, clamped to the world, and stops following any item |
+| `setVelocity` | Set velocity | `item`, `x`, `y` | sets a moving body's velocity to `x`, `y` units per second. The item must be a moving body |
+| `jumpItem` | Jump item | `item` | jumps with the item's jump height if it is on the ground or just left it, as the jump button does. The item must be a moving body |
+| `ifOnGround` | If item is on the ground | `item`, `actions` | runs `actions` when a moving body stands on something. The item must be a moving body |
+| `goToScene` | Go to scene | `scene` | after this frame's blocks, shows that scene from its start. Variables keep their values |
+| `restartScene` | Restart scene | | after this frame's blocks, shows this scene again from its start. Variables keep their values |
 
 `comparison` is one of `equal`, `notEqual`, `less`, `lessOrEqual`, `greater`, `greaterOrEqual`.
 
@@ -137,21 +154,24 @@ the same as a deleted variable.
 
 ### Rules
 
-- `schemaVersion` is `3`, the version Studio saves. A file saved with `2` still loads and simply has no
+- `schemaVersion` is `4`, the version Studio saves. A file saved with `2` still loads and simply has no
   sounds. A file saved with `1` still loads too: it has no `variables` list, and its `addScore`,
   `setScore` and `ifScore` blocks become `changeVariable`, `setVariable` and `ifVariable` on a variable named
   `score` that starts at 0. A file with no score blocks gets no variables. The block types `addScore`,
   `setScore` and `ifScore` only exist in version 1 files. Sound, save, `playAnimation`, `flipItem`,
   `cameraFollow` and `setCameraPosition` blocks need version `3`, which also needs the `sounds` list, even if
-  it is empty.
-- `id` is 1 to 64 letters, digits, `-` or `_`, unique across the whole program. It stays the same
+  it is empty. Version `4` adds the `scenes` list in place of the top level `events`, and physics and scene
+  blocks. A file saved with `3` or earlier loads as the logic of the project's first scene.
+- `id` is 1 to 64 letters, digits, `-` or `_`, unique across the whole program, every scene included. It stays the same
   across saves, so an editor can refer to a block.
 - Events go at the top level only. Actions go inside an event or inside `ifVariable`.
 - `item` and `otherItem` are `id` values from `scene.json`. A build fails when one is missing or not
   in the scene, when an event's two items are the same, when `burstParticles` names an item that is
   not a Particles item, when `playAnimation` names an item without that animation, when `flipItem` names an
-  item that is not an image, or when `cameraFollow` names an item with Stays on screen on. A file in that state
-  can still be opened and saved, so it can be repaired.
+  item that is not an image, when `cameraFollow` names an item with Stays on screen on, or when a physics block
+  names an item that is not a moving body. A file in that state can still be opened and saved, so it can be
+  repaired.
+- `scene` is the `id` of a scene of the project. A build fails when it is empty or names a scene that does not exist.
 - `variable` is the `name` of a variable in `variables`. A build fails when it is empty or names a variable
   that does not exist, and when a text item shows a variable that does not exist. Deleting a variable in
   Studio asks first and leaves the blocks and text that used it to be repaired, for the same reason.
@@ -159,8 +179,8 @@ the same as a deleted variable.
 - `x` and `y` are numbers from -1000000 to 1000000. `color` is `#RRGGBB`.
 - `value` and `initial` are whole numbers from -1000000000 to 1000000000, except that `setVolume`'s `value` is
   a percentage from 0 to 100.
-- Limits: 128 events, 2048 blocks in total, blocks nested at most 8 levels deep counting the event as
-  level 1, and a file of at most 4 MB.
+- Limits, per scene: 128 events, 2048 blocks in total, blocks nested at most 8 levels deep counting the event as
+  level 1. A file is at most 64 MB.
 
 Problems are reported with the block's title and id, for example:
 `The "Move item" block (block-2) uses the item "item-9", which is not in the scene. Choose an item
@@ -168,12 +188,22 @@ that exists, or delete this block.`
 
 ## How a program runs
 
-Each frame the runtime first applies `controllable` movement, then runs every event except
-`whenGameStarts`, from the first event in the file to the last. Everything an earlier block changed
-is seen by the later ones.
+Only the scene showing runs. Its `whenGameStarts` blocks run when it starts: at the beginning of the game for
+the start scene, and whenever Go to scene or Restart scene enters it. Each frame the runtime first applies
+`controllable` movement, then steps the physics (see [Physics](scene-format.md#physics)), then runs every event
+except `whenGameStarts`, from the first event in the file to the last. Everything an earlier block changed is
+seen by the later ones. `Go to scene` and `Restart scene` take effect after every event of the frame has run.
+Entering a scene puts all its items back at their starting places, colors and animations and resets its
+touching memory and camera; variables keep their values across scenes, and only the `whenGameStarts` blocks of a
+scene change them.
 
 Distances are applied each time a block runs, so a move inside `everyFrame` or `whileButtonHeld`
 happens once per displayed frame and its speed follows the frame rate.
+
+Physics events (`whenItemLands`, `whenItemHitsSolid`, `whenItemLeavesWorld`) run on the frame it happened,
+including when it happened during a few fixed steps run in one frame. Standing still does not repeat a landing;
+pushing against a wall reports one hit until the push stops. A moving body moved by a block continues from where
+the block put it. A Hide block on a solid turns it off for collisions, and one on a body keeps it simulating.
 
 Touching:
 
@@ -270,8 +300,23 @@ void OnFrame([[maybe_unused]] World& world, [[maybe_unused]] Memory& memory) {
     }
 }
 
+// Runs the blocks of one scene: when it starts, and each frame while it is showing.
+template <typename World>
+void OnSceneStart([[maybe_unused]] World& world, [[maybe_unused]] std::size_t scene) {
+    OnStart(world);
+}
+
+template <typename World>
+void OnSceneFrame([[maybe_unused]] World& world, [[maybe_unused]] Memory& memory, [[maybe_unused]] std::size_t scene) {
+    OnFrame(world, memory);
+}
+
 }
 ```
+
+With more than one scene the functions are numbered, `OnStart0`, `OnFrame0` and so on, and `OnSceneStart` and
+`OnSceneFrame` pick one with a `switch`. Item indexes then count across every scene's items (see
+[Budgets per scene](scene-format.md#budgets)), and touch memory is counted across every scene's touch events.
 
 Items become indexes into `GeneratedScene::Items` and variables indexes into the runtime's table, so
 item ids, item names and variable names never reach the code. The

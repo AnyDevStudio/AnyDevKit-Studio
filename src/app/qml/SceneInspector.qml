@@ -27,6 +27,9 @@ Flickable {
     readonly property bool isImage: item.type === "image"
     readonly property bool isTilemap: item.type === "tilemap"
     readonly property bool isSheet: isImage && item.frameWidth > 0
+    readonly property bool canHavePhysics: item.type === "rectangle" || isImage
+    readonly property string physicsMode: hasItem ? (item.physics || "") : ""
+    readonly property bool isBody: physicsMode === "body"
 
     function set(name, value) { scene.setItemValue(scene.selectedIndex, name, value) }
 
@@ -550,8 +553,90 @@ Flickable {
             Layout.fillWidth: true
             visible: inspector.hasItem
             text: "Stays on screen"
+            enabled: inspector.physicsMode === ""
             checked: inspector.hasItem && inspector.item.screenFixed
             onToggledTo: (checked) => inspector.set("screenFixed", checked)
+        }
+
+        // Physics: how the item behaves in a platformer. Words a beginner knows, and good defaults.
+        ColumnLayout {
+            Layout.fillWidth: true
+            visible: inspector.canHavePhysics
+            spacing: 10
+
+            ChoiceRow {
+                Layout.fillWidth: true
+                label: "Physics"
+                value: inspector.physicsMode
+                options: [
+                    { value: "", label: "None" },
+                    { value: "solid", label: "Static solid" },
+                    { value: "body", label: "Moving body" }
+                ]
+                onPicked: (mode) => inspector.set("physics", mode)
+            }
+
+            Text {
+                Layout.fillWidth: true
+                visible: inspector.physicsMode === "solid"
+                text: "A wall or platform. Moving bodies stop at it."
+                color: Theme.muted
+                wrapMode: Text.WordWrap
+                font.family: Theme.body
+                font.pixelSize: 13
+            }
+
+            SliderRow {
+                Layout.fillWidth: true
+                visible: inspector.isBody
+                label: "Gravity"
+                suffix: "%"
+                from: 0
+                to: 300
+                stepSize: 5
+                value: inspector.isBody ? inspector.item.gravityScale : 100
+                onCommitted: (value) => inspector.set("gravityScale", value)
+            }
+
+            ToggleRow {
+                Layout.fillWidth: true
+                visible: inspector.isBody
+                text: "Platformer controls"
+                checked: inspector.isBody && inspector.item.platformer
+                onToggledTo: (checked) => inspector.set("platformer", checked)
+            }
+
+            Text {
+                Layout.fillWidth: true
+                visible: inspector.isBody && inspector.item.platformer
+                text: "Left and right on the stick or D-pad, jump on Cross."
+                color: Theme.muted
+                wrapMode: Text.WordWrap
+                font.family: Theme.body
+                font.pixelSize: 13
+            }
+
+            SliderRow {
+                Layout.fillWidth: true
+                visible: inspector.isBody && inspector.item.platformer
+                label: "Speed"
+                from: 60
+                to: 3000
+                stepSize: 30
+                value: inspector.isBody ? inspector.item.moveSpeed : 600
+                onCommitted: (value) => inspector.set("moveSpeed", value)
+            }
+
+            SliderRow {
+                Layout.fillWidth: true
+                visible: inspector.isBody && inspector.item.platformer
+                label: "Jump height"
+                from: 16
+                to: 2000
+                stepSize: 8
+                value: inspector.isBody ? inspector.item.jumpHeight : 260
+                onCommitted: (value) => inspector.set("jumpHeight", value)
+            }
         }
 
         ColumnLayout {
@@ -702,7 +787,7 @@ Flickable {
             id: toggle
 
             Layout.fillWidth: true
-            visible: inspector.hasItem
+            visible: inspector.hasItem && inspector.physicsMode === ""
             implicitHeight: 34
             checked: inspector.hasItem && inspector.item.controllable
             onToggled: inspector.set("controllable", checked)

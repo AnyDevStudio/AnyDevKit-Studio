@@ -30,6 +30,10 @@ class SceneDocument : public QAbstractListModel {
     Q_PROPERTY(double cameraX READ cameraX NOTIFY worldChanged)
     Q_PROPERTY(double cameraY READ cameraY NOTIFY worldChanged)
     Q_PROPERTY(QUrl selectedTilesetUrl READ selectedTilesetUrl NOTIFY selectionChanged)
+    Q_PROPERTY(QVariantList sceneList READ sceneList NOTIFY scenesChanged)
+    Q_PROPERTY(int currentSceneIndex READ currentSceneIndex NOTIFY scenesChanged)
+    Q_PROPERTY(int startSceneIndex READ startSceneIndex NOTIFY scenesChanged)
+    Q_PROPERTY(QString currentSceneName READ currentSceneName NOTIFY scenesChanged)
 
 public:
     enum Role {
@@ -63,7 +67,8 @@ public:
     bool open(const QString& path);
     void close();
     void setError(const QString& message);
-    const Scene& scene() const;
+    const Scene& scene() const; // the scene being edited
+    SceneSet sceneSet() const;  // every scene of the project, as it stands now
 
     bool isLoaded() const;
     int count() const;
@@ -79,6 +84,10 @@ public:
     QString roomProblem() const;
     void setNotice(const QString& text, bool problem);
     QStringList variableNames() const;
+    QVariantList sceneList() const; // [{id, name, isStart}], in list order
+    int currentSceneIndex() const;
+    int startSceneIndex() const;
+    QString currentSceneName() const;
     int worldWidth() const;
     int worldHeight() const;
     double cameraX() const;
@@ -144,6 +153,14 @@ public:
     // Looks again at the image files on disk, so the stage follows files that went missing or came back.
     Q_INVOKABLE void recheckImages();
     Q_INVOKABLE void clearNotice();
+    // The scene list. Each changes the project and saves it, as one undo step. -1 or false means nothing changed.
+    Q_INVOKABLE int addScene();
+    Q_INVOKABLE bool renameScene(int index, const QString& name);
+    Q_INVOKABLE int duplicateScene(int index);
+    Q_INVOKABLE bool deleteScene(int index);
+    Q_INVOKABLE bool setStartScene(int index);
+    // Which scene the stage shows. Not an edit, so it is not an undo step.
+    Q_INVOKABLE bool selectScene(int index);
 
 signals:
     void loadedChanged();
@@ -156,6 +173,9 @@ signals:
     void imagesChanged();
     void variablesChanged();
     void worldChanged();
+    void scenesChanged();
+    // A scene's logic follows it, so the logic document copies its blocks under the new id.
+    void sceneDuplicated(const QString& scene, const QString& copy);
 
 private:
     bool isValidIndex(int index) const;
@@ -166,6 +186,11 @@ private:
     double drawnWidth(const SceneItem& item) const;
     void pushUndo();
     bool commit(const Scene& candidate);
+    bool persist();
+    void showScene(int index);
+    QString newSceneId() const;
+    QString newSceneName() const;
+    int indexOfSceneId(const QString& id) const;
     void notifyItem(int index);
     void placeInsideStage(SceneItem& item) const;
     int insertItem(SceneItem item);
@@ -173,9 +198,16 @@ private:
     QString nextItemId() const;
     int indexOfItem(const QString& id) const;
 
+    struct UndoStep {
+        SceneSet set;
+        int current = 0;
+    };
+
     QString path;
-    Scene document;
-    QList<Scene> history;
+    SceneSet scenes;
+    int currentIndex = 0;
+    Scene document; // the scene being edited; set.scenes[currentIndex] matches it outside of a drag
+    QList<UndoStep> history;
     bool loaded = false;
     bool changing = false;
     bool changedDuringChange = false;

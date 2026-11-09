@@ -25,7 +25,7 @@ Item {
     // goes to the layers. Room stays for the notice banner below the stage.
     readonly property real layerPanelHeight: {
         const stageHeight = Math.max(0, middle.width - 56) * 9 / 16
-        return Math.round(Math.min(300, Math.max(168, middle.height - stageHeight - 76)))
+        return Math.round(Math.min(300, Math.max(168, middle.height - stageHeight - 76 - 64)))
     }
 
     // An image first needs a file, so it goes through the picker instead of appearing straight away.
@@ -224,6 +224,12 @@ Item {
             Layout.fillHeight: true
             spacing: 0
 
+            SceneStrip {
+                Layout.fillWidth: true
+                Layout.topMargin: 12
+                scene: view.scene
+            }
+
             SceneStage {
                 id: stageArea
 
@@ -235,7 +241,7 @@ Item {
                 Layout.fillHeight: true
                 Layout.leftMargin: 28
                 Layout.rightMargin: 28
-                Layout.topMargin: 20
+                Layout.topMargin: 8
                 Layout.bottomMargin: 4
                 onImageFileDropped: (file, centerX, centerY) => view.studio.addSceneImage(file, centerX, centerY)
             }

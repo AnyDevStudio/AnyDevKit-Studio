@@ -22,12 +22,14 @@ namespace Studio {
 namespace {
 
 // The version saved today. Older files still load: version 1's score blocks become variable blocks,
-// version 2 has no sounds, and version 3 adds sounds, saving, animation, flip and camera blocks.
-constexpr int CurrentSchema = 3;
+// version 2 has no sounds, version 3 adds sounds, saving, animation, flip and camera blocks, and in
+// version 4 logic is per scene, in a "scenes" list, and there are physics and Go to scene blocks.
+constexpr int CurrentSchema = 4;
 constexpr int OldestLoadableSchema = 1;
 constexpr int VariableSchema = 2;
 constexpr int SoundSchema = 3; // sounds and the blocks that play them, set the volume, save or load
 constexpr int WorldBlockSchema = 3;
+constexpr int PhysicsBlockSchema = 4;
 constexpr auto ScoreVariableName = "score";
 constexpr auto LogicFileName = "logic.json";
 constexpr auto HeaderFolder = "src";
@@ -83,7 +85,7 @@ void countBlocks(const QList<Block>& blocks, int depth, qsizetype& count) {
 // the rules a saved file must follow are checked.
 class Validator {
 public:
-    Validator(const Scene* scene, const LogicProgram& program) : scene(scene) {
+    Validator(const Scene* scene, const LogicProgram& program, const QStringList& sceneIds = {}) : scene(scene), sceneIds(sceneIds) {
         for (const auto& variable : program.variables) variableNames.insert(variable.name);
         for (const auto& sound : program.sounds) soundNames.insert(sound.name);
         if (scene) {
@@ -107,6 +109,23 @@ public:
         checkVariables(program);
         if (const auto problem = validateSounds(program.sounds); !problem.isEmpty()) problems.append({{}, problem});
         for (const auto& block : program.events) visit(block, 1);
+        // Another scene's blocks are not checked against this scene, only that each is a well formed block.
+        const auto* checkedScene = scene;
+        scene = nullptr;
+        for (const auto& other : program.otherScenes) {
+            if (other.events.size() > MaximumLogicEvents) {
+                problems.append({{}, QString("The scene \"%1\" has %2 events, but a scene can hold at most %3. Remove some events and try again.").arg(other.scene).arg(other.events.size()).arg(MaximumLogicEvents)});
+                continue;
+            }
+            qsizetype total = 0;
+            countBlocks(other.events, 1, total);
+            if (total > MaximumLogicBlocks) {
+                problems.append({{}, QString("The scene \"%1\" has %2 blocks, but a scene can hold at most %3. Remove some blocks and try again.").arg(other.scene).arg(total).arg(MaximumLogicBlocks)});
+                continue;
+            }
+            for (const auto& block : other.events) visit(block, 1);
+        }
+        scene = checkedScene;
         return problems;
     }
 
@@ -175,6 +194,22 @@ private:
         } else if (block.type == BlockType::CameraFollow && item.screenFixed) {
             report(block, QString("%1 follows the item \"%2\", which has \"Stays on screen\" turned on, so the camera could never leave it. Choose another item.").arg(label, block.item));
         }
+        if (isBodyBlock(block.type) && item.physics != "body") {
+            report(block, QString("%1 uses the item \"%2\", which is not a moving body. Turn on Physics, Moving body for it in the Scene tab, or choose another item.").arg(label, block.item));
+        }
+    }
+
+    static bool isBodyBlock(BlockType type) {
+        return type == BlockType::WhenItemLands || type == BlockType::WhenItemHitsSolid || type == BlockType::WhenItemLeavesWorld || type == BlockType::SetVelocity || type == BlockType::JumpItem || type == BlockType::IfOnGround;
+    }
+
+    void checkScene(const Block& block) {
+        if (!scene) return;
+        if (block.scene.isEmpty()) {
+            report(block, QString("%1 has no scene chosen. Choose a scene to go to.").arg(describeBlock(block)));
+        } else if (!sceneIds.isEmpty() && !sceneIds.contains(block.scene)) {
+            report(block, QString("%1 goes to the scene \"%2\", which is not in this project. Choose a scene that exists, or delete this block.").arg(describeBlock(block), block.scene));
+        }
     }
 
     void visit(const Block& block, int depth) {
@@ -195,6 +230,7 @@ private:
         if (info.usesItem) checkItem(block, block.item);
         if (info.usesVariable) checkVariable(block);
         if (info.usesSound) checkSound(block);
+        if (info.usesScene) checkScene(block);
         if (block.type == BlockType::SetVolume && (block.value < 0 || block.value > MaximumVolumePercent)) {
             report(block, QString("%1 needs a volume from 0 to %2 percent.").arg(label).arg(MaximumVolumePercent));
         }
@@ -228,6 +264,7 @@ private:
     }
 
     const Scene* scene;
+    QStringList sceneIds;
     QSet<QString> itemIds;
     QSet<QString> particleIds;
     QHash<QString, SceneItem> itemsById;
@@ -261,6 +298,10 @@ const QHash<QString, BlockType>& legacyScoreBlocks() {
 
 bool isWorldBlock(BlockType type) {
     return type == BlockType::PlayAnimation || type == BlockType::FlipItem || type == BlockType::CameraFollow || type == BlockType::SetCameraPosition;
+}
+
+bool isPhysicsBlock(BlockType type) {
+    return type == BlockType::WhenItemLands || type == BlockType::WhenItemHitsSolid || type == BlockType::WhenItemLeavesWorld || type == BlockType::SetVelocity || type == BlockType::JumpItem || type == BlockType::IfOnGround || type == BlockType::GoToScene || type == BlockType::RestartScene;
 }
 
 struct Parsing {
@@ -309,6 +350,9 @@ QString parseBlock(const QJsonValue& value, qsizetype index, int depth, Parsing&
     if (parsing.schema < WorldBlockSchema && isWorldBlock(info.type)) {
         return QString("%1 needs schemaVersion %2. Change schemaVersion to %2 and try again.").arg(label).arg(WorldBlockSchema);
     }
+    if (parsing.schema < PhysicsBlockSchema && isPhysicsBlock(info.type)) {
+        return QString("%1 needs schemaVersion %2. Change schemaVersion to %2 and try again.").arg(label).arg(PhysicsBlockSchema);
+    }
     if (info.usesVariable && parsing.schema < VariableSchema && !legacyScore) {
         return QString("%1 uses a variable, which needs schemaVersion %2. Change schemaVersion to %2 and add a \"variables\" list.").arg(label).arg(VariableSchema);
     }
@@ -328,6 +372,7 @@ QString parseBlock(const QJsonValue& value, qsizetype index, int depth, Parsing&
         block.button = button->button;
     }
     if (info.usesAnimation) block.animation = object.value("animation").toString();
+    if (info.usesScene) block.scene = object.value("scene").toString();
     if (info.usesFlipped) {
         const auto flipped = object.value("flipped");
         if (!flipped.isBool()) return QString("%1 needs flipped to be true or false.").arg(label);
@@ -412,6 +457,7 @@ QJsonObject blockToJson(const Block& block) {
         }
     }
     if (info.usesAnimation) object.insert("animation", block.animation);
+    if (info.usesScene) object.insert("scene", block.scene);
     if (info.usesFlipped) object.insert("flipped", block.flipped);
     if (info.usesItem) object.insert("item", block.item);
     if (info.usesOtherItem) object.insert("otherItem", block.otherItem);
@@ -489,13 +535,13 @@ QByteArray indentation(int level) {
 // and names are free text, which is why only indexes reach the generated code.
 class Generator {
 public:
-    Generator(const Scene& scene, const LogicProgram& program) : scene(scene) {
+    Generator(const Scene& scene, const LogicProgram& program, int firstItem = 0, QHash<QString, int> sceneIndexes = {}) : scene(scene), firstItem(firstItem), sceneIndexes(std::move(sceneIndexes)) {
         for (qsizetype index = 0; index < scene.items.size(); ++index) itemIndexes.insert(scene.items[index].id, index);
         for (qsizetype index = 0; index < program.variables.size(); ++index) variableIndexes.insert(program.variables[index].name, index);
         for (qsizetype index = 0; index < program.sounds.size(); ++index) soundIndexes.insert(program.sounds[index].name, index);
     }
 
-    QByteArray index(const QString& itemId) const { return QByteArray::number(itemIndexes.value(itemId)); }
+    QByteArray index(const QString& itemId) const { return QByteArray::number(firstItem + itemIndexes.value(itemId)); }
 
     QByteArray variable(const QString& name) const { return QByteArray::number(variableIndexes.value(name)); }
 
@@ -568,6 +614,23 @@ public:
         case BlockType::SetCameraPosition:
             code += pad + "world.SetCameraPosition(" + floatLiteral(block.x) + ", " + floatLiteral(block.y) + ");" + comment;
             return;
+        case BlockType::SetVelocity:
+            code += pad + "world.SetVelocity(" + index(block.item) + ", " + floatLiteral(block.x) + ", " + floatLiteral(block.y) + ");" + comment;
+            return;
+        case BlockType::JumpItem:
+            code += pad + "world.Jump(" + index(block.item) + ");" + comment;
+            return;
+        case BlockType::IfOnGround:
+            code += pad + "if (world.OnGround(" + index(block.item) + ")) {" + comment;
+            actions(block.children, level + 1, code);
+            code += pad + "}\n";
+            return;
+        case BlockType::GoToScene:
+            code += pad + "world.GoToScene(" + QByteArray::number(sceneIndexes.value(block.scene)) + ");" + comment;
+            return;
+        case BlockType::RestartScene:
+            code += pad + "world.RestartScene();" + comment;
+            return;
         case BlockType::IfVariable:
             code += pad + "if (world.Variable(" + variable(block.variable) + ") " + comparisonOperator(block.comparison) + ' ' + QByteArray::number(block.value) + ") {" + comment;
             actions(block.children, level + 1, code);
@@ -577,6 +640,9 @@ public:
         case BlockType::WhileButtonHeld:
         case BlockType::EveryFrame:
         case BlockType::WhenItemsTouch:
+        case BlockType::WhenItemLands:
+        case BlockType::WhenItemHitsSolid:
+        case BlockType::WhenItemLeavesWorld:
             return; // validation keeps events out of an action list
         }
     }
@@ -599,11 +665,18 @@ public:
             actions(block.children, 3, code);
             code += "        }\n";
             code += "    }\n";
+        } else if (block.type == BlockType::WhenItemLands || block.type == BlockType::WhenItemHitsSolid || block.type == BlockType::WhenItemLeavesWorld) {
+            const auto call = block.type == BlockType::WhenItemLands ? "Landed" : block.type == BlockType::WhenItemHitsSolid ? "HitSolid" : "LeftWorld";
+            code += QByteArray("    if (world.") + call + "(" + index(block.item) + ")) {\n";
+            actions(block.children, 2, code);
+            code += "    }\n";
         }
     }
 
 private:
     const Scene& scene;
+    int firstItem;
+    QHash<QString, int> sceneIndexes;
     QHash<QString, qsizetype> itemIndexes;
     QHash<QString, qsizetype> variableIndexes;
     QHash<QString, qsizetype> soundIndexes;
@@ -628,6 +701,11 @@ bool usesSaveData(const QList<Block>& blocks) {
     });
 }
 
+bool programUsesSaveData(const LogicProgram& program) {
+    if (usesSaveData(program.events)) return true;
+    return std::ranges::any_of(program.otherScenes, [](const SceneLogic& other) { return usesSaveData(other.events); });
+}
+
 bool usesWorldBlock(const QList<Block>& blocks) {
     return std::ranges::any_of(blocks, [](const Block& block) { return isWorldBlock(block.type) || usesWorldBlock(block.children); });
 }
@@ -640,7 +718,7 @@ bool referencesItems(const QList<Block>& blocks) {
     return false;
 }
 
-QByteArray assembleHeader(bool includeScene, bool includeSounds, bool includeButtons, int itemCount, int soundCount, int touchEvents, const QByteArray& startCode, const QByteArray& frameCode) {
+QByteArray assembleHeader(bool includeScene, bool includeSounds, bool includeButtons, int itemCount, int soundCount, int touchEvents, const QList<QByteArray>& startCodes, const QList<QByteArray>& frameCodes) {
     QByteArray header = "// Generated by AnyDevKit Studio from logic.json. Do not edit.\n#pragma once\n\n";
     if (includeScene) header += "#include \"GeneratedScene.hpp\"\n";
     if (includeSounds) header += "#include \"GeneratedSounds.hpp\"\n";
@@ -657,8 +735,31 @@ QByteArray assembleHeader(bool includeScene, bool includeSounds, bool includeBut
     }
     header += "inline constexpr std::size_t TouchEventCount = " + QByteArray::number(touchEvents) + ";\n\n";
     header += "struct Memory {\n    std::array<bool, TouchEventCount> touching{};\n};\n\n";
-    header += "template <typename World>\nvoid OnStart([[maybe_unused]] World& world) {\n" + startCode + "}\n\n";
-    header += "template <typename World>\nvoid OnFrame([[maybe_unused]] World& world, [[maybe_unused]] Memory& memory) {\n" + frameCode + "}\n\n";
+    const auto sceneCount = startCodes.size();
+    for (qsizetype index = 0; index < sceneCount; ++index) {
+        const auto suffix = sceneCount == 1 ? QByteArray() : QByteArray::number(index);
+        header += "template <typename World>\nvoid OnStart" + suffix + "([[maybe_unused]] World& world) {\n" + startCodes[index] + "}\n\n";
+        header += "template <typename World>\nvoid OnFrame" + suffix + "([[maybe_unused]] World& world, [[maybe_unused]] Memory& memory) {\n" + frameCodes[index] + "}\n\n";
+    }
+    QByteArray startCases;
+    QByteArray frameCases;
+    if (sceneCount == 1) {
+        startCases = "    OnStart(world);\n";
+        frameCases = "    OnFrame(world, memory);\n";
+    } else {
+        startCases = "    switch (scene) {\n";
+        frameCases = "    switch (scene) {\n";
+        for (qsizetype index = 0; index < sceneCount; ++index) {
+            const auto number = QByteArray::number(index);
+            startCases += "    case " + number + ": OnStart" + number + "(world); break;\n";
+            frameCases += "    case " + number + ": OnFrame" + number + "(world, memory); break;\n";
+        }
+        startCases += "    default: break;\n    }\n";
+        frameCases += "    default: break;\n    }\n";
+    }
+    header += "// Runs the blocks of one scene: when it starts, and each frame while it is showing.\n";
+    header += "template <typename World>\nvoid OnSceneStart([[maybe_unused]] World& world, [[maybe_unused]] std::size_t scene) {\n" + startCases + "}\n\n";
+    header += "template <typename World>\nvoid OnSceneFrame([[maybe_unused]] World& world, [[maybe_unused]] Memory& memory, [[maybe_unused]] std::size_t scene) {\n" + frameCases + "}\n\n";
     header += "}\n";
     return header;
 }
@@ -692,6 +793,14 @@ const QList<BlockInfo>& blockCatalog() {
         {BlockType::FlipItem, "flipItem", "Flip item",                               false, false, false, true, false, false, false, false, false, false, false, false, true},
         {BlockType::CameraFollow, "cameraFollow", "Camera follows item",             false, false, false, true, false, false, false, false, false, false, false},
         {BlockType::SetCameraPosition, "setCameraPosition", "Set camera position",   false, false, false, false, false, true, false, false, false, false, false},
+        {BlockType::WhenItemLands, "whenItemLands", "When item lands",               true,  true,  false, true,  false, false, false, false, false, false, false},
+        {BlockType::WhenItemHitsSolid, "whenItemHitsSolid", "When item hits a solid", true,  true,  false, true,  false, false, false, false, false, false, false},
+        {BlockType::WhenItemLeavesWorld, "whenItemLeavesWorld", "When item leaves the world", true, true, false, true, false, false, false, false, false, false, false},
+        {BlockType::SetVelocity, "setVelocity", "Set velocity",                      false, false, false, true,  false, true,  false, false, false, false, false},
+        {BlockType::JumpItem, "jumpItem", "Jump item",                               false, false, false, true,  false, false, false, false, false, false, false},
+        {BlockType::IfOnGround, "ifOnGround", "If item is on the ground",            false, true,  false, true,  false, false, false, false, false, false, false},
+        {BlockType::GoToScene, "goToScene", "Go to scene",                           false, false, false, false, false, false, false, false, false, false, false, false, false, true},
+        {BlockType::RestartScene, "restartScene", "Restart scene",                   false, false, false, false, false, false, false, false, false, false, false},
     };
     return catalog;
 }
@@ -730,8 +839,36 @@ QList<LogicProblem> validateLogicStructure(const LogicProgram& program) {
     return Validator(nullptr, program).run(program);
 }
 
-QList<LogicProblem> validateLogic(const LogicProgram& program, const Scene& scene) {
-    return Validator(&scene, program).run(program);
+QList<LogicProblem> validateLogic(const LogicProgram& program, const Scene& scene, const QStringList& sceneIds) {
+    return Validator(&scene, program, sceneIds).run(program);
+}
+
+QList<Block> eventsOfScene(const LogicProgram& program, const QString& sceneId, bool isFirstScene) {
+    if (!program.scene.isEmpty() && program.scene == sceneId) return program.events;
+    for (const auto& other : program.otherScenes) {
+        if (other.scene == sceneId) return other.events;
+    }
+    if (isFirstScene && program.scene.isEmpty()) return program.events;
+    return {};
+}
+
+QList<LogicProblem> validateGameLogic(const LogicProgram& program, const SceneSet& set) {
+    QStringList sceneIds;
+    for (const auto& scene : set.scenes) sceneIds << scene.id;
+    QList<LogicProblem> found = validateLogicStructure(program);
+    if (!found.isEmpty()) return found;
+    for (qsizetype index = 0; index < set.scenes.size(); ++index) {
+        const auto& scene = set.scenes[index];
+        LogicProgram sceneProgram = program;
+        sceneProgram.events = eventsOfScene(program, scene.id, index == 0);
+        sceneProgram.scene.clear();
+        sceneProgram.otherScenes.clear();
+        for (auto problem : validateLogic(sceneProgram, scene, sceneIds)) {
+            if (set.scenes.size() > 1) problem.message = QString("In the scene \"%1\": %2").arg(scene.name, problem.message);
+            found.append(problem);
+        }
+    }
+    return found;
 }
 
 QList<LogicProblem> validateTextBindings(const Scene& scene, const LogicProgram& program) {
@@ -764,7 +901,8 @@ LogicLoadResult loadLogic(const QString& path) {
     const auto schema = root.value("schemaVersion");
     const auto version = schema.toInt(-1);
     if (!schema.isDouble() || version < OldestLoadableSchema || version > CurrentSchema) return failure(QString("%1 needs a schemaVersion from %2 to %3, the versions this Studio supports.").arg(fileName).arg(OldestLoadableSchema).arg(CurrentSchema));
-    if (!root.value("events").isArray()) return failure(QString("%1 has no events list. Add \"events\": [] to the file.").arg(fileName));
+    if (version < PhysicsBlockSchema && !root.value("events").isArray()) return failure(QString("%1 has no events list. Add \"events\": [] to the file.").arg(fileName));
+    if (version >= PhysicsBlockSchema && !root.value("scenes").isArray()) return failure(QString("%1 has no scenes list. Add \"scenes\": [] to the file.").arg(fileName));
 
     LogicProgram program;
     if (version >= VariableSchema) {
@@ -780,12 +918,34 @@ LogicLoadResult loadLogic(const QString& path) {
 
     Parsing parsing;
     parsing.schema = version;
-    const auto events = root.value("events").toArray();
-    for (qsizetype index = 0; index < events.size(); ++index) {
-        Block block;
-        const auto problem = parseBlock(events.at(index), index, 1, parsing, block);
-        if (!problem.isEmpty()) return failure(problem);
-        program.events.append(block);
+    const auto parseEvents = [&](const QJsonArray& events, QList<Block>& out) -> QString {
+        parsing.count = 0; // the block budget applies to each scene on its own
+        for (qsizetype index = 0; index < events.size(); ++index) {
+            Block block;
+            const auto problem = parseBlock(events.at(index), index, 1, parsing, block);
+            if (!problem.isEmpty()) return problem;
+            out.append(block);
+        }
+        return {};
+    };
+    if (version < PhysicsBlockSchema) {
+        if (const auto problem = parseEvents(root.value("events").toArray(), program.events); !problem.isEmpty()) return failure(problem);
+    } else {
+        const auto scenes = root.value("scenes").toArray();
+        for (qsizetype index = 0; index < scenes.size(); ++index) {
+            const auto entry = scenes.at(index);
+            if (!entry.isObject() || !entry.toObject().value("events").isArray()) return failure(QString("%1: each entry in the scenes list needs an events list. Add \"events\": [] to it.").arg(fileName));
+            const auto object = entry.toObject();
+            if (index == 0) {
+                program.scene = object.value("scene").toString();
+                if (const auto problem = parseEvents(object.value("events").toArray(), program.events); !problem.isEmpty()) return failure(problem);
+            } else {
+                SceneLogic other;
+                other.scene = object.value("scene").toString();
+                if (const auto problem = parseEvents(object.value("events").toArray(), other.events); !problem.isEmpty()) return failure(problem);
+                program.otherScenes.append(other);
+            }
+        }
     }
     if (parsing.usesScore) program.variables.append({ScoreVariableName, 0});
 
@@ -801,9 +961,15 @@ bool saveLogic(const QString& path, const LogicProgram& program, QString& error)
         return false;
     }
 
-    QJsonArray events;
-    for (const auto& block : program.events) events.append(blockToJson(block));
-    const QJsonObject root{{"schemaVersion", CurrentSchema}, {"variables", variablesToJson(program.variables)}, {"sounds", soundsToJson(program.sounds)}, {"events", events}};
+    const auto sceneEntry = [](const QString& scene, const QList<Block>& blocks) {
+        QJsonArray events;
+        for (const auto& block : blocks) events.append(blockToJson(block));
+        return QJsonObject{{"scene", scene}, {"events", events}};
+    };
+    QJsonArray scenes;
+    scenes.append(sceneEntry(program.scene, program.events));
+    for (const auto& other : program.otherScenes) scenes.append(sceneEntry(other.scene, other.events));
+    const QJsonObject root{{"schemaVersion", CurrentSchema}, {"variables", variablesToJson(program.variables)}, {"sounds", soundsToJson(program.sounds)}, {"scenes", scenes}};
     const auto contents = QJsonDocument(root).toJson();
 
     QSaveFile file(path);
@@ -824,6 +990,7 @@ QString newBlockId(const LogicProgram& program) {
         }
     };
     collect(collect, program.events, 1);
+    for (const auto& other : program.otherScenes) collect(collect, other.events, 1);
 
     auto candidate = used.size() + 1;
     while (used.contains(QString("block-%1").arg(candidate))) ++candidate;
@@ -831,45 +998,105 @@ QString newBlockId(const LogicProgram& program) {
 }
 
 QByteArray generateEmptyLogicHeader() {
-    return assembleHeader(false, false, false, 0, 0, 0, {}, {});
+    return assembleHeader(false, false, false, 0, 0, 0, QList<QByteArray>{QByteArray()}, QList<QByteArray>{QByteArray()});
 }
 
 QByteArray generateLogicHeader(const LogicProgram& program, const Scene& scene) {
-    if (!validateScene(scene).isEmpty() || !validateLogic(program, scene).isEmpty()) return {};
-    if (program.events.isEmpty()) return generateEmptyLogicHeader();
+    SceneSet set;
+    set.scenes = {scene};
+    set.startScene = scene.id;
+    LogicProgram sceneProgram = program;
+    sceneProgram.scene.clear();
+    sceneProgram.otherScenes.clear();
+    return generateLogicHeader(sceneProgram, set);
+}
 
-    const Generator generator(scene, program);
-    QByteArray startCode;
-    // A one-shot item a block bursts plays when that block runs, not also when the game starts.
-    QSet<QString> burstTargets;
-    collectBurstTargets(program.events, burstTargets);
-    for (const auto& item : scene.items) {
-        if (item.type == "particles" && !item.looping && burstTargets.contains(item.id)) {
-            startCode += "    world.AwaitBurst(" + generator.index(item.id) + ");\n";
-        }
-    }
-    QByteArray frameCode;
+QByteArray generateLogicHeader(const LogicProgram& program, const SceneSet& set) {
+    if (!validateSceneSet(set).isEmpty() || !validateGameLogic(program, set).isEmpty()) return {};
+
+    QHash<QString, int> sceneIndexes;
+    for (qsizetype index = 0; index < set.scenes.size(); ++index) sceneIndexes.insert(set.scenes[index].id, static_cast<int>(index));
+
+    QList<QByteArray> startCodes;
+    QList<QByteArray> frameCodes;
     int touchEvents = 0;
     bool usesButtons = false;
-    for (const auto& block : program.events) {
-        if (block.type == BlockType::WhenGameStarts) {
-            startCode += "    // " + block.id.toLatin1() + ": " + blockInfo(block.type).title.toLatin1() + '\n';
-            generator.actions(block.children, 1, startCode);
-            continue;
+    bool usesItems = false;
+    bool usesSounds = false;
+    bool anyEvents = false;
+    int firstItem = 0;
+    int totalItems = 0;
+    for (const auto& scene : set.scenes) totalItems += static_cast<int>(scene.items.size());
+
+    for (qsizetype index = 0; index < set.scenes.size(); ++index) {
+        const auto& scene = set.scenes[index];
+        const auto events = eventsOfScene(program, scene.id, index == 0);
+        if (!events.isEmpty()) anyEvents = true;
+        usesItems = usesItems || referencesItems(events);
+        usesSounds = usesSounds || referencesSounds(events);
+
+        const Generator generator(scene, program, firstItem, sceneIndexes);
+        QByteArray startCode;
+        // A one-shot item a block bursts plays when that block runs, not also when the game starts.
+        QSet<QString> burstTargets;
+        collectBurstTargets(events, burstTargets);
+        for (const auto& item : scene.items) {
+            if (item.type == "particles" && !item.looping && burstTargets.contains(item.id)) {
+                startCode += "    world.AwaitBurst(" + generator.index(item.id) + ");\n";
+            }
         }
-        generator.frameEvent(block, touchEvents, frameCode);
-        if (block.type == BlockType::WhenItemsTouch) ++touchEvents;
-        if (block.type == BlockType::WhileButtonHeld) usesButtons = true;
+        QByteArray frameCode;
+        for (const auto& block : events) {
+            if (block.type == BlockType::WhenGameStarts) {
+                startCode += "    // " + block.id.toLatin1() + ": " + blockInfo(block.type).title.toLatin1() + '\n';
+                generator.actions(block.children, 1, startCode);
+                continue;
+            }
+            generator.frameEvent(block, touchEvents, frameCode);
+            if (block.type == BlockType::WhenItemsTouch) ++touchEvents;
+            if (block.type == BlockType::WhileButtonHeld) usesButtons = true;
+        }
+        startCodes.append(startCode);
+        frameCodes.append(frameCode);
+        firstItem += static_cast<int>(scene.items.size());
     }
-    return assembleHeader(referencesItems(program.events), referencesSounds(program.events), usesButtons, static_cast<int>(scene.items.size()), static_cast<int>(program.sounds.size()), touchEvents, startCode, frameCode);
+    if (!anyEvents) {
+        if (set.scenes.size() == 1) return generateEmptyLogicHeader();
+        return assembleHeader(false, false, false, 0, 0, 0, startCodes, frameCodes);
+    }
+    return assembleHeader(usesItems, usesSounds, usesButtons, totalItems, static_cast<int>(program.sounds.size()), touchEvents, startCodes, frameCodes);
 }
 
 bool programUsesWorldBlocks(const LogicProgram& program) {
-    return usesWorldBlock(program.events);
+    if (usesWorldBlock(program.events)) return true;
+    return std::ranges::any_of(program.otherScenes, [](const SceneLogic& other) { return usesWorldBlock(other.events); });
+}
+
+bool programUsesPhysicsBlocks(const LogicProgram& program) {
+    const auto uses = [](const auto& self, const QList<Block>& blocks) -> bool {
+        return std::ranges::any_of(blocks, [&](const Block& block) { return isPhysicsBlock(block.type) || self(self, block.children); });
+    };
+    if (uses(uses, program.events)) return true;
+    return std::ranges::any_of(program.otherScenes, [&](const SceneLogic& other) { return uses(uses, other.events); });
 }
 
 QByteArray generateVariablesHeader(const LogicProgram& program, const Scene& scene) {
-    if (!validateScene(scene).isEmpty() || !validateLogic(program, scene).isEmpty() || !validateTextBindings(scene, program).isEmpty()) return {};
+    SceneSet set;
+    set.scenes = {scene};
+    set.startScene = scene.id;
+    LogicProgram sceneProgram = program;
+    sceneProgram.scene.clear();
+    sceneProgram.otherScenes.clear();
+    return generateVariablesHeader(sceneProgram, set);
+}
+
+QByteArray generateVariablesHeader(const LogicProgram& program, const SceneSet& set) {
+    if (!validateSceneSet(set).isEmpty() || !validateGameLogic(program, set).isEmpty()) return {};
+    Scene scene; // every scene's items in one list, as the runtime numbers them
+    for (const auto& oneScene : set.scenes) {
+        if (!validateTextBindings(oneScene, program).isEmpty()) return {};
+        scene.items += oneScene.items;
+    }
 
     QHash<QString, qsizetype> variableIndexes;
     QByteArrayList initialValues;
@@ -918,7 +1145,7 @@ QByteArray generateVariablesHeader(const LogicProgram& program, const Scene& sce
     header += initialValues.isEmpty() ? QByteArray("{};\n") : "{{" + initialValues.join(", ") + "}}; // " + names.join(", ") + "\n";
     header += "inline constexpr std::array<std::uint32_t, " + QByteArray::number(program.variables.size()) + "> NameHashes";
     header += hashes.isEmpty() ? QByteArray("{};\n") : "{{" + hashes.join(", ") + "}}; // how a saved value finds its variable\n";
-    header += QByteArray("inline constexpr bool UsesSaveData = ") + (usesSaveData(program.events) ? "true" : "false") + ";\n";
+    header += QByteArray("inline constexpr bool UsesSaveData = ") + (programUsesSaveData(program) ? "true" : "false") + ";\n";
     header += R"cpp(
 // One piece of a text item that shows variables: plain text, or a variable's value when variable is not -1.
 struct Part {
@@ -945,6 +1172,13 @@ struct BoundText {
 }
 
 bool exportLogicHeader(const QString& projectRoot, const Scene& scene, QString& error) {
+    SceneSet set;
+    set.scenes = {scene};
+    set.startScene = scene.id;
+    return exportLogicHeader(projectRoot, set, error);
+}
+
+bool exportLogicHeader(const QString& projectRoot, const SceneSet& set, QString& error) {
     error.clear();
     const auto fail = [&](const QString& message) {
         error = message;
@@ -971,14 +1205,15 @@ bool exportLogicHeader(const QString& projectRoot, const Scene& scene, QString& 
         const auto loaded = loadLogic(logicPath);
         if (!loaded.program) return fail(loaded.error);
         program = *loaded.program;
-        const auto problems = validateLogic(program, scene);
+        const auto problems = validateGameLogic(program, set);
         if (!problems.isEmpty()) return fail(describeProblems(problems));
-        header = generateLogicHeader(program, scene);
+        header = generateLogicHeader(program, set);
         if (header.isEmpty()) return fail("The game logic could not be generated because the scene has a problem. Fix the scene and try again.");
     }
-    const auto textProblems = validateTextBindings(scene, program);
+    QList<LogicProblem> textProblems;
+    for (const auto& scene : set.scenes) textProblems += validateTextBindings(scene, program);
     if (!textProblems.isEmpty()) return fail(describeProblems(textProblems));
-    const auto variablesHeader = generateVariablesHeader(program, scene);
+    const auto variablesHeader = generateVariablesHeader(program, set);
     if (variablesHeader.isEmpty()) return fail("The game logic could not be generated because the scene has a problem. Fix the scene and try again.");
     QString soundProblem;
     if (!exportSounds(root, program.sounds, soundProblem)) return fail(soundProblem);

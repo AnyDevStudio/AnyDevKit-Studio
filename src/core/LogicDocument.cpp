@@ -165,6 +165,7 @@ QVariant LogicDocument::data(const QModelIndex& index, int role) const {
     case SoundRole: return block->sound;
     case AnimationRole: return block->animation;
     case FlippedRole: return block->flipped;
+    case SceneRole: return block->scene;
     default: return {};
     }
 }
@@ -206,6 +207,7 @@ QHash<int, QByteArray> LogicDocument::roleNames() const {
         {SoundRole, "sound"},
         {AnimationRole, "animation"},
         {FlippedRole, "flipped"},
+        {SceneRole, "targetScene"},
     };
 }
 
@@ -222,6 +224,7 @@ bool LogicDocument::open(const QString& newPath) {
         }
         document = *result.program;
     }
+    if (sceneKnown) showLogicOfScene(scene.id);
     loaded = true;
     failure.clear();
     afterChange();
@@ -260,8 +263,104 @@ void LogicDocument::reopen() {
     open(current);
 }
 
+void LogicDocument::setSceneSet(const SceneSet& set, int currentIndex) {
+    const auto namesOf = [](const SceneSet& each) {
+        QStringList names;
+        for (const auto& one : each.scenes) names << one.id + '|' + one.name;
+        return names;
+    };
+    const auto listChanged = namesOf(set) != namesOf(sceneChoices);
+    sceneChoices = set;
+    if (listChanged) emit sceneListChanged();
+    if (currentIndex >= 0 && currentIndex < set.scenes.size()) setScene(set.scenes[currentIndex]);
+}
+
+QVariantList LogicDocument::scenes() const {
+    QVariantList list;
+    for (const auto& one : sceneChoices.scenes) list.append(QVariantMap{{"id", one.id}, {"name", one.name}});
+    return list;
+}
+
+QStringList LogicDocument::projectSceneIds() const {
+    QStringList ids;
+    for (const auto& one : sceneChoices.scenes) ids << one.id;
+    return ids;
+}
+
+bool LogicDocument::duplicateSceneLogic(const QString& sceneId, const QString& copyId) {
+    if (!loaded || drag) return false;
+    auto candidate = document;
+    QList<Block> source;
+    if (sceneId == document.scene) source = document.events;
+    else source = eventsOfScene(document, sceneId, false);
+
+    QSet<QString> used;
+    const auto collect = [&](const auto& self, const QList<Block>& blocks) -> void {
+        for (const auto& block : blocks) {
+            used.insert(block.id);
+            self(self, block.children);
+        }
+    };
+    collect(collect, candidate.events);
+    for (const auto& other : candidate.otherScenes) collect(collect, other.events);
+
+    int counter = 0;
+    const auto freshIds = [&](const auto& self, QList<Block>& blocks) -> void {
+        for (auto& block : blocks) {
+            QString id;
+            do {
+                ++counter;
+                id = QString("block-%1").arg(counter);
+            } while (used.contains(id));
+            used.insert(id);
+            block.id = id;
+            self(self, block.children);
+        }
+    };
+    freshIds(freshIds, source);
+
+    SceneLogic copy;
+    copy.scene = copyId;
+    copy.events = source;
+    candidate.otherScenes.append(copy);
+    return commit(candidate);
+}
+
+void LogicDocument::showLogicOfScene(const QString& sceneId) {
+    if (document.scene == sceneId) return;
+    if (document.scene.isEmpty()) {
+        document.scene = sceneId; // an older file's events are the first scene's, and this is the first scene shown
+        return;
+    }
+    QList<SceneLogic> others = document.otherScenes;
+    if (!document.events.isEmpty()) others.append({document.scene, document.events});
+    QList<Block> nextEvents;
+    for (qsizetype index = 0; index < others.size(); ++index) {
+        if (others[index].scene == sceneId) {
+            nextEvents = others.takeAt(index).events;
+            break;
+        }
+    }
+    document.scene = sceneId;
+    document.events = nextEvents;
+    document.otherScenes = others;
+    history.clear();
+    emit undoChanged();
+    selection.clear();
+    emit selectionChanged();
+}
+
 void LogicDocument::setScene(const Scene& newScene) {
+    const auto switching = loaded && !document.scene.isEmpty() && newScene.id != document.scene;
     scene = newScene;
+    sceneKnown = true;
+    if (switching) {
+        if (drag) finishDrag(true);
+        showLogicOfScene(newScene.id);
+        afterChange();
+    } else if (loaded && document.scene.isEmpty()) {
+        document.scene = newScene.id; // an older file's events belong to the scene this project shows
+    }
     emit sceneItemsChanged();
     const auto beforeProblems = problems;
     refreshProblems();
@@ -296,7 +395,7 @@ void LogicDocument::setSelectedId(const QString& id) {
 
 QVariantList LogicDocument::palette() const {
     QVariantList groups;
-    for (const auto* key : {"events", "movement", "looks", "variables", "sound", "saving"}) {
+    for (const auto* key : {"events", "movement", "looks", "variables", "sound", "saving", "physics", "scenes"}) {
         const QString category(key);
         QVariantList blocks;
         for (const auto& info : blockCatalog()) {
@@ -386,6 +485,14 @@ Block LogicDocument::makeBlock(const BlockInfo& info, const QString& id) const {
     block.id = id;
     block.type = info.type;
     if (info.usesItem && !scene.items.isEmpty()) block.item = scene.items.first().id;
+    if (info.usesItem && (info.type == BlockType::SetVelocity || info.type == BlockType::JumpItem || info.type == BlockType::IfOnGround || info.type == BlockType::WhenItemLands || info.type == BlockType::WhenItemHitsSolid || info.type == BlockType::WhenItemLeavesWorld)) {
+        const auto body = std::ranges::find_if(scene.items, [](const SceneItem& item) { return item.physics == "body"; });
+        if (body != scene.items.end()) block.item = body->id;
+    }
+    if (info.usesScene && !sceneChoices.scenes.isEmpty()) {
+        const auto other = std::ranges::find_if(sceneChoices.scenes, [&](const Scene& one) { return one.id != scene.id; });
+        block.scene = other != sceneChoices.scenes.end() ? other->id : sceneChoices.scenes.first().id;
+    }
     if (info.usesAnimation) {
         const auto sheet = std::ranges::find_if(scene.items, [](const SceneItem& item) { return isSpriteSheet(item) && !item.animations.isEmpty(); });
         if (sheet != scene.items.end()) {
@@ -455,14 +562,14 @@ void LogicDocument::afterChange() {
         emit dataChanged(index(0), index(static_cast<int>(rows.size()) - 1),
             {RunOrderRole, DepthRole, XRole, YRole, WidthRole, HeightRole, HeaderHeightRole, CavityHeightRole, FooterHeightRole, ProblemHeightRole,
              TwoRowsRole, ItemRole, OtherItemRole, ItemNameRole, OtherItemNameRole, ButtonRole, PointXRole, PointYRole, ColorRole, ValueRole,
-             ComparisonRole, ProblemRole, DraggedRole, EmptyCavityRole, VariableRole, SoundRole});
+             ComparisonRole, ProblemRole, DraggedRole, EmptyCavityRole, VariableRole, SoundRole, SceneRole});
     }
     emit programChanged();
     emit layoutChanged();
 }
 
 void LogicDocument::refreshProblems() {
-    const auto list = validateLogic(document, scene);
+    const auto list = validateLogic(document, scene, projectSceneIds());
     QHash<QString, QString> next;
     QString whole;
     QString first;
@@ -638,6 +745,8 @@ bool LogicDocument::setField(const QString& id, const QString& key, const QVaria
         block.variable = value.toString();
     } else if (key == "sound") {
         block.sound = value.toString();
+    } else if (key == "scene") {
+        block.scene = value.toString();
     } else if (key == "button") {
         const auto name = value.toString();
         const auto found2 = std::ranges::find(buttonCatalog(), name, &ButtonInfo::jsonName);
@@ -654,7 +763,7 @@ bool LogicDocument::setField(const QString& id, const QString& key, const QVaria
 
     const auto unchanged = block.item == before.item && block.otherItem == before.otherItem && block.x == before.x && block.y == before.y
         && block.value == before.value && block.color == before.color && block.button == before.button && block.comparison == before.comparison
-        && block.variable == before.variable && block.sound == before.sound && block.animation == before.animation && block.flipped == before.flipped;
+        && block.variable == before.variable && block.sound == before.sound && block.animation == before.animation && block.flipped == before.flipped && block.scene == before.scene;
     if (unchanged) {
         setError({});
         return true;
@@ -713,13 +822,15 @@ bool LogicDocument::renameVariable(const QString& name, const QString& newName) 
         return false;
     }
     // The new name can be longer, and a text that shows it still has to fit its 64 characters.
-    auto renamedScene = scene;
-    for (auto& item : renamedScene.items) {
-        if (item.type == "text") item.text = renameVariableInText(item.text, name, newName);
-    }
-    if (const auto textProblem = validateScene(renamedScene); !textProblem.isEmpty()) {
-        setError(QString("Renaming to %1 would make a text item too long. %2 Choose a shorter name, or shorten the text in the Scene tab.").arg(newName, textProblem));
-        return false;
+    auto renamedScenes = sceneKnown && !sceneChoices.scenes.isEmpty() ? sceneChoices.scenes : QList<Scene>{scene};
+    for (auto& oneScene : renamedScenes) {
+        for (auto& item : oneScene.items) {
+            if (item.type == "text") item.text = renameVariableInText(item.text, name, newName);
+        }
+        if (const auto textProblem = validateScene(oneScene); !textProblem.isEmpty()) {
+            setError(QString("Renaming to %1 would make a text item too long. %2 Choose a shorter name, or shorten the text in the Scene tab.").arg(newName, textProblem));
+            return false;
+        }
     }
 
     auto candidate = document;
@@ -733,6 +844,7 @@ bool LogicDocument::renameVariable(const QString& name, const QString& newName) 
         }
     };
     renameIn(renameIn, candidate.events);
+    for (auto& other : candidate.otherScenes) renameIn(renameIn, other.events);
     if (!commit(candidate)) return false;
     emit variableRenamed(name, newName);
     return true;
@@ -779,9 +891,13 @@ QVariantList LogicDocument::variableUses(const QString& name) const {
         }
     };
     walk(walk, document.events, {}, 1);
-    for (const auto& item : scene.items) {
-        if (item.type == "text" && textVariables(item.text).contains(name)) {
-            uses.append(QVariantMap{{"kind", "text"}, {"title", item.name.isEmpty() ? item.id : item.name}, {"where", "Shown on the stage"}});
+    for (const auto& other : document.otherScenes) walk(walk, other.events, {}, 1);
+    const auto scenesToSearch = sceneKnown && !sceneChoices.scenes.isEmpty() ? sceneChoices.scenes : QList<Scene>{scene};
+    for (const auto& oneScene : scenesToSearch) {
+        for (const auto& item : oneScene.items) {
+            if (item.type == "text" && textVariables(item.text).contains(name)) {
+                uses.append(QVariantMap{{"kind", "text"}, {"title", item.name.isEmpty() ? item.id : item.name}, {"where", scenesToSearch.size() > 1 ? QString("Shown in the scene \"%1\"").arg(oneScene.name) : QString("Shown on the stage")}});
+            }
         }
     }
     return uses;
@@ -812,6 +928,7 @@ QVariantList LogicDocument::soundUses(const QString& name) const {
         }
     };
     walk(walk, document.events, {}, 1);
+    for (const auto& other : document.otherScenes) walk(walk, other.events, {}, 1);
     return uses;
 }
 

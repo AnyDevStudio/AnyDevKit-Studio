@@ -1,8 +1,9 @@
 # Scene format
 
-Studio's drag and drop editor saves one scene per project in `scene.json`, at the project root.
-Before each build Studio turns it into `src/GeneratedScene.hpp` and `src/GeneratedImages.cpp`, which
-the game runtime compiles in.
+Studio's drag and drop editor saves a project's scenes in `scene.json`, at the project root. Before each
+build Studio turns them into `src/GeneratedScene.hpp` and `src/GeneratedImages.cpp`, which the game runtime
+compiles in. A project has at least one scene and at most 32, listed in the Scene tab's strip of level tabs,
+where one is marked as the one the game starts in.
 
 The screen is always 1920x1080. The origin is the top left corner and `y` grows downwards. A scene can
 also have a [world larger than the screen](#world-and-camera) that a camera moves over.
@@ -11,9 +12,14 @@ also have a [world larger than the screen](#world-and-camera) that a camera move
 
 ```json
 {
-  "schemaVersion": 5,
-  "background": "#151C3A",
-  "items": [
+  "schemaVersion": 6,
+  "startScene": "scene-1",
+  "scenes": [
+    {
+      "id": "scene-1",
+      "name": "Scene 1",
+      "background": "#151C3A",
+      "items": [
     {
       "id": "item-1",
       "type": "rectangle",
@@ -66,16 +72,25 @@ also have a [world larger than the screen](#world-and-camera) that a camera move
       "looping": true,
       "controllable": false
     }
+      ]
+    }
   ]
 }
 ```
 
 Rules:
 
-- `schemaVersion` is `5`, the version Studio saves. Older scenes still load: `1` cannot hold image items,
+- `schemaVersion` is `6`, the version Studio saves. Older files still load: `1` cannot hold image items,
   `1` and `2` cannot hold particles items, before `4` a brace in `text` was only a brace, so `{` and
-  `}` in an older file are read as `{{` and `}}`, and before `5` a scene cannot hold sprite sheets,
-  tilemaps, a world or a camera. A scene holds at most 256 items, drawn in list order, later items on top.
+  `}` in an older file are read as `{{` and `}}`, before `5` a scene cannot hold sprite sheets, tilemaps,
+  a world or a camera, and before `6` a project is one scene: the file's `background`, `world`, `camera` and
+  `items` sit at its top level and load as one scene with no name of its own. A scene holds at most 256 items,
+  drawn in list order, later items on top.
+- `startScene` is the `id` of the scene the game starts in. `scenes` lists 1 to 32 scenes in the order the
+  Scene tab shows them. A scene's `id` is 1 to 64 letters, digits, `-` or `_`, unique and unchanging, so logic
+  and Go to scene blocks can refer to it; its `name` is 1 to 40 characters, unique regardless of case, and is
+  only for the editor. Each scene has its own `background`, `world`, `camera` and `items`, and every limit below
+  applies to one scene. Item ids only need to be unique within their scene.
 - `id` values are unique, non-empty strings. `name` is only for the editor.
 - Hiding an item with the eye in the Layers panel only hides it on the stage while editing. It is not
   saved here and the game does not see it. The Logic tab's show and hide blocks control the game.
@@ -97,6 +112,7 @@ Rules:
   screen, so nothing changes for older scenes.
 - `screenFixed` is optional. An item with `"screenFixed": true` is placed on the screen, for example a
   score, and stays there as the camera moves.
+- `physics` is optional and makes an item a [Static solid or a Moving body](#physics).
 - `particles` draws an effect with blocky particles snapped to a pixel grid. `x`, `y`, `width` and
   `height` are the area the effect happens in. See [Particles](#particles).
 
@@ -125,7 +141,8 @@ allocation. Text with no variables behaves exactly as it did.
 
 ```json
 {
-  "schemaVersion": 5,
+  "id": "scene-1",
+  "name": "Scene 1",
   "background": "#151C3A",
   "world": { "width": 7680, "height": 2160 },
   "camera": { "x": 0, "y": 0 },
@@ -216,7 +233,7 @@ drawing follows the order of `items` as for any other item.
 | `tileScale`  | whole number from 1 to 16   | how much bigger each tile is drawn: a tile takes `tileWidth * tileScale` world units |
 | `columns`, `rows` | whole numbers from 1 to 512 | the size of the map in tiles. The drawn size is `columns * tileWidth * tileScale` by `rows * tileHeight * tileScale` |
 | `tiles`      | one text per row, top row first | each is comma separated `tile` or `tile*count` runs, adding up to `columns`. A tile is -1 for empty or a number from 0 to 65535, for example `"-1*3,5*2,2"` |
-| `solidTiles` | sorted tile numbers, no repeats | which tiles are solid. Kept for collisions; the game does not use it yet |
+| `solidTiles` | sorted tile numbers, no repeats | which tiles moving bodies collide with, see [Physics](#physics) |
 
 The picture is checked against the map when the scene is built: a tile number the tileset does not have is an
 error naming it. Tilemaps always draw with nearest-neighbour sampling. Each tile is `tileScale` units
@@ -226,9 +243,69 @@ A scene holds at most 1048576 tiles across all its tilemaps. On screen a tilemap
 at most one quad per cell in view, one extra row and column for a camera between grid lines, counted
 against the same 16000 quad budget as particles.
 
+### Physics
+
+Rectangles and images can take part in the platformer physics. In the Scene tab this is the Physics section of
+the inspector: None, Static solid (a wall or platform) or Moving body.
+
+```json
+{
+  "id": "item-1",
+  "type": "rectangle",
+  "name": "Hero",
+  "x": 120,
+  "y": 700,
+  "width": 64,
+  "height": 64,
+  "color": "#FFD23F",
+  "controllable": false,
+  "physics": "body",
+  "gravityScale": 100,
+  "platformer": true,
+  "moveSpeed": 600,
+  "jumpHeight": 260
+}
+```
+
+| Field          | Values                                  | Beginners read it as                                       |
+| -------------- | --------------------------------------- | ---------------------------------------------------------- |
+| `physics`      | `solid` or `body`, absent for neither   | a wall or platform, or something that moves and collides    |
+| `gravityScale` | whole number from 0 to 300 (100 is natural), body only | how hard it falls                                |
+| `platformer`   | `true` or `false`, body only             | moves left and right on the stick or D-pad and jumps on Cross |
+| `moveSpeed`    | whole number from 60 to 3000, body only  | how fast it runs, in units per second                      |
+| `jumpHeight`   | whole number from 16 to 2000, body only  | how high it jumps, in world units                          |
+
+A new body has friendly defaults: gravity 100%, speed 600, jump height 260 (about four 64 unit tiles). A
+platformer character gets coyote time (a jump still works for a tenth of a second after running off a
+ledge), jump buffering (a jump pressed just before landing happens on landing) and variable jump height
+(letting go of Cross early makes a shorter hop). A body in the game uses the fixed physics below, whatever its
+drawing looks like; an item with physics does not also move with `controllable`, and `screenFixed` items and
+Text, Particles and Tilemap items have no physics field: a tilemap blocks with the `solidTiles` of each
+tile instead.
+
+Bodies collide with solid items and with the solid tiles of tilemaps in their scene: they do not collide
+with each other. Items are axis-aligned rectangles, tested a whole axis at a time so a fast body can never pass
+through something thin at any speed or frame rate, even a 4 unit tile. The game runs physics in fixed steps at
+120 per second, so the result does not depend on the frame rate (a long hitch runs at most 30 steps, a quarter
+of a second). Positions are whole numbers of fixed point subunits, and a body is drawn at the whole world unit it
+is on, never between steps. A hidden solid or tile layer does not collide. A body placed overlapping a solid is
+pushed out by the shortest way.
+
+A body that goes past the bottom of the world has left it, and the When item leaves the world block runs
+once. The body stops where it is until a block moves it back. A plain body also leaves through the sides and
+the top of the world. For a Platformer controls body, the sides of the world act as walls and only the bottom is a
+pit.
+
+Each frame the game first steps the bodies, then runs the blocks, so a block can see that a body landed
+this frame; Set velocity and Jump take effect on the next step. On a Platformer controls body the stick decides
+the sideways speed, so Set velocity is mostly useful for its upward part, such as a spring; a plain body keeps
+the velocity it is given until it hits something. Physics has its own budget per scene: at most
+64 moving bodies and 128 solid items, each body at most 2048 units on each side. A scene over this is
+refused with a message saying which limit it hit.
+
 ### Budgets
 
-A scene with tilemaps or particles can draw at most 16000 quads in total, and a scene with tilemaps or sprite
+Budgets apply to each scene on its own. A scene with tilemaps or particles can draw at most 16000 quads in total, and a scene with tilemaps or sprite
 sheets can use at most 64 draw calls. Consecutive items that use the same picture with the same sampling are
 one draw call, so tile layers on one tileset cost one. A scene over either limit is refused with a message
 saying which limit it hit. The limits are worked out from the screen, not from the size of the map or the
@@ -289,6 +366,8 @@ struct Item {
     bool screenFixed = false; // stays at the same place on the screen as the camera moves
     bool pixelated = false; // drawn with nearest-neighbour sampling, on whole pixels
     bool flipped = false; // drawn mirrored left to right when the game starts
+    std::int32_t body = -1; // index into Bodies for a moving body
+    bool solid = false; // a wall or platform that moving bodies collide with
 };
 
 // Row by row, top row first, 4 bytes per pixel: red, green, blue, alpha, with alpha already applied.
@@ -323,6 +402,19 @@ struct Tilemap {
     std::uint32_t reservedQuads, firstSolid, solidCount;
 };
 
+// How a moving body behaves. gravityPercent, moveSpeed and jumpHeight are the numbers from scene.json.
+struct Body {
+    std::int32_t gravityPercent, moveSpeed, jumpHeight;
+    bool platformer;
+};
+
+// One scene of the game: which of Items are its own, its world and where its camera starts.
+struct SceneInfo {
+    std::uint32_t firstItem, itemCount;
+    float worldWidth, worldHeight, cameraStartX, cameraStartY;
+    std::array<float, 3> background;
+};
+
 inline constexpr float WorldWidth = 1920.0f;
 inline constexpr float WorldHeight = 1080.0f;
 inline constexpr float CameraStartX = 0.0f;
@@ -343,6 +435,14 @@ inline constexpr std::size_t TilemapCount = 0;
 inline constexpr std::array<Tilemap, 0> Tilemaps{};
 inline constexpr std::array<std::uint16_t, 0> SolidTiles{};
 extern const std::array<const std::int32_t*, TilemapCount> TilemapCells; // defined in src/GeneratedImages.cpp, columns * rows cells each
+inline constexpr std::size_t BodyCount = 0;
+inline constexpr std::array<Body, 0> Bodies{};
+inline constexpr std::size_t SolidItemCount = 0;
+inline constexpr std::size_t SceneCount = 1;
+inline constexpr std::size_t StartScene = 0;
+inline constexpr std::array<SceneInfo, 1> Scenes{{
+    {0, 4, 1920.0f, 1080.0f, 0.0f, 0.0f, {0.082353f, 0.109804f, 0.227451f}},
+}};
 inline constexpr std::array<Item, 4> Items{{
     {Kind::Rectangle, 120.0f, 300.0f, 160.0f, 160.0f, 1.0f, 0.823529f, 0.247059f, 0.0f, "", true},
     {Kind::Text, 400.0f, 96.0f, 636.0f, 84.0f, 0.952941f, 0.945098f, 0.886275f, 12.0f, "Hello PS5", false},
@@ -366,6 +466,13 @@ item points into `Sprites` and through it into `Animations` and `AnimationFrames
 `Tilemaps`, where `reservedQuads` is the most tiles of that map the screen can show, and `firstSolid` and
 `solidCount` give its slice of `SolidTiles`. Items that do not use these features keep the shorter lines
 shown above. A scene without tilemaps or sprites has empty tables.
+
+`Items` holds every scene's items in one list, in scene order, and every other table (`ParticleEffects`, `Sprites`,
+`Tilemaps`, `Bodies`) is numbered across the whole game, so a scene is just the slice of `Items` that `Scenes`
+gives it. `WorldWidth`, `WorldHeight`, `CameraStartX`, `CameraStartY` and `Background` repeat the start scene's
+values. An item with physics spells out every field and ends with its index into `Bodies` (or -1 for a solid
+item) and whether it is solid. `BodyCount` and `SolidItemCount` size the runtime's physics state before the first
+frame. A project with more than one scene also numbers its images and tilemap data across every scene.
 
 ## src/GeneratedImages
 
