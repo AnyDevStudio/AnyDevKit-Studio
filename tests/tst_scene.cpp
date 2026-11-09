@@ -163,6 +163,7 @@ struct Tilemap {
 struct Body {
     std::int32_t gravityPercent, moveSpeed, jumpHeight;
     bool platformer;
+    bool topDown = false;
 };
 
 // One scene of the game: which of Items are its own, its world and where its camera starts.

@@ -564,7 +564,7 @@ class TstBlocks : public QObject {
 
 private slots:
     void catalogDescribesEveryBlockOnce() {
-        QCOMPARE(blockCatalog().size(), 31);
+        QCOMPARE(blockCatalog().size(), 35);
         QSet<QString> names;
         QSet<QString> titles;
         for (const auto& info : blockCatalog()) {
@@ -574,9 +574,9 @@ private slots:
             titles.insert(info.title);
             QCOMPARE(blockInfo(info.type).jsonName, info.jsonName);
         }
-        QCOMPARE(names.size(), 31);
-        QCOMPARE(titles.size(), 31);
-        QCOMPARE(buttonCatalog().size(), 8);
+        QCOMPARE(names.size(), 35);
+        QCOMPARE(titles.size(), 35);
+        QCOMPARE(buttonCatalog().size(), 12);
         QCOMPARE(comparisonCatalog().size(), 6);
         QVERIFY(blockInfo(BlockType::EveryFrame).isEvent);
         QVERIFY(blockInfo(BlockType::IfVariable).holdsActions);

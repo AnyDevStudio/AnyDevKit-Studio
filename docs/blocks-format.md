@@ -86,9 +86,10 @@ no entry, and an entry whose `scene` is empty means the project's first scene, a
 | `whenItemLands`   | When item lands        | `item`                | when a moving body comes to rest on something, after being in the air |
 | `whenItemHitsSolid` | When item hits a solid | `item`              | when a moving body bumps into a solid or tile it was not already against |
 | `whenItemLeavesWorld` | When item leaves the world | `item`         | once when a moving body falls out of the world, for pits |
+| `whenButtonPressed` | When a button is pressed | `button`          | once each time the button goes down                   |
 
 `button` is one of `cross`, `circle`, `square`, `triangle`, `dpadUp`, `dpadDown`, `dpadLeft`,
-`dpadRight`. Every event needs an `actions` list, which may be empty.
+`dpadRight`, or `moveUp`, `moveDown`, `moveLeft`, `moveRight`, which are the left stick or the D-pad pushed that way. Every event needs an `actions` list, which may be empty.
 
 ### Actions
 
@@ -118,6 +119,9 @@ no entry, and an entry whose `scene` is empty means the project's first scene, a
 | `ifOnGround` | If item is on the ground | `item`, `actions` | runs `actions` when a moving body stands on something. The item must be a moving body |
 | `goToScene` | Go to scene | `scene` | after this frame's blocks, shows that scene from its start. Variables keep their values |
 | `restartScene` | Restart scene | | after this frame's blocks, shows this scene again from its start. Variables keep their values |
+| `ifItemDistance` | If distance between | `item`, `otherItem`, `comparison`, `value`, `actions` | runs `actions` when the distance between the two items' centers compares true to `value`, in world units. Hidden items are measured too |
+| `chaseItem` | Chase | `item`, `otherItem`, `value` | sets a moving body's velocity toward the other item at `value` units per second, 0 to 3000. It takes effect on the next physics step and lasts until something changes it. The item must be a moving body |
+| `putAtItem` | Put item | `item`, `otherItem`, `x`, `y` | puts the item at the other item's position plus `x` and `y` |
 
 `comparison` is one of `equal`, `notEqual`, `less`, `lessOrEqual`, `greater`, `greaterOrEqual`.
 

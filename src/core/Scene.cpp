@@ -386,6 +386,10 @@ QString parseItem(const QJsonValue& value, qsizetype index, SceneItem& item) {
             const auto platformer = object.value("platformer");
             if (!platformer.isUndefined() && !platformer.isBool()) return itemError(item, index, "platformer must be true or false.");
             item.platformer = platformer.toBool();
+            const auto topDown = object.value("topDown");
+            if (!topDown.isUndefined() && !topDown.isBool()) return itemError(item, index, "topDown must be true or false.");
+            item.topDown = topDown.toBool();
+            if (item.platformer && item.topDown) return itemError(item, index, "a moving body cannot use Platformer controls and Top-down controls together. Turn one of them off.");
         }
     }
 
@@ -413,6 +417,7 @@ QJsonObject itemToJson(const SceneItem& item) {
         if (item.physics == BodyPhysics) {
             object.insert("gravityScale", item.gravityScale);
             object.insert("platformer", item.platformer);
+            if (item.topDown) object.insert("topDown", true);
             object.insert("moveSpeed", item.moveSpeed);
             object.insert("jumpHeight", item.jumpHeight);
         }
@@ -1302,6 +1307,7 @@ struct Tilemap {
 struct Body {
     std::int32_t gravityPercent, moveSpeed, jumpHeight;
     bool platformer;
+    bool topDown = false;
 };
 
 // One scene of the game: which of Items are its own, its world and where its camera starts.
@@ -1345,7 +1351,7 @@ struct SceneInfo {
         if (item.physics == SolidPhysics) ++solidCount;
         if (item.physics != BodyPhysics) continue;
         ++bodyCount;
-        bodies += "    {" + QByteArray::number(item.gravityScale) + ", " + QByteArray::number(item.moveSpeed) + ", " + QByteArray::number(item.jumpHeight) + (item.platformer ? ", true" : ", false") + "},\n";
+        bodies += "    {" + QByteArray::number(item.gravityScale) + ", " + QByteArray::number(item.moveSpeed) + ", " + QByteArray::number(item.jumpHeight) + (item.platformer ? ", true" : ", false") + (item.topDown ? ", true" : "") + "},\n";
     }
     header += "inline constexpr std::size_t BodyCount = " + QByteArray::number(bodyCount) + ";\n";
     header += bodyCount == 0 ? QByteArray("inline constexpr std::array<Body, 0> Bodies{};\n") : "inline constexpr std::array<Body, " + QByteArray::number(bodyCount) + "> Bodies{{\n" + bodies + "}};\n";
@@ -1566,7 +1572,8 @@ bool sceneRuntimeNeedsUpdate(const QString& projectRoot, const Scene& scene) {
 bool sceneRuntimeLacksPhysics(const QString& projectRoot) {
     QFile file(QDir::cleanPath(QDir(projectRoot).absolutePath()) + "/include/Scene/SceneState.hpp");
     if (!file.open(QIODevice::ReadOnly)) return false;
-    return !file.readAll().contains("Scene/Physics2D.hpp");
+    const auto contents = file.readAll();
+    return !contents.contains("Scene/Physics2D.hpp") || !contents.contains("Pressed("); // older physics runtimes have no top-down blocks
 }
 
 bool sceneSetUsesPhysics(const SceneSet& set) {

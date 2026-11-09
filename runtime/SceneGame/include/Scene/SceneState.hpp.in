@@ -51,6 +51,7 @@ public:
     std::int32_t Variable(std::size_t variable) const;
     bool Touching(std::size_t first, std::size_t second) const; // hidden items touch nothing
     bool Held(std::uint32_t button) const;
+    bool Pressed(std::uint32_t button) const; // went down this frame
     // Sound and saving: each is safe when audio or save data is unavailable, and does nothing then.
     void PlaySound(std::size_t sound);
     void PlayMusic(std::size_t sound); // loops; playing the music already playing keeps its place
@@ -74,6 +75,9 @@ public:
     bool LeftWorld(std::size_t item) const; // left the world this frame
     bool OnGround(std::size_t item) const;
     void SetVelocity(std::size_t item, float x, float y); // units per second
+    float Distance(std::size_t first, std::size_t second) const; // center to center, hidden items included
+    void Chase(std::size_t item, std::size_t target, float speed); // a moving body heads for the target
+    void PutAt(std::size_t item, std::size_t target, float x, float y); // at the target's position plus x and y
     void Jump(std::size_t item);
     // Scenes change after the blocks of the frame have run. Variables keep their values.
     void GoToScene(std::size_t scene);
@@ -89,6 +93,7 @@ private:
     void clampToBounds(std::size_t item, Position& position) const; // the current scene's world, or the screen for a screen-fixed item
     void limitPosition(std::size_t item, Position& position) const;
     float drawnWidth(std::size_t item) const; // follows the current text of an item that shows variables
+    Position centerOf(std::size_t item) const;
     void rebuildText();
     // Allocated once in the constructor, so the frame loop never touches the heap. A scene with no
     // particles allocates nothing.
@@ -128,6 +133,7 @@ private:
     bool jumpPressPending = false;
     GeneratedLogic::Memory logicMemory{};
     std::uint32_t heldButtons = 0;
+    std::uint32_t pressedButtons = 0;
     std::array<std::int32_t, GeneratedVariables::VariableCount> variables = GeneratedVariables::InitialValues;
     // One buffer holding the characters of every text that shows variables, each at a fixed offset and
     // sized for its widest number before the first frame, so rebuilding them never touches the heap.

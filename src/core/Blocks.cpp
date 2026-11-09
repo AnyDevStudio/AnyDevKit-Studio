@@ -200,7 +200,7 @@ private:
     }
 
     static bool isBodyBlock(BlockType type) {
-        return type == BlockType::WhenItemLands || type == BlockType::WhenItemHitsSolid || type == BlockType::WhenItemLeavesWorld || type == BlockType::SetVelocity || type == BlockType::JumpItem || type == BlockType::IfOnGround;
+        return type == BlockType::WhenItemLands || type == BlockType::WhenItemHitsSolid || type == BlockType::WhenItemLeavesWorld || type == BlockType::SetVelocity || type == BlockType::JumpItem || type == BlockType::IfOnGround || type == BlockType::ChaseItem;
     }
 
     void checkScene(const Block& block) {
@@ -231,6 +231,10 @@ private:
         if (info.usesVariable) checkVariable(block);
         if (info.usesSound) checkSound(block);
         if (info.usesScene) checkScene(block);
+        if (block.type == BlockType::IfItemDistance && block.value < 0) report(block, QString("%1 needs a distance of 0 or more.").arg(label));
+        if (block.type == BlockType::ChaseItem && (block.value < 0 || block.value > MaximumChaseSpeed)) {
+            report(block, QString("%1 needs a speed from 0 to %2 units per second.").arg(label).arg(MaximumChaseSpeed));
+        }
         if (block.type == BlockType::SetVolume && (block.value < 0 || block.value > MaximumVolumePercent)) {
             report(block, QString("%1 needs a volume from 0 to %2 percent.").arg(label).arg(MaximumVolumePercent));
         }
@@ -301,7 +305,11 @@ bool isWorldBlock(BlockType type) {
 }
 
 bool isPhysicsBlock(BlockType type) {
-    return type == BlockType::WhenItemLands || type == BlockType::WhenItemHitsSolid || type == BlockType::WhenItemLeavesWorld || type == BlockType::SetVelocity || type == BlockType::JumpItem || type == BlockType::IfOnGround || type == BlockType::GoToScene || type == BlockType::RestartScene;
+    return type == BlockType::WhenItemLands || type == BlockType::WhenItemHitsSolid || type == BlockType::WhenItemLeavesWorld || type == BlockType::SetVelocity || type == BlockType::JumpItem || type == BlockType::IfOnGround || type == BlockType::GoToScene || type == BlockType::RestartScene || type == BlockType::WhenButtonPressed || type == BlockType::IfItemDistance || type == BlockType::ChaseItem || type == BlockType::PutAtItem;
+}
+
+bool usesStickButton(const Block& block) {
+    return blockInfo(block.type).usesButton && (block.button == ControllerButton::MoveUp || block.button == ControllerButton::MoveDown || block.button == ControllerButton::MoveLeft || block.button == ControllerButton::MoveRight);
 }
 
 struct Parsing {
@@ -511,6 +519,10 @@ QByteArray buttonConstant(ControllerButton button) {
     case ControllerButton::DpadDown: return "DpadDown";
     case ControllerButton::DpadLeft: return "DpadLeft";
     case ControllerButton::DpadRight: return "DpadRight";
+    case ControllerButton::MoveUp: return "MoveUp";
+    case ControllerButton::MoveDown: return "MoveDown";
+    case ControllerButton::MoveLeft: return "MoveLeft";
+    case ControllerButton::MoveRight: return "MoveRight";
     }
     return {};
 }
@@ -631,6 +643,17 @@ public:
         case BlockType::RestartScene:
             code += pad + "world.RestartScene();" + comment;
             return;
+        case BlockType::IfItemDistance:
+            code += pad + "if (world.Distance(" + index(block.item) + ", " + index(block.otherItem) + ") " + comparisonOperator(block.comparison) + ' ' + floatLiteral(block.value) + ") {" + comment;
+            actions(block.children, level + 1, code);
+            code += pad + "}\n";
+            return;
+        case BlockType::ChaseItem:
+            code += pad + "world.Chase(" + index(block.item) + ", " + index(block.otherItem) + ", " + floatLiteral(block.value) + ");" + comment;
+            return;
+        case BlockType::PutAtItem:
+            code += pad + "world.PutAt(" + index(block.item) + ", " + index(block.otherItem) + ", " + floatLiteral(block.x) + ", " + floatLiteral(block.y) + ");" + comment;
+            return;
         case BlockType::IfVariable:
             code += pad + "if (world.Variable(" + variable(block.variable) + ") " + comparisonOperator(block.comparison) + ' ' + QByteArray::number(block.value) + ") {" + comment;
             actions(block.children, level + 1, code);
@@ -638,6 +661,7 @@ public:
             return;
         case BlockType::WhenGameStarts:
         case BlockType::WhileButtonHeld:
+        case BlockType::WhenButtonPressed:
         case BlockType::EveryFrame:
         case BlockType::WhenItemsTouch:
         case BlockType::WhenItemLands:
@@ -653,6 +677,10 @@ public:
             actions(block.children, 1, code);
         } else if (block.type == BlockType::WhileButtonHeld) {
             code += "    if (world.Held(Buttons::" + buttonConstant(block.button) + ")) {\n";
+            actions(block.children, 2, code);
+            code += "    }\n";
+        } else if (block.type == BlockType::WhenButtonPressed) {
+            code += "    if (world.Pressed(Buttons::" + buttonConstant(block.button) + ")) {\n";
             actions(block.children, 2, code);
             code += "    }\n";
         } else if (block.type == BlockType::WhenItemsTouch) {
@@ -801,6 +829,10 @@ const QList<BlockInfo>& blockCatalog() {
         {BlockType::IfOnGround, "ifOnGround", "If item is on the ground",            false, true,  false, true,  false, false, false, false, false, false, false},
         {BlockType::GoToScene, "goToScene", "Go to scene",                           false, false, false, false, false, false, false, false, false, false, false, false, false, true},
         {BlockType::RestartScene, "restartScene", "Restart scene",                   false, false, false, false, false, false, false, false, false, false, false},
+        {BlockType::WhenButtonPressed, "whenButtonPressed", "When a button is pressed", true, true, true, false, false, false, false, false, false, false, false},
+        {BlockType::IfItemDistance, "ifItemDistance", "If distance between",         false, true,  false, true,  true,  false, false, true,  true,  false, false},
+        {BlockType::ChaseItem, "chaseItem", "Chase",                                 false, false, false, true,  true,  false, false, true,  false, false, false},
+        {BlockType::PutAtItem, "putAtItem", "Put item",                              false, false, false, true,  true,  true,  false, false, false, false, false},
     };
     return catalog;
 }
@@ -819,6 +851,10 @@ const QList<ButtonInfo>& buttonCatalog() {
         {ControllerButton::DpadDown, "dpadDown", "D-pad down"},
         {ControllerButton::DpadLeft, "dpadLeft", "D-pad left"},
         {ControllerButton::DpadRight, "dpadRight", "D-pad right"},
+        {ControllerButton::MoveUp, "moveUp", "Stick or D-pad up"},
+        {ControllerButton::MoveDown, "moveDown", "Stick or D-pad down"},
+        {ControllerButton::MoveLeft, "moveLeft", "Stick or D-pad left"},
+        {ControllerButton::MoveRight, "moveRight", "Stick or D-pad right"},
     };
     return catalog;
 }
@@ -1054,7 +1090,7 @@ QByteArray generateLogicHeader(const LogicProgram& program, const SceneSet& set)
             }
             generator.frameEvent(block, touchEvents, frameCode);
             if (block.type == BlockType::WhenItemsTouch) ++touchEvents;
-            if (block.type == BlockType::WhileButtonHeld) usesButtons = true;
+            if (block.type == BlockType::WhileButtonHeld || block.type == BlockType::WhenButtonPressed) usesButtons = true;
         }
         startCodes.append(startCode);
         frameCodes.append(frameCode);
@@ -1074,7 +1110,7 @@ bool programUsesWorldBlocks(const LogicProgram& program) {
 
 bool programUsesPhysicsBlocks(const LogicProgram& program) {
     const auto uses = [](const auto& self, const QList<Block>& blocks) -> bool {
-        return std::ranges::any_of(blocks, [&](const Block& block) { return isPhysicsBlock(block.type) || self(self, block.children); });
+        return std::ranges::any_of(blocks, [&](const Block& block) { return isPhysicsBlock(block.type) || usesStickButton(block) || self(self, block.children); });
     };
     if (uses(uses, program.events)) return true;
     return std::ranges::any_of(program.otherScenes, [&](const SceneLogic& other) { return uses(uses, other.events); });

@@ -98,11 +98,11 @@ QList<BlockField> blockFields(const BlockInfo& info) {
     if (info.usesScene) fields.append({"scene", "scene", ""});
     if (info.usesAnimation) fields.append({"animation", "animation", "plays"});
     if (info.usesFlipped) fields.append({"flipped", "flip", ""});
-    if (info.usesOtherItem) fields.append({"otherItem", "item", "and"});
+    if (info.usesOtherItem) fields.append({"otherItem", "item", info.type == BlockType::ChaseItem ? "toward" : info.type == BlockType::PutAtItem ? "at" : "and"});
     if (info.usesVariable) fields.append({"variable", "variable", ""});
     if (info.usesSound) fields.append({"sound", "sound", ""});
     if (info.usesComparison) fields.append({"comparison", "comparison", ""});
-    if (info.usesValue) fields.append({"value", "whole", ""});
+    if (info.usesValue) fields.append({"value", "whole", info.type == BlockType::ChaseItem ? "speed" : ""});
     if (info.usesPosition) {
         fields.append({"x", "number", "x"});
         fields.append({"y", "number", "y"});
@@ -113,7 +113,8 @@ QList<BlockField> blockFields(const BlockInfo& info) {
 
 QString blockCategory(const BlockInfo& info) {
     if (info.isEvent) return "events";
-    if (info.type == BlockType::SetVelocity || info.type == BlockType::JumpItem || info.type == BlockType::IfOnGround) return "physics";
+    if (info.type == BlockType::SetVelocity || info.type == BlockType::JumpItem || info.type == BlockType::IfOnGround || info.type == BlockType::ChaseItem) return "physics";
+    if (info.type == BlockType::IfItemDistance) return "movement";
     if (info.usesScene || info.type == BlockType::RestartScene) return "scenes";
     if (info.usesPosition) return "movement";
     if (info.usesVariable) return "variables";

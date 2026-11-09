@@ -85,6 +85,24 @@ SceneItem floorAt(double y) {
     return item;
 }
 
+SceneItem topDownHero() {
+    auto item = rectangle("hero", 100, 100, 64, 64);
+    item.physics = "body";
+    item.topDown = true;
+    return item;
+}
+
+Block between(const QString& id, BlockType type, const QString& item, const QString& other, int value, const QList<Block>& actions = {}) {
+    Block block;
+    block.id = id;
+    block.type = type;
+    block.item = item;
+    block.otherItem = other;
+    block.value = value;
+    block.children = actions;
+    return block;
+}
+
 Scene sceneNamed(const QString& id, const QString& name, const QList<SceneItem>& items) {
     Scene scene;
     scene.id = id;
@@ -685,6 +703,150 @@ private slots:
         QVERIFY(!go.isEmpty());
         QVERIFY(document.setField(go, "scene", "bonus"));
         QCOMPARE(document.program().events[0].children[0].scene, QString("bonus"));
+    }
+    void theTopDownBlocksAreInTheCatalog() {
+        for (const auto* name : {"whenButtonPressed", "ifItemDistance", "chaseItem", "putAtItem"}) QVERIFY2(findBlock(name), name);
+        QVERIFY(findBlock("whenButtonPressed")->isEvent);
+        QVERIFY(findBlock("whenButtonPressed")->usesButton);
+        QVERIFY(findBlock("ifItemDistance")->holdsActions);
+        QVERIFY(findBlock("ifItemDistance")->usesComparison);
+        QVERIFY(findBlock("chaseItem")->usesValue);
+        QVERIFY(findBlock("putAtItem")->usesPosition);
+        QStringList buttons;
+        for (const auto& button : buttonCatalog()) buttons << button.jsonName;
+        for (const auto* name : {"moveUp", "moveDown", "moveLeft", "moveRight"}) QVERIFY2(buttons.contains(name), name);
+    }
+
+    void theNewBlocksRoundTripThroughLogicJson() {
+        LogicProgram program;
+        program.variables = {{"near", 0}};
+        program.scene = "field";
+        auto press = eventBlock("press", BlockType::WhenButtonPressed);
+        press.button = ControllerButton::MoveLeft;
+        auto distance = between("d", BlockType::IfItemDistance, "mob", "hero", 150);
+        distance.comparison = VariableComparison::LessOrEqual;
+        distance.children = {setVariable("s", "near", 1), action("put", BlockType::PutAtItem, "flag", 10, -20)};
+        distance.children[1].otherItem = "hero";
+        press.children = {distance, between("c", BlockType::ChaseItem, "mob", "hero", 240)};
+        program.events = {press};
+        QTemporaryDir directory;
+        const auto path = directory.path() + "/logic.json";
+        QString error;
+        QVERIFY2(saveLogic(path, program, error), qPrintable(error));
+        const auto loaded = loadLogic(path);
+        QVERIFY2(loaded.program.has_value(), qPrintable(loaded.error));
+        const auto& event = loaded.program->events[0];
+        QCOMPARE(event.type, BlockType::WhenButtonPressed);
+        QCOMPARE(event.button, ControllerButton::MoveLeft);
+        QCOMPARE(event.children[0].value, 150);
+        QCOMPARE(event.children[0].otherItem, QString("hero"));
+        QCOMPARE(event.children[0].comparison, VariableComparison::LessOrEqual);
+        QCOMPARE(event.children[0].children[1].x, 10.0);
+        QCOMPARE(event.children[1].value, 240);
+    }
+
+    void chasingNeedsAMovingBodyAndASensibleNumber() {
+        auto scene = sceneNamed("field", "Field", {topDownHero(), rectangle("flag", 0, 0, 10, 10)});
+        LogicProgram program;
+        program.scene = "field";
+        program.events = {eventBlock("e", BlockType::EveryFrame, {}, {between("c", BlockType::ChaseItem, "flag", "hero", 100), between("n", BlockType::ChaseItem, "hero", "flag", -5), between("d", BlockType::IfItemDistance, "hero", "flag", -1)})};
+        const auto problems = validateLogic(program, scene);
+        QStringList ids;
+        for (const auto& problem : problems) ids << problem.blockId;
+        QVERIFY2(ids.contains("c"), "a rectangle with no physics cannot chase");
+        QVERIFY2(ids.contains("n"), "a chase speed cannot be negative");
+        QVERIFY2(ids.contains("d"), "a distance cannot be negative");
+    }
+
+    void aTopDownBodyWalksBothWaysStopsAtWallsAndNeverFalls() {
+        if (!hasPosixCompiler()) QSKIP("This compiles the runtime with a GCC style compiler.");
+        auto wall = rectangle("wall", 400, 0, 64, 1080);
+        wall.physics = "solid";
+        const auto set = setOf({sceneNamed("field", "Field", {topDownHero(), wall})}, "field");
+        const QByteArray body =
+            "    for (int frame = 0; frame < 60; ++frame) scene.Update(1.0 / 60.0, {0.0f, 0.0f}, 0);\n"
+            "    std::printf(\"idle=%.0f,%.0f\\n\", static_cast<double>(scene.Current()[0][0]), static_cast<double>(scene.Current()[0][1]));\n"
+            "    for (int frame = 0; frame < 30; ++frame) scene.Update(1.0 / 60.0, {0.0f, 1.0f}, 0);\n"
+            "    std::printf(\"down=%d\\n\", scene.Current()[0][1] > 350.0f && scene.Current()[0][0] == 100.0f ? 1 : 0);\n"
+            "    for (int frame = 0; frame < 90; ++frame) scene.Update(1.0 / 60.0, {1.0f, 0.0f}, 0);\n"
+            "    std::printf(\"wall=%.0f\\n\", static_cast<double>(scene.Current()[0][0]));\n"
+            "    for (int frame = 0; frame < 120; ++frame) scene.Update(1.0 / 60.0, {-1.0f, 0.0f}, 0);\n"
+            "    for (int frame = 0; frame < 120; ++frame) scene.Update(1.0 / 60.0, {0.0f, -1.0f}, 0);\n"
+            "    std::printf(\"corner=%.0f,%.0f\\n\", static_cast<double>(scene.Current()[0][0]), static_cast<double>(scene.Current()[0][1]));\n"
+            "    for (int frame = 0; frame < 240; ++frame) scene.Update(1.0 / 60.0, {0.0f, 1.0f}, 0);\n"
+            "    std::printf(\"floor=%.0f\\n\", static_cast<double>(scene.Current()[0][1]));\n";
+        LogicProgram program;
+        const auto result = runHarness(set, program, body);
+        QVERIFY2(result.built, qPrintable(result.output));
+        QCOMPARE(result.lines.value(0), QString("idle=100,100"));
+        QCOMPARE(result.lines.value(1), QString("down=1"));
+        QCOMPARE(result.lines.value(2), QString("wall=336"));
+        QCOMPARE(result.lines.value(3), QString("corner=0,0"));
+        QCOMPARE(result.lines.value(4), QString("floor=1016")); // 1080 - 64: the bottom of the world is a wall
+    }
+
+    void aPressRunsOnceAndTheStickCountsAsDirectionButtons() {
+        if (!hasPosixCompiler()) QSKIP("This compiles the runtime with a GCC style compiler.");
+        auto press = eventBlock("press", BlockType::WhenButtonPressed, {}, {changeVariable("a", "presses", 1)});
+        press.button = ControllerButton::Cross;
+        auto held = eventBlock("held", BlockType::WhileButtonHeld, {}, {changeVariable("b", "held", 1)});
+        held.button = ControllerButton::MoveRight;
+        LogicProgram program;
+        program.variables = {{"presses", 0}, {"held", 0}};
+        program.scene = "field";
+        program.events = {press, held};
+        const auto set = setOf({sceneNamed("field", "Field", {topDownHero()})}, "field");
+        const QByteArray body =
+            "    for (int frame = 0; frame < 5; ++frame) scene.Update(1.0 / 60.0, {0.0f, 0.0f}, Buttons::Cross);\n"
+            "    std::printf(\"one=%d\\n\", static_cast<int>(scene.Variable(0)));\n"
+            "    scene.Update(1.0 / 60.0, {0.0f, 0.0f}, 0);\n"
+            "    scene.Update(1.0 / 60.0, {0.0f, 0.0f}, Buttons::Cross);\n"
+            "    std::printf(\"two=%d\\n\", static_cast<int>(scene.Variable(0)));\n"
+            "    for (int frame = 0; frame < 4; ++frame) scene.Update(1.0 / 60.0, {1.0f, 0.0f}, 0);\n"
+            "    scene.Update(1.0 / 60.0, {-1.0f, 0.0f}, 0);\n"
+            "    std::printf(\"stick=%d\\n\", static_cast<int>(scene.Variable(1)));\n"
+            "    std::size_t before = allocations;\n"
+            "    for (int frame = 0; frame < 60; ++frame) scene.Update(1.0 / 60.0, {1.0f, 0.0f}, Buttons::Cross);\n"
+            "    std::printf(\"allocations=%zu\\n\", allocations - before);\n";
+        const auto result = runHarness(set, program, body);
+        QVERIFY2(result.built, qPrintable(result.output));
+        QCOMPARE(result.lines.value(0), QString("one=1"));
+        QCOMPARE(result.lines.value(1), QString("two=2"));
+        QCOMPARE(result.lines.value(2), QString("stick=4"));
+        QCOMPARE(result.lines.value(3), QString("allocations=0"));
+    }
+
+    void aMobChasesMeasuresItsDistanceAndAnItemCanBePutBesideAnother() {
+        if (!hasPosixCompiler()) QSKIP("This compiles the runtime with a GCC style compiler.");
+        auto mob = rectangle("mob", 800, 100, 64, 64);
+        mob.physics = "body";
+        mob.gravityScale = 0;
+        auto near = between("n", BlockType::IfItemDistance, "mob", "hero", 100, {setVariable("a", "near", 1)});
+        near.comparison = VariableComparison::LessOrEqual;
+        auto far = between("f", BlockType::IfItemDistance, "mob", "hero", 100, {setVariable("b", "far", 1)});
+        far.comparison = VariableComparison::Greater;
+        auto put = action("p", BlockType::PutAtItem, "flag", 10, -20);
+        put.otherItem = "hero";
+        LogicProgram program;
+        program.variables = {{"near", 0}, {"far", 0}};
+        program.scene = "field";
+        program.events = {eventBlock("e", BlockType::EveryFrame, {}, {between("c", BlockType::ChaseItem, "mob", "hero", 300), near, far, put})};
+        const auto set = setOf({sceneNamed("field", "Field", {topDownHero(), mob, rectangle("flag", 0, 0, 10, 10)})}, "field");
+        const QByteArray body =
+            "    for (int frame = 0; frame < 2; ++frame) scene.Update(1.0 / 60.0, {0.0f, 0.0f}, 0);\n"
+            "    std::printf(\"first=%d,%d\\n\", static_cast<int>(scene.Variable(0)), static_cast<int>(scene.Variable(1)));\n"
+            "    std::printf(\"flag=%.0f,%.0f\\n\", static_cast<double>(scene.Current()[2][0]), static_cast<double>(scene.Current()[2][1]));\n"
+            "    std::printf(\"closer=%d\\n\", scene.Current()[1][0] < 800.0f ? 1 : 0);\n"
+            "    for (int frame = 0; frame < 240; ++frame) scene.Update(1.0 / 60.0, {0.0f, 0.0f}, 0);\n"
+            "    std::printf(\"caught=%d\\n\", static_cast<int>(scene.Variable(0)));\n"
+            "    std::printf(\"settled=%d\\n\", scene.Current()[1][0] >= 95.0f && scene.Current()[1][0] <= 105.0f ? 1 : 0);\n";
+        const auto result = runHarness(set, program, body);
+        QVERIFY2(result.built, qPrintable(result.output));
+        QCOMPARE(result.lines.value(0), QString("first=0,1"));
+        QCOMPARE(result.lines.value(1), QString("flag=110,80"));
+        QCOMPARE(result.lines.value(2), QString("closer=1"));
+        QCOMPARE(result.lines.value(3), QString("caught=1"));
+        QCOMPARE(result.lines.value(4), QString("settled=1"));
     }
 };
 

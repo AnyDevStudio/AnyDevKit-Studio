@@ -99,6 +99,7 @@ struct SceneItem {
     QString physics;
     int gravityScale = DefaultGravityScale; // percent of normal gravity
     bool platformer = false;                // moves with the stick or D-pad, jumps on Cross
+    bool topDown = false;                   // walks in every direction with the stick or D-pad, with no gravity
     int moveSpeed = DefaultMoveSpeed;       // units per second
     int jumpHeight = DefaultJumpHeight;     // units
 };

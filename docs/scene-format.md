@@ -274,6 +274,7 @@ the inspector: None, Static solid (a wall or platform) or Moving body.
 | `platformer`   | `true` or `false`, body only             | moves left and right on the stick or D-pad and jumps on Cross |
 | `moveSpeed`    | whole number from 60 to 3000, body only  | how fast it runs, in units per second                      |
 | `jumpHeight`   | whole number from 16 to 2000, body only  | how high it jumps, in world units                          |
+| `topDown`      | `true`, body only, absent otherwise, not together with `platformer` | walks in every direction on the stick or D-pad at `moveSpeed`, with no gravity. Walls and the edges of the world stop it |
 
 A new body has friendly defaults: gravity 100%, speed 600, jump height 260 (about four 64 unit tiles). A
 platformer character gets coyote time (a jump still works for a tenth of a second after running off a
@@ -406,6 +407,7 @@ struct Tilemap {
 struct Body {
     std::int32_t gravityPercent, moveSpeed, jumpHeight;
     bool platformer;
+    bool topDown = false;
 };
 
 // One scene of the game: which of Items are its own, its world and where its camera starts.

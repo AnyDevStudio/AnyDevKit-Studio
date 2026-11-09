@@ -59,9 +59,15 @@ enum class BlockType {
     IfOnGround,  // also holds actions; the item must be a moving body
     GoToScene,
     RestartScene,
+    // Top-down games. WhenButtonPressed is an event, the others are actions.
+    WhenButtonPressed, // once each time the button goes down
+    IfItemDistance,    // also holds actions; center to center, in world units
+    ChaseItem,         // the item must be a moving body; sets its velocity toward the other item
+    PutAtItem,         // places the item at the other item's position plus x and y
 };
 
-enum class ControllerButton { Cross, Circle, Square, Triangle, DpadUp, DpadDown, DpadLeft, DpadRight };
+// MoveUp to MoveRight are the left stick or the D-pad, whichever is pushed that way.
+enum class ControllerButton { Cross, Circle, Square, Triangle, DpadUp, DpadDown, DpadLeft, DpadRight, MoveUp, MoveDown, MoveLeft, MoveRight };
 
 enum class VariableComparison { Equal, NotEqual, Less, LessOrEqual, Greater, GreaterOrEqual };
 
@@ -146,6 +152,7 @@ inline constexpr double MaximumLogicCoordinate = 1000000; // both for positions 
 inline constexpr int MaximumVariableValue = 1000000000; // the largest a block or an initial value can say
 inline constexpr int MaximumLogicVariables = 64;
 inline constexpr int MaximumVolumePercent = 100;
+inline constexpr int MaximumChaseSpeed = 3000; // units per second, the same as a moving body's top speed
 inline constexpr qint64 MaximumLogicFileBytes = 64 * 1024 * 1024; // every scene together
 
 // One thing to fix. blockId is empty when the problem is the program as a whole.

@@ -485,7 +485,7 @@ Block LogicDocument::makeBlock(const BlockInfo& info, const QString& id) const {
     block.id = id;
     block.type = info.type;
     if (info.usesItem && !scene.items.isEmpty()) block.item = scene.items.first().id;
-    if (info.usesItem && (info.type == BlockType::SetVelocity || info.type == BlockType::JumpItem || info.type == BlockType::IfOnGround || info.type == BlockType::WhenItemLands || info.type == BlockType::WhenItemHitsSolid || info.type == BlockType::WhenItemLeavesWorld)) {
+    if (info.usesItem && (info.type == BlockType::ChaseItem || info.type == BlockType::SetVelocity || info.type == BlockType::JumpItem || info.type == BlockType::IfOnGround || info.type == BlockType::WhenItemLands || info.type == BlockType::WhenItemHitsSolid || info.type == BlockType::WhenItemLeavesWorld)) {
         const auto body = std::ranges::find_if(scene.items, [](const SceneItem& item) { return item.physics == "body"; });
         if (body != scene.items.end()) block.item = body->id;
     }
@@ -504,8 +504,8 @@ Block LogicDocument::makeBlock(const BlockInfo& info, const QString& id) const {
     if (info.usesSound && !document.sounds.isEmpty()) block.sound = document.sounds.first().name;
     if (info.usesOtherItem && scene.items.size() > 1) block.otherItem = scene.items[1].id;
     if (info.usesPosition) block.x = 4;
-    if (info.usesValue) block.value = info.type == BlockType::SetVolume ? MaximumVolumePercent : 1;
-    if (info.usesComparison) block.comparison = VariableComparison::GreaterOrEqual;
+    if (info.usesValue) block.value = info.type == BlockType::SetVolume ? MaximumVolumePercent : info.type == BlockType::ChaseItem || info.type == BlockType::IfItemDistance ? 200 : 1;
+    if (info.usesComparison) block.comparison = info.type == BlockType::IfItemDistance ? VariableComparison::LessOrEqual : VariableComparison::GreaterOrEqual;
     return block;
 }
 

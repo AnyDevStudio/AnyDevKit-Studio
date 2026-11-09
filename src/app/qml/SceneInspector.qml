@@ -606,6 +606,24 @@ Flickable {
                 onToggledTo: (checked) => inspector.set("platformer", checked)
             }
 
+            ToggleRow {
+                Layout.fillWidth: true
+                visible: inspector.isBody
+                text: "Top-down controls"
+                checked: inspector.isBody && inspector.item.topDown
+                onToggledTo: (checked) => inspector.set("topDown", checked)
+            }
+
+            Text {
+                Layout.fillWidth: true
+                visible: inspector.isBody && inspector.item.topDown
+                text: "Walks in every direction on the stick or D-pad. Walls stop it and gravity is off."
+                color: Theme.muted
+                wrapMode: Text.WordWrap
+                font.family: Theme.body
+                font.pixelSize: 13
+            }
+
             Text {
                 Layout.fillWidth: true
                 visible: inspector.isBody && inspector.item.platformer
@@ -618,7 +636,7 @@ Flickable {
 
             SliderRow {
                 Layout.fillWidth: true
-                visible: inspector.isBody && inspector.item.platformer
+                visible: inspector.isBody && (inspector.item.platformer || inspector.item.topDown)
                 label: "Speed"
                 from: 60
                 to: 3000

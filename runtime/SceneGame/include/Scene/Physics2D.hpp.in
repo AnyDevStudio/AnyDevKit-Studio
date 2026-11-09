@@ -101,6 +101,7 @@ struct BodyConfig {
     bool platformer;
     std::int32_t moveSpeed;  // units per second
     std::int32_t jumpHeight; // units
+    bool topDown = false;    // walks on both axes, with no gravity, and the world's edges are walls
 };
 
 struct Body {
@@ -128,7 +129,7 @@ constexpr Body MakeBody(const BodyConfig& config, std::int64_t x, std::int64_t y
     body.y = y;
     body.width = width;
     body.height = height;
-    body.gravityStep = GravityStepFor(config.gravityPercent);
+    body.gravityStep = config.topDown ? 0 : GravityStepFor(config.gravityPercent);
     body.jumpStep = JumpStepFor(config.jumpHeight, body.gravityStep);
     body.moveStep = ToStep(config.moveSpeed);
     body.coyote = CoyoteSteps + 1;
@@ -161,6 +162,8 @@ struct Input {
     std::int32_t moveX = 0; // -1000 full left to 1000 full right
     bool jumpHeld = false;
     bool jumpPressed = false; // became held this frame
+    std::int32_t directionX = 0; // the stick or D-pad, -1000 to 1000, for top-down bodies
+    std::int32_t directionY = 0;
 };
 
 // Turns frame times into a whole number of fixed steps, carrying the remainder to the next frame.
@@ -327,6 +330,12 @@ inline void StepBody(const WorldView& world, Body& body, const Input& input) {
         if (input.jumpPressed) body.jumpBuffer = JumpBufferSteps;
     }
 
+    if (body.config.topDown) {
+        body.velocityX = static_cast<std::int32_t>(static_cast<std::int64_t>(input.directionX) * body.moveStep / 1000);
+        body.velocityY = static_cast<std::int32_t>(static_cast<std::int64_t>(input.directionY) * body.moveStep / 1000);
+        body.jumpRequested = false;
+    }
+
     const bool buttonJump = body.jumpBuffer > 0;
     const bool canJump = body.grounded || body.coyote <= CoyoteSteps;
     if ((buttonJump || body.jumpRequested) && canJump) {
@@ -361,7 +370,7 @@ inline void StepBody(const WorldView& world, Body& body, const Input& input) {
             body.velocityX = 0;
         }
     }
-    if (body.config.platformer) {
+    if (body.config.platformer || body.config.topDown) {
         // The world's sides act as walls for a player character. They are not solids, so no hit is reported.
         const auto clampedX = std::clamp<std::int64_t>(body.x, 0, std::max<std::int64_t>(world.width - body.width, 0));
         if (clampedX != body.x) {
@@ -378,6 +387,13 @@ inline void StepBody(const WorldView& world, Body& body, const Input& input) {
         if (blocked) {
             if (body.velocityY > 0) landedOnFloor = true;
             else body.touchingTop = true;
+            body.velocityY = 0;
+        }
+    }
+    if (body.config.topDown) {
+        const auto clampedY = std::clamp<std::int64_t>(body.y, 0, std::max<std::int64_t>(world.height - body.height, 0));
+        if (clampedY != body.y) {
+            body.y = clampedY;
             body.velocityY = 0;
         }
     }
@@ -411,7 +427,7 @@ inline void StepBody(const WorldView& world, Body& body, const Input& input) {
     const auto top = body.y;
     const auto bottom = body.y + body.height;
     const bool below = top >= world.height;
-    const bool beyondSidesOrAbove = !body.config.platformer && (left >= world.width || right <= 0 || bottom <= 0);
+    const bool beyondSidesOrAbove = !body.config.platformer && !body.config.topDown && (left >= world.width || right <= 0 || bottom <= 0);
     if (below || beyondSidesOrAbove) {
         body.outside = true;
         body.leftWorld = true;

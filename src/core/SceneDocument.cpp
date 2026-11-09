@@ -310,6 +310,7 @@ QVariantMap SceneDocument::selected() const {
         {"physics", item.physics},
         {"gravityScale", item.gravityScale},
         {"platformer", item.platformer},
+        {"topDown", item.topDown},
         {"moveSpeed", item.moveSpeed},
         {"jumpHeight", item.jumpHeight},
         {"preset", item.preset},
@@ -980,6 +981,10 @@ bool SceneDocument::setItemValue(int index, const QString& property, const QVari
         if (!item.physics.isEmpty()) item.controllable = false;
     } else if (property == "platformer") {
         item.platformer = value.toBool();
+        if (item.platformer) item.topDown = false;
+    } else if (property == "topDown") {
+        item.topDown = value.toBool();
+        if (item.topDown) item.platformer = false;
     } else if (physicsNumbers.contains(property)) {
         bool isNumber = false;
         const auto number = value.toDouble(&isNumber);

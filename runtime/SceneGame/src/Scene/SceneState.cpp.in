@@ -1,6 +1,7 @@
 #include "Scene/SceneState.hpp"
 #include "Input/Buttons.hpp"
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <limits>
 #include <span>
@@ -9,6 +10,16 @@ namespace {
 
 constexpr double UnitsPerSecond = 600.0;
 constexpr float LogicWorldLimit = 1000000.0f;
+constexpr float DirectionThreshold = 0.25f;
+
+std::uint32_t DirectionButtons(float x, float y) {
+    std::uint32_t buttons = 0;
+    if (y < -DirectionThreshold) buttons |= Buttons::MoveUp;
+    if (y > DirectionThreshold) buttons |= Buttons::MoveDown;
+    if (x < -DirectionThreshold) buttons |= Buttons::MoveLeft;
+    if (x > DirectionThreshold) buttons |= Buttons::MoveRight;
+    return buttons;
+}
 
 // For each item, its place in GeneratedVariables::BoundTexts, or -1 for an item that shows no variables.
 constexpr auto BindingOfItem = [] {
@@ -145,7 +156,7 @@ void SceneState::enterScene(std::size_t scene) {
             if (item.body >= 0) {
                 const auto bodyIndex = static_cast<std::size_t>(item.body);
                 const auto& settings = GeneratedScene::Bodies[bodyIndex];
-                bodies[bodyIndex] = Physics2D::MakeBody({settings.gravityPercent, settings.platformer, settings.moveSpeed, settings.jumpHeight}, FixedOf(item.x), FixedOf(item.y), FixedOf(item.width), FixedOf(item.height));
+                bodies[bodyIndex] = Physics2D::MakeBody({settings.gravityPercent, settings.platformer, settings.moveSpeed, settings.jumpHeight, settings.topDown}, FixedOf(item.x), FixedOf(item.y), FixedOf(item.width), FixedOf(item.height));
                 syncedPositions[bodyIndex] = positions[index];
             }
         }
@@ -177,7 +188,9 @@ void SceneState::Update(double seconds, Position direction, std::uint32_t button
             clampToBounds(index, positions[index]);
         }
     }
-    heldButtons = buttons;
+    const auto allButtons = buttons | DirectionButtons(direction[0], direction[1]);
+    pressedButtons = allButtons & ~heldButtons;
+    heldButtons = allButtons;
     stepPhysics(seconds, direction, buttons);
     GeneratedLogic::OnSceneFrame(*this, logicMemory, currentScene);
     clearBodyEvents();
@@ -213,6 +226,31 @@ bool SceneState::OnGround(std::size_t item) const { const auto* body = bodyOf(it
 
 void SceneState::SetVelocity(std::size_t item, float x, float y) {
     if (auto* body = bodyOf(item)) Physics2D::SetVelocity(*body, static_cast<std::int64_t>(x), static_cast<std::int64_t>(y));
+}
+
+SceneState::Position SceneState::centerOf(std::size_t item) const {
+    return {positions[item][0] + drawnWidth(item) / 2.0f, positions[item][1] + GeneratedScene::Items[item].height / 2.0f};
+}
+
+float SceneState::Distance(std::size_t first, std::size_t second) const {
+    const auto [ax, ay] = centerOf(first);
+    const auto [bx, by] = centerOf(second);
+    return std::hypot(bx - ax, by - ay);
+}
+
+void SceneState::Chase(std::size_t item, std::size_t target, float speed) {
+    const auto [ax, ay] = centerOf(item);
+    const auto [bx, by] = centerOf(target);
+    const auto length = std::hypot(bx - ax, by - ay);
+    if (length < 1.0f) {
+        SetVelocity(item, 0.0f, 0.0f);
+        return;
+    }
+    SetVelocity(item, (bx - ax) / length * speed, (by - ay) / length * speed);
+}
+
+void SceneState::PutAt(std::size_t item, std::size_t target, float x, float y) {
+    SetPosition(item, positions[target][0] + x, positions[target][1] + y);
 }
 
 void SceneState::Jump(std::size_t item) {
@@ -276,7 +314,7 @@ void SceneState::stepPhysics([[maybe_unused]] double seconds, [[maybe_unused]] P
         const Physics2D::WorldView view{std::span(bodies).subspan(firstBody, bodyCount), std::span(solidBoxes).first(solidCount), std::span(tileLayers).first(layerCount), FixedOf(info.worldWidth), FixedOf(info.worldHeight)};
         const auto steps = physicsClock.StepsFor(seconds);
         for (int step = 0; step < steps; ++step) {
-            Physics2D::Step(view, {move, jumpHeld, jumpPressPending});
+            Physics2D::Step(view, {move, jumpHeld, jumpPressPending, static_cast<std::int32_t>(direction[0] * 1000.0f), static_cast<std::int32_t>(direction[1] * 1000.0f)});
             jumpPressPending = false;
         }
 
@@ -435,6 +473,7 @@ bool SceneState::Touching(std::size_t first, std::size_t second) const {
 }
 
 bool SceneState::Held(std::uint32_t button) const { return (heldButtons & button) != 0; }
+bool SceneState::Pressed(std::uint32_t button) const { return (pressedButtons & button) != 0; }
 
 void SceneState::clampToBounds(std::size_t item, Position& position) const {
     const auto& scene = GeneratedScene::Items[item];
