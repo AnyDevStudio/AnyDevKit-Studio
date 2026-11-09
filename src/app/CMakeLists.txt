@@ -49,7 +49,7 @@ qt_add_resources(AnyDevKitStudio "scene_runtime"
     FILES ${scene_runtime_files}
 )
 
-target_link_libraries(AnyDevKitStudio PRIVATE studio_core Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickControls2)
+target_link_libraries(AnyDevKitStudio PRIVATE studio_core studio_export Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickControls2)
 
 target_compile_definitions(AnyDevKitStudio PRIVATE PROJECT_VERSION_TEXT="${PROJECT_VERSION}")
 

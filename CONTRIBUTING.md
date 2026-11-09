@@ -18,6 +18,8 @@ ctest --test-dir build --output-on-failure
 
 - `src/core`: projects and builds. It uses only Qt Core and has no interface code, so it can be
   tested without a window. Behaviour changes here need a test in `tests/tst_core.cpp`.
+- `src/export`: turns a scene into the project's generated files. It decodes images, so unlike
+  `src/core` it uses Qt Gui. Behaviour changes need a test in `tests/tst_scene_export.cpp`.
 - `src/app`: the application and the bridge between C++ and QML.
 - `src/app/qml`: the interface. Colors, fonts and motion timings live in `Theme.qml`.
 - `runtime/SceneGame`: the PS5 game code Studio adds to a project. It compiles the header exported

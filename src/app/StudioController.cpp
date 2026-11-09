@@ -1,5 +1,7 @@
 #include "StudioController.h"
 
+#include "SceneExport.h"
+
 #include <QClipboard>
 #include <QDesktopServices>
 #include <QDir>
@@ -8,7 +10,6 @@
 #include <QLocale>
 #include <QProcess>
 #include <QProcessEnvironment>
-#include <QSaveFile>
 #include <QSettings>
 
 #include <algorithm>
@@ -81,11 +82,10 @@ void StudioController::refreshFiles() {
 
 bool StudioController::exportScene() {
     if (!sceneDocument.isLoaded()) return true;
-    const auto header = generateSceneHeader(sceneDocument.scene());
-    QSaveFile file(project->root + "/src/GeneratedScene.hpp");
-    if (!header.isEmpty() && file.open(QIODevice::WriteOnly) && file.write(header) == header.size() && file.commit()) return true;
+    QString problem;
+    if (Studio::exportScene(project->root, sceneDocument.scene(), problem)) return true;
     state = "failed";
-    message = "The scene could not be written to src/GeneratedScene.hpp. Check the scene for problems and try again.";
+    message = problem;
     emit buildChanged();
     return false;
 }
