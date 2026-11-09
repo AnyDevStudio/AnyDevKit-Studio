@@ -22,6 +22,7 @@ namespace {
 
 constexpr int MaximumLogLines = 20000;
 constexpr auto SdkRootSetting = "adk/sdkRoot";
+constexpr auto ProjectsFolderSetting = "newGame/projectsFolder";
 constexpr auto DependencyRootSetting = "adk/dependencyRoot";
 
 }
@@ -318,7 +319,14 @@ QString StudioController::defaultProjectType() const {
 }
 
 QString StudioController::gameNameProblem(const QString& name, const QString& noun) const { return validateGameName(name, noun); }
-QString StudioController::parentFolderProblem(const QString& path, const QString& noun) const { return validateParentDirectory(path, noun); }
+QString StudioController::projectsFolder() const {
+    return QSettings().value(ProjectsFolderSetting, defaultProjectsFolder(QDir::homePath())).toString();
+}
+
+QString StudioController::parentFolderProblem(const QString& path, const QString& noun) const {
+    // The default folder is created with the first project.
+    return path == defaultProjectsFolder(QDir::homePath()) ? QString() : validateParentDirectory(path, noun);
+}
 QString StudioController::sdkFolderProblem(const QString& path) const { return validateSdkRoot(path); }
 QString StudioController::dependencyFolderProblem(const QString& path) const { return validateDependencyRoot(path); }
 QString StudioController::localPath(const QUrl& folder) const { return folder.toLocalFile(); }
@@ -358,9 +366,11 @@ void StudioController::createGame(const QString& name, const QString& parentFold
     // Remembered before the checks below: folders that are right stay right even if the name is not.
     rememberSdkRoot(sdkFolder);
     rememberDependencyRoot(dependencyFolder);
+    if (parentFolder == defaultProjectsFolder(QDir::homePath())) QDir().mkpath(parentFolder);
     const auto problem = validateNewGame(request);
     setNewGameError(problem);
     if (!problem.isEmpty()) return;
+    QSettings().setValue(ProjectsFolderSetting, parentFolder);
 
     pendingGame = request;
     gameCreatorOutput.clear();

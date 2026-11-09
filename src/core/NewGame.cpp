@@ -96,6 +96,10 @@ QString openingTab(ProjectType type) {
     return type == ProjectType::CodeOnly ? "build" : "scene";
 }
 
+QString defaultProjectsFolder(const QString& homeFolder) {
+    return homeFolder + "/Documents/AnyDevKit Projects";
+}
+
 QString validateGameName(const QString& name, const QString& noun) {
     if (name.isEmpty()) return QString("Give your %1 a name.").arg(noun);
     if (name.size() > MaximumNameLength) return QString("That name is %1 characters long. Use %2 or fewer.").arg(name.size()).arg(MaximumNameLength);

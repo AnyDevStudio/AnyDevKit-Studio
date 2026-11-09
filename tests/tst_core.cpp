@@ -260,6 +260,10 @@ private slots:
         QCOMPARE(launch.arguments, QStringList({"-a", "/Applications/Visual Studio Code.app", "/game", "/game/a.cpp"}));
     }
 
+    void newProjectsDefaultToAFolderInDocuments() {
+        QCOMPARE(defaultProjectsFolder("/home/ada"), QString("/home/ada/Documents/AnyDevKit Projects"));
+    }
+
     void runsStepsAndForwardsOutput() {
         QTemporaryDir directory;
         BuildRunner runner;

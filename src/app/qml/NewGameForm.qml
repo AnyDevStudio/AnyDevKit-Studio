@@ -39,7 +39,7 @@ Item {
         choosingType = true
         selectedType = studio.defaultProjectType
         nameField.setText("")
-        parentField.setText("")
+        parentField.setText(studio.projectsFolder())
         sdkField.setText(studio.sdkRoot)
         dependencyField.setText(studio.dependencyRoot)
         studio.clearNewGameError()
