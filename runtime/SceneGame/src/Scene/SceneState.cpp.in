@@ -26,7 +26,33 @@ SceneState::SceneState(int width, int height) : stageWidth(static_cast<float>(wi
         ++position;
     }
     visible.fill(true);
+    startParticles();
     GeneratedLogic::OnStart(*this);
+}
+
+void SceneState::startParticles() {
+    if constexpr (GeneratedScene::ParticleEffectCount != 0) {
+        particleWorld = std::make_unique<ParticleWorld>();
+        std::size_t offset = 0;
+        const auto& background = GeneratedScene::Background;
+        for (const auto& item : GeneratedScene::Items) {
+            if (item.kind != GeneratedScene::Kind::Particles) continue;
+            const auto& effect = GeneratedScene::ParticleEffects[static_cast<std::size_t>(item.particles)];
+            const Particles::Effect settings{static_cast<Particles::Preset>(effect.preset), static_cast<Particles::Palette>(effect.palette), effect.amount, effect.seed, effect.spread, effect.speed, effect.gravity, effect.pixelSize, effect.looping};
+            const auto pool = std::span(particleWorld->pool).subspan(offset, effect.amount);
+            const auto quads = std::span(particleWorld->quads).subspan(offset, effect.amount);
+            particleWorld->emitters[static_cast<std::size_t>(item.particles)].Reset(settings, {item.x, item.y, item.width, item.height}, {item.red, item.green, item.blue}, {background[0], background[1], background[2]}, pool, quads);
+            offset += effect.amount;
+        }
+    }
+}
+
+Particles::Emitter* SceneState::emitterFor(std::size_t item) {
+    if constexpr (GeneratedScene::ParticleEffectCount != 0) {
+        const auto& scene = GeneratedScene::Items[item];
+        if (scene.kind == GeneratedScene::Kind::Particles) return &particleWorld->emitters[static_cast<std::size_t>(scene.particles)];
+    }
+    return nullptr;
 }
 
 void SceneState::Update(double seconds, Position direction, std::uint32_t buttons) {
@@ -42,6 +68,12 @@ void SceneState::Update(double seconds, Position direction, std::uint32_t button
     }
     heldButtons = buttons;
     GeneratedLogic::OnFrame(*this, logicMemory);
+    for (std::size_t item = 0; item < GeneratedScene::Items.size(); ++item) {
+        if (auto* emitter = emitterFor(item)) {
+            emitter->SetPosition(positions[item][0], positions[item][1]);
+            emitter->Update(seconds);
+        }
+    }
 }
 
 const SceneState::Positions& SceneState::Current() const { return positions; }
@@ -62,9 +94,31 @@ void SceneState::SetPosition(std::size_t item, float x, float y) {
     positions[item] = position;
 }
 
-void SceneState::SetVisible(std::size_t item, bool value) { visible[item] = value; }
+void SceneState::SetVisible(std::size_t item, bool value) {
+    visible[item] = value;
+    if (auto* emitter = emitterFor(item)) emitter->SetVisible(value);
+}
 
-void SceneState::SetColor(std::size_t item, float red, float green, float blue) { colors[item] = {red, green, blue}; }
+void SceneState::SetColor(std::size_t item, float red, float green, float blue) {
+    colors[item] = {red, green, blue};
+    if (auto* emitter = emitterFor(item)) emitter->SetBaseColor({red, green, blue});
+}
+
+void SceneState::BurstParticles(std::size_t item) {
+    if (auto* emitter = emitterFor(item)) emitter->Burst();
+}
+
+void SceneState::AwaitBurst(std::size_t item) {
+    if (auto* emitter = emitterFor(item)) emitter->AwaitBurst();
+}
+
+std::span<const Particles::Quad> SceneState::ParticleQuads(std::size_t item) const {
+    if constexpr (GeneratedScene::ParticleEffectCount != 0) {
+        const auto& scene = GeneratedScene::Items[item];
+        if (scene.kind == GeneratedScene::Kind::Particles) return particleWorld->emitters[static_cast<std::size_t>(scene.particles)].Quads();
+    }
+    return {};
+}
 
 void SceneState::AddScore(std::int32_t amount) {
     const auto total = static_cast<std::int64_t>(score) + amount;

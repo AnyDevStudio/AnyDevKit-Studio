@@ -34,9 +34,17 @@ struct Run {
     std::int32_t image;
 };
 
+// A particles item reserves one quad per particle it can ever show, so the budget is fixed before
+// the first frame.
+consteval std::size_t itemFrames(const GeneratedScene::Item& item) {
+    if (item.kind == GeneratedScene::Kind::Text) return item.text.size();
+    if (item.kind == GeneratedScene::Kind::Particles) return GeneratedScene::ParticleEffects[static_cast<std::size_t>(item.particles)].amount;
+    return 1;
+}
+
 consteval std::size_t countFrames() {
     std::size_t count = 1;
-    for (const auto& item : GeneratedScene::Items) count += item.kind == GeneratedScene::Kind::Text ? item.text.size() : 1;
+    for (const auto& item : GeneratedScene::Items) count += itemFrames(item);
     return count;
 }
 
@@ -70,7 +78,7 @@ consteval std::array<Run, RunCount> buildRuns() {
             frame += 1;
             open = {frame, 0, -1};
         } else {
-            const std::size_t frames = item.kind == GeneratedScene::Kind::Text ? item.text.size() : 1;
+            const std::size_t frames = itemFrames(item);
             open.count += frames;
             frame += frames;
         }
@@ -157,6 +165,10 @@ Renderer::Renderer(int width, int height) : memory(requiredMemory(), 0x240000000
 
         for (const auto& item : GeneratedScene::Items) {
             const std::array color{item.red, item.green, item.blue, 1.0f};
+            if (item.kind == GeneratedScene::Kind::Particles) {
+                next += GeneratedScene::ParticleEffects[static_cast<std::size_t>(item.particles)].amount;
+                continue;
+            }
             if (item.kind != GeneratedScene::Kind::Text) {
                 frames[next++].color = color;
                 continue;
@@ -271,11 +283,30 @@ void Renderer::Draw(Display& display, const SceneState& scene) {
     auto tint = scene.CurrentColors().begin();
     auto shown = scene.CurrentVisibility().begin();
 
+    std::size_t itemIndex = 0;
     for (const auto& item : GeneratedScene::Items) {
         const auto [x, y] = *position++;
         const auto [red, green, blue] = *tint++;
         const std::array color{red, green, blue, 1.0f};
         const bool visible = *shown++;
+        if (item.kind == GeneratedScene::Kind::Particles) {
+            // The solid shader draws these quads like any other item's, in list order. The unused
+            // part of the budget is given no area, as a hidden item is.
+            const auto quads = scene.ParticleQuads(itemIndex);
+            const auto capacity = GeneratedScene::ParticleEffects[static_cast<std::size_t>(item.particles)].amount;
+            for (std::size_t index = 0; index < capacity; ++index, ++next) {
+                if (index < quads.size()) {
+                    const auto& quad = quads[index];
+                    frames[next].rectangle = {quad.x, quad.y, quad.width, quad.height};
+                    frames[next].color = {quad.color.red, quad.color.green, quad.color.blue, 1.0f};
+                } else {
+                    frames[next].rectangle = HiddenRectangle;
+                }
+            }
+            ++itemIndex;
+            continue;
+        }
+        ++itemIndex;
         if (item.kind != GeneratedScene::Kind::Text) {
             frames[next].color = color;
             frames[next++].rectangle = visible ? std::array{x, y, item.width, item.height} : HiddenRectangle;
