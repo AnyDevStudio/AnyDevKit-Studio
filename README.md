@@ -23,13 +23,16 @@ Drag shapes and text onto the stage, press one button, and the same scene runs a
 
 | Stage | Goal | State |
 |---|---|---|
-| Project workspace | Open an `adk init` project and see its files and PS5 metadata | Working |
+| Project workspace | Start a new game or open an `adk init` project | Working |
 | One button build | Configure, compile and create a PS5 package with a live log | Working |
 | Your code editor | Open code in VS Code, Visual Studio, Cursor, Xcode, CLion, Sublime Text, Zed or Qt Creator | Working |
-| Drag and drop scene | Place shapes and text on a 16:9 stage, resize, undo, autosave | Working |
-| Game runtime | Draws the scene on AGC, the PS5 graphics API, with controller movement | Runs in AnyPS5, not yet on a console |
-| Images and sound | Add your own pictures and audio to a scene | Planned |
-| Behaviours | Ready-made actions, then game logic in Lua | Planned |
+| Game page | Set the name, icon and home screen background | Working |
+| Drag and drop scene | Place shapes, text and images on a 16:9 stage, resize, undo, autosave | Working |
+| Logic blocks | Snap together events and actions without writing code | Working in Studio, builds for PS5 |
+| Particles | Fireworks, fountains, sparks, snow and rain | Working in Studio, builds for PS5 |
+| Game runtime | Draws the scene on AGC, the PS5 graphics API, with controller movement | Shapes and text run in AnyPS5, not yet on a console |
+| Image drawing | Textured images in the game | Builds for PS5, not yet seen running |
+| Sound | Music and effects | Planned |
 | Guided setup | Install AnyDevKit and its tools from inside Studio | Planned |
 | Preview | Run the project on the developer's computer without a console | Planned |
 
