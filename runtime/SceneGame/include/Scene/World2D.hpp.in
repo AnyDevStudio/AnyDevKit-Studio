@@ -36,6 +36,69 @@ constexpr Point FollowCamera(FollowRect item, float worldWidth, float worldHeigh
     return ClampCamera({item.x + item.width / 2.0f - ScreenWidth / 2.0f, item.y + item.height / 2.0f - ScreenHeight / 2.0f}, worldWidth, worldHeight);
 }
 
+// A tilted camera: the 2D world is shown as a ground plane leaning away from the viewer, while the game itself
+// stays 2D. Everything here is a pure function of where a thing is, so positions, physics and blocks never change.
+inline constexpr float TiltAnchorY = 640.0f;    // where the middle of the camera lands on the screen
+inline constexpr std::size_t TiltStrips = 270;  // a flat picture is drawn as this many thin rows
+inline constexpr float TiltStripHeight = ScreenHeight / static_cast<float>(TiltStrips);
+
+struct TiltView {
+    float distance, squash, centerX, centerY;
+};
+
+constexpr TiltView MakeTiltView(float percent, Point camera) {
+    const float strength = percent / 100.0f;
+    return {ScreenHeight / strength, 1.0f - strength * 0.4f, camera.x + ScreenWidth / 2.0f, camera.y + ScreenHeight / 2.0f};
+}
+
+constexpr float TiltOffset(const TiltView& view, float worldY) { return std::min(worldY - view.centerY, view.distance * 0.85f); }
+
+constexpr float TiltScale(const TiltView& view, float worldY) { return view.distance / (view.distance - TiltOffset(view, worldY)); }
+
+constexpr Point TiltProject(const TiltView& view, float x, float y) {
+    const float scale = TiltScale(view, y);
+    return {ScreenWidth / 2.0f + (x - view.centerX) * scale, TiltAnchorY + TiltOffset(view, y) * scale * view.squash};
+}
+
+// The world row a screen row shows. The inverse of TiltProject's vertical part.
+constexpr float TiltWorldY(const TiltView& view, float screenY) {
+    const float offset = (screenY - TiltAnchorY) / view.squash;
+    return view.centerY + offset * view.distance / (view.distance + offset);
+}
+
+struct GroundStrip {
+    float x, y, width, height, v0, v1;
+};
+
+// A flat picture as thin rows, each as wide as the ground is at that depth. Thin rows stand in for true perspective
+// texturing, so ordinary quads are all it takes. Returns how many rows it emitted, at most TiltStrips.
+template <typename Emit>
+constexpr std::size_t EmitTiltedGround(const TiltView& view, float x, float y, float width, float height, Emit&& emit) {
+    std::size_t emitted = 0;
+    for (std::size_t row = 0; row < TiltStrips; ++row) {
+        const float screenTop = static_cast<float>(row) * TiltStripHeight;
+        const float top = std::max(TiltWorldY(view, screenTop), y);
+        const float bottom = std::min(TiltWorldY(view, screenTop + TiltStripHeight), y + height);
+        if (bottom <= top) continue;
+        const float scale = TiltScale(view, (top + bottom) / 2.0f);
+        const float first = TiltProject(view, x, top).y;
+        emit(GroundStrip{ScreenWidth / 2.0f + (x - view.centerX) * scale, first, width * scale, TiltProject(view, x, bottom).y - first, (top - y) / height, (bottom - y) / height});
+        ++emitted;
+    }
+    return emitted;
+}
+
+struct TiltBox {
+    float x, y, width, height;
+};
+
+// A picture standing up from the ground point footX, footY, like a cutout, facing the camera.
+constexpr TiltBox TiltUpright(const TiltView& view, float footX, float footY, float drawWidth, float drawHeight) {
+    const auto foot = TiltProject(view, footX, footY);
+    const float scale = TiltScale(view, footY);
+    return {foot.x - drawWidth * scale / 2.0f, foot.y - drawHeight * scale, drawWidth * scale, drawHeight * scale};
+}
+
 // An animation's slice of the animation frame list, and how fast it plays.
 struct Clip {
     std::uint32_t firstFrame, frameCount, framesPerSecond;

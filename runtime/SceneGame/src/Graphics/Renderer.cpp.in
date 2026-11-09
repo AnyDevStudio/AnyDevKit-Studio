@@ -36,6 +36,7 @@ struct Run {
     std::size_t count;
     std::int32_t image;
     bool nearest;
+    bool upright = false; // one standing item, drawn in depth order rather than list order
 };
 
 constexpr bool isTextured(const GeneratedScene::Item& item) {
@@ -48,7 +49,8 @@ constexpr bool usesNearest(const GeneratedScene::Item& item) {
 
 // A particles item reserves one quad per particle it can ever show, so the budget is fixed before
 // the first frame.
-consteval std::size_t itemFrames(const GeneratedScene::Item& item) {
+constexpr std::size_t itemFrames(const GeneratedScene::Item& item, bool tilted) {
+    if (tilted && item.kind == GeneratedScene::Kind::Image && !item.screenFixed && !item.upright) return World2D::TiltStrips;
     if (item.kind == GeneratedScene::Kind::Text) return item.text.size();
     if (item.kind == GeneratedScene::Kind::Particles) return GeneratedScene::ParticleEffects[static_cast<std::size_t>(item.particles)].amount;
     if (item.kind == GeneratedScene::Kind::Tilemap) return GeneratedScene::Tilemaps[static_cast<std::size_t>(item.tilemap)].reservedQuads;
@@ -61,7 +63,7 @@ consteval std::size_t countFrames() {
     std::size_t count = 0;
     for (const auto& scene : GeneratedScene::Scenes) {
         count += 1;
-        for (std::size_t index = scene.firstItem; index < scene.firstItem + scene.itemCount; ++index) count += itemFrames(GeneratedScene::Items[index]);
+        for (std::size_t index = scene.firstItem; index < scene.firstItem + scene.itemCount; ++index) count += itemFrames(GeneratedScene::Items[index], scene.tilt > 0.0f);
     }
     return count;
 }
@@ -74,21 +76,35 @@ consteval std::size_t countRuns() {
         ++runs; // the scene's background
         std::int32_t image = -1;
         bool nearest = false;
+        bool afterUpright = false;
         for (std::size_t index = scene.firstItem; index < scene.firstItem + scene.itemCount; ++index) {
             const auto& item = GeneratedScene::Items[index];
             const std::int32_t wanted = isTextured(item) ? item.image : -1;
             const bool wantedNearest = isTextured(item) && usesNearest(item);
-            if (wanted != image || wantedNearest != nearest) {
+            if (wanted != image || wantedNearest != nearest || item.upright || afterUpright) {
                 ++runs;
                 image = wanted;
                 nearest = wantedNearest;
             }
+            afterUpright = item.upright;
         }
     }
     return runs;
 }
 
 constexpr std::size_t RunCount = countRuns();
+
+consteval std::size_t countMostUpright() {
+    std::size_t most = 1;
+    for (const auto& scene : GeneratedScene::Scenes) {
+        std::size_t here = 0;
+        for (std::size_t index = scene.firstItem; index < scene.firstItem + scene.itemCount; ++index) here += GeneratedScene::Items[index].upright ? 1 : 0;
+        most = std::max(most, here);
+    }
+    return most;
+}
+
+constexpr std::size_t MostUpright = countMostUpright();
 
 struct SceneLayout {
     std::size_t firstFrame = 0;
@@ -117,10 +133,10 @@ consteval Layout buildLayout() {
             const auto& item = GeneratedScene::Items[index];
             const std::int32_t wanted = isTextured(item) ? item.image : -1;
             const bool wantedNearest = isTextured(item) && usesNearest(item);
-            const std::size_t frames = itemFrames(item);
-            if (wanted != open.image || wantedNearest != open.nearest) {
+            const std::size_t frames = itemFrames(item, scene.tilt > 0.0f);
+            if (wanted != open.image || wantedNearest != open.nearest || item.upright || open.upright) {
                 layout.runs[run++] = open;
-                open = {frame, 0, wanted, wantedNearest};
+                open = {frame, 0, wanted, wantedNearest, item.upright};
             }
             layout.itemRuns[index] = run;
             open.count += frames;
@@ -359,6 +375,14 @@ void Renderer::Draw(Display& display, const SceneState& scene) {
     std::array<std::size_t, RunCount> runUsed{};
     const float screenWidth = static_cast<float>(FrameWidth);
     const float screenHeight = static_cast<float>(FrameHeight);
+    const bool tilted = sceneInfo.tilt > 0.0f;
+    const auto tilt = World2D::MakeTiltView(tilted ? sceneInfo.tilt : 1.0f, camera);
+    struct Standing {
+        float foot;
+        std::size_t run;
+    };
+    std::array<Standing, MostUpright> standing{};
+    std::size_t standingCount = 0;
 
     for (std::size_t itemIndex = sceneInfo.firstItem; itemIndex < sceneInfo.firstItem + sceneInfo.itemCount; ++itemIndex) {
         const auto& item = GeneratedScene::Items[itemIndex];
@@ -380,13 +404,49 @@ void Renderer::Draw(Display& display, const SceneState& scene) {
                 if (visible) {
                     const World2D::TilemapInfo info{map.columns, map.rows, map.tileWidth, map.tileHeight, map.cellWidth, map.cellHeight, map.tilesetColumns, image.width, image.height};
                     auto* out = frames + run.first + runUsed[runIndex];
-                    runUsed[runIndex] += World2D::EmitVisibleTiles(info, GeneratedScene::TilemapCells[mapIndex], {x, y}, {offsetX, offsetY}, map.reservedQuads, [&out](const World2D::TileQuad& quad) {
-                        out->rectangle = {quad.x, quad.y, quad.width, quad.height};
+                    runUsed[runIndex] += World2D::EmitVisibleTiles(info, GeneratedScene::TilemapCells[mapIndex], {x, y}, {offsetX, offsetY}, map.reservedQuads, [&](const World2D::TileQuad& quad) {
+                        if (tilted && !item.screenFixed) {
+                            const auto corner = World2D::TiltProject(tilt, quad.x + offsetX, quad.y + offsetY);
+                            const auto scale = World2D::TiltScale(tilt, quad.y + offsetY + quad.height / 2.0f);
+                            out->rectangle = {corner.x, corner.y, quad.width * scale, quad.height * scale * tilt.squash};
+                        } else {
+                            out->rectangle = {quad.x, quad.y, quad.width, quad.height};
+                        }
                         out->color = {quad.uv.u0, quad.uv.v0, quad.uv.u1, quad.uv.v1};
                         ++out;
                     });
                 }
                 next += map.reservedQuads;
+                continue;
+            }
+
+            if (tilted && !item.screenFixed) {
+                const auto& image = GeneratedScene::Images[static_cast<std::size_t>(item.image)];
+                const bool flipped = scene.Flipped(itemIndex);
+                const World2D::UvRect uv = item.sprite >= 0
+                    ? World2D::SheetFrameUv(scene.SpriteFrame(itemIndex), GeneratedScene::Sprites[static_cast<std::size_t>(item.sprite)].frameWidth, GeneratedScene::Sprites[static_cast<std::size_t>(item.sprite)].frameHeight, GeneratedScene::Sprites[static_cast<std::size_t>(item.sprite)].columns, image.width, image.height, flipped)
+                    : World2D::FullImageUv(flipped);
+                if (item.upright) {
+                    const float footY = y + item.height;
+                    const auto box = World2D::TiltUpright(tilt, x + item.width / 2.0f, footY, item.drawWidth > 0.0f ? item.drawWidth : item.width, item.drawHeight > 0.0f ? item.drawHeight : item.height);
+                    if (visible && box.x < screenWidth && box.y < screenHeight && box.x + box.width > 0.0f && box.y + box.height > 0.0f) {
+                        auto& quad = frames[run.first + runUsed[runIndex]++];
+                        quad.rectangle = {box.x, box.y, box.width, box.height};
+                        quad.color = {uv.u0, uv.v0, uv.u1, uv.v1};
+                        standing[standingCount++] = {footY, runIndex};
+                    }
+                    next += 1;
+                } else {
+                    if (visible) {
+                        auto* out = frames + run.first + runUsed[runIndex];
+                        runUsed[runIndex] += World2D::EmitTiltedGround(tilt, x, y, item.width, item.height, [&](const World2D::GroundStrip& strip) {
+                            out->rectangle = {strip.x, strip.y, strip.width, strip.height};
+                            out->color = {uv.u0, uv.v0 + (uv.v1 - uv.v0) * strip.v0, uv.u1, uv.v0 + (uv.v1 - uv.v0) * strip.v1};
+                            ++out;
+                        });
+                    }
+                    next += World2D::TiltStrips;
+                }
                 continue;
             }
 
@@ -418,7 +478,12 @@ void Renderer::Draw(Display& display, const SceneState& scene) {
             for (std::size_t index = 0; index < capacity; ++index, ++next) {
                 if (index < quads.size()) {
                     const auto& quad = quads[index];
-                    frames[next].rectangle = {quad.x - offsetX, quad.y - offsetY, quad.width, quad.height};
+                    if (tilted && !item.screenFixed) {
+                        const auto box = World2D::TiltUpright(tilt, quad.x, quad.y, quad.width, quad.height);
+                        frames[next].rectangle = {box.x, box.y, box.width, box.height};
+                    } else {
+                        frames[next].rectangle = {quad.x - offsetX, quad.y - offsetY, quad.width, quad.height};
+                    }
                     frames[next].color = {quad.color.red, quad.color.green, quad.color.blue, 1.0f};
                 } else {
                     frames[next].rectangle = HiddenRectangle;
@@ -428,6 +493,12 @@ void Renderer::Draw(Display& display, const SceneState& scene) {
         }
         if (item.kind != GeneratedScene::Kind::Text) {
             frames[next].color = color;
+            if (visible && tilted && !item.screenFixed) {
+                const auto corner = World2D::TiltProject(tilt, x, y);
+                const auto scale = World2D::TiltScale(tilt, y + item.height / 2.0f);
+                frames[next++].rectangle = {corner.x, corner.y, item.width * scale, item.height * scale * tilt.squash};
+                continue;
+            }
             frames[next++].rectangle = visible ? std::array{x - offsetX, y - offsetY, item.width, item.height} : HiddenRectangle;
             continue;
         }
@@ -436,10 +507,13 @@ void Renderer::Draw(Display& display, const SceneState& scene) {
         // variables is usually shorter than that, and each frame its glyphs follow its current value.
         const auto text = scene.CurrentText(itemIndex);
         const bool changes = text.data() != item.text.data();
+        const bool textTilted = tilted && !item.screenFixed;
+        const auto textStart = textTilted ? World2D::TiltProject(tilt, x, y) : World2D::Point{x - offsetX, y - offsetY};
+        const float textScale = item.textScale * (textTilted ? World2D::TiltScale(tilt, y) : 1.0f);
         for (std::size_t index = 0; index < item.text.size(); ++index) {
             frames[next].color = color;
             if (visible && index < text.size()) {
-                frames[next].rectangle = {x - offsetX + static_cast<float>(index) * 6 * item.textScale, y - offsetY, 5 * item.textScale, 7 * item.textScale};
+                frames[next].rectangle = {textStart.x + static_cast<float>(index) * 6 * textScale, textStart.y, 5 * textScale, 7 * textScale};
                 if (changes) frames[next].glyph = EncodeGlyph(text[index]);
             } else {
                 frames[next].rectangle = HiddenRectangle;
@@ -455,12 +529,23 @@ void Renderer::Draw(Display& display, const SceneState& scene) {
     sceAgcDcbAcquireMem(&buffer, 1, 0, 0x4381, shaderMemoryPending ? memory.Data() : commands, shaderMemoryPending ? memory.Size() : slots[slotIndex].Bytes, 40);
     auto* const target = display.Acquire();
 
+    // Standing items go back to front; a list that barely changes between frames sorts in about one pass.
+    for (std::size_t sorted = 1; sorted < standingCount; ++sorted) {
+        const auto entry = standing[sorted];
+        std::size_t place = sorted;
+        while (place > 0 && standing[place - 1].foot > entry.foot) {
+            standing[place] = standing[place - 1];
+            --place;
+        }
+        standing[place] = entry;
+    }
+
     const Pipeline* bound = nullptr;
-    for (std::size_t index = sceneLayout.firstRun; index < sceneLayout.firstRun + sceneLayout.runCount; ++index) {
+    const auto drawRun = [&](std::size_t index) {
         const auto& run = Runs[index];
         const bool isImage = run.image >= 0;
         const std::size_t quadCount = isImage ? runUsed[index] : run.count;
-        if (quadCount == 0) continue; // nothing of this run is on the screen this frame
+        if (quadCount == 0) return; // nothing of this run is on the screen this frame
         auto& wanted = isImage ? *imagePipeline : *pipeline;
 
         if (&wanted != bound) {
@@ -480,6 +565,18 @@ void Renderer::Draw(Display& display, const SceneState& scene) {
             bindShader(buffer, 0xc, AdkShaders::ScreenFragment::UserData, AdkShaders::ScreenFragment::UserDataCount, -1, nullptr);
         }
         sceAgcDcbDrawIndexAuto(&buffer, static_cast<std::uint32_t>(quadCount * 6), 0);
+    };
+
+    bool standingDrawn = false;
+    for (std::size_t index = sceneLayout.firstRun; index < sceneLayout.firstRun + sceneLayout.runCount; ++index) {
+        if (Runs[index].upright) {
+            if (!standingDrawn) {
+                standingDrawn = true;
+                for (std::size_t entry = 0; entry < standingCount; ++entry) drawRun(standing[entry].run);
+            }
+            continue;
+        }
+        drawRun(index);
     }
 
     const auto flip = display.PrepareFlip();

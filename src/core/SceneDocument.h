@@ -29,6 +29,7 @@ class SceneDocument : public QAbstractListModel {
     Q_PROPERTY(int worldHeight READ worldHeight NOTIFY worldChanged)
     Q_PROPERTY(double cameraX READ cameraX NOTIFY worldChanged)
     Q_PROPERTY(double cameraY READ cameraY NOTIFY worldChanged)
+    Q_PROPERTY(int tilt READ tilt NOTIFY worldChanged)
     Q_PROPERTY(QUrl selectedTilesetUrl READ selectedTilesetUrl NOTIFY selectionChanged)
     Q_PROPERTY(QVariantList sceneList READ sceneList NOTIFY scenesChanged)
     Q_PROPERTY(int currentSceneIndex READ currentSceneIndex NOTIFY scenesChanged)
@@ -92,6 +93,7 @@ public:
     int worldHeight() const;
     double cameraX() const;
     double cameraY() const;
+    int tilt() const;
     QUrl selectedTilesetUrl() const;
 
     // What the logic's variables are and start at, for text that shows them on the stage.
@@ -150,6 +152,7 @@ public:
     Q_INVOKABLE bool setWorldSize(int width, int height);
     // Where the camera starts, kept inside the world. Inside beginChange/endChange it is one undo step.
     Q_INVOKABLE void setCameraStart(double x, double y);
+    Q_INVOKABLE bool setTilt(int percent);
     // Looks again at the image files on disk, so the stage follows files that went missing or came back.
     Q_INVOKABLE void recheckImages();
     Q_INVOKABLE void clearNotice();

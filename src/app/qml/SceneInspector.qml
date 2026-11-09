@@ -181,6 +181,25 @@ Flickable {
 
         Field {
             Layout.fillWidth: true
+            visible: !inspector.hasItem
+            label: "Camera tilt %"
+            value: String(inspector.scene.tilt)
+            maximumLength: 2
+            onCommitted: (text) => inspector.scene.setTilt(Number(text))
+        }
+
+        Text {
+            Layout.fillWidth: true
+            visible: !inspector.hasItem && inspector.scene.tilt > 0
+            text: "2.5D. The game leans the ground away from the viewer. Turn on Stands upright for trees, people and houses."
+            color: Theme.muted
+            wrapMode: Text.WordWrap
+            font.family: Theme.body
+            font.pixelSize: 13
+        }
+
+        Field {
+            Layout.fillWidth: true
             visible: inspector.hasItem
             label: "Name"
             value: inspector.hasItem ? inspector.item.name : ""
@@ -556,6 +575,38 @@ Flickable {
             enabled: inspector.physicsMode === ""
             checked: inspector.hasItem && inspector.item.screenFixed
             onToggledTo: (checked) => inspector.set("screenFixed", checked)
+        }
+
+        ToggleRow {
+            Layout.fillWidth: true
+            visible: inspector.isImage && inspector.scene.tilt > 0 && !inspector.item.screenFixed
+            text: "Stands upright"
+            checked: inspector.isImage && inspector.item.upright
+            onToggledTo: (checked) => inspector.set("upright", checked)
+        }
+
+        RowLayout {
+            Layout.fillWidth: true
+            visible: inspector.isImage && inspector.scene.tilt > 0 && inspector.item.upright
+            spacing: 10
+
+            Field {
+                Layout.fillWidth: true
+                Layout.preferredWidth: 1
+                label: "Picture width"
+                value: inspector.isImage ? String(inspector.item.drawWidth) : "0"
+                maximumLength: 5
+                onCommitted: (text) => inspector.set("drawWidth", Number(text))
+            }
+
+            Field {
+                Layout.fillWidth: true
+                Layout.preferredWidth: 1
+                label: "Picture height"
+                value: inspector.isImage ? String(inspector.item.drawHeight) : "0"
+                maximumLength: 5
+                onCommitted: (text) => inspector.set("drawHeight", Number(text))
+            }
         }
 
         // Physics: how the item behaves in a platformer. Words a beginner knows, and good defaults.

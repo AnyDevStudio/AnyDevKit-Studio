@@ -21,6 +21,8 @@ inline constexpr int ScreenHeightUnits = 1080;
 inline constexpr int MaximumWorldSide = 32768;
 // A scene with tilemaps or sprites uses at most this many draw calls; each one rebinds a texture.
 inline constexpr int MaximumSceneDrawCalls = 64;
+inline constexpr int TiltedPictureQuads = 270; // World2D::TiltStrips: a flat picture in a tilted scene is drawn as thin rows
+inline constexpr int MaximumSceneTilt = 70; // beyond this the top of the screen sees too far to look like ground
 // Tile limits. Every tile on the screen is one quad, counted against MaximumSceneBlocks.
 inline constexpr int MinimumTileDimension = 4;
 inline constexpr int MaximumTileDimension = 256;
@@ -100,6 +102,8 @@ struct SceneItem {
     int gravityScale = DefaultGravityScale; // percent of normal gravity
     bool platformer = false;                // moves with the stick or D-pad, jumps on Cross
     bool topDown = false;                   // walks in every direction with the stick or D-pad, with no gravity
+    bool upright = false;                   // stands up from the ground in a tilted scene, in depth order
+    double drawWidth = 0, drawHeight = 0;   // an upright item's picture size; 0 means its width or height
     int moveSpeed = DefaultMoveSpeed;       // units per second
     int jumpHeight = DefaultJumpHeight;     // units
 };
@@ -113,6 +117,7 @@ struct Scene {
     int worldHeight = ScreenHeightUnits;
     double cameraX = 0; // where the camera starts, its top left corner in the world
     double cameraY = 0;
+    int tilt = 0;                           // percent, 0 is the flat 2D camera
     QList<SceneItem> items;
 };
 

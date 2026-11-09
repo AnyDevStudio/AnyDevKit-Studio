@@ -237,6 +237,7 @@ QStringList SceneDocument::variableNames() const {
 int SceneDocument::worldWidth() const { return document.worldWidth; }
 int SceneDocument::worldHeight() const { return document.worldHeight; }
 double SceneDocument::cameraX() const { return document.cameraX; }
+int SceneDocument::tilt() const { return document.tilt; }
 double SceneDocument::cameraY() const { return document.cameraY; }
 
 QUrl SceneDocument::selectedTilesetUrl() const {
@@ -311,6 +312,9 @@ QVariantMap SceneDocument::selected() const {
         {"gravityScale", item.gravityScale},
         {"platformer", item.platformer},
         {"topDown", item.topDown},
+        {"upright", item.upright},
+        {"drawWidth", item.drawWidth},
+        {"drawHeight", item.drawHeight},
         {"moveSpeed", item.moveSpeed},
         {"jumpHeight", item.jumpHeight},
         {"preset", item.preset},
@@ -815,6 +819,19 @@ bool SceneDocument::setWorldSize(int width, int height) {
     return true;
 }
 
+bool SceneDocument::setTilt(int percent) {
+    if (!loaded || changing || percent == document.tilt) return false;
+    auto candidate = document;
+    candidate.tilt = percent;
+    if (const auto problem = validateScene(candidate); !problem.isEmpty()) {
+        setError(problem);
+        return false;
+    }
+    if (!commit(candidate)) return false;
+    emit worldChanged();
+    return true;
+}
+
 void SceneDocument::setCameraStart(double x, double y) {
     if (!loaded || !std::isfinite(x) || !std::isfinite(y)) return;
     const auto clampedX = std::clamp(x, 0.0, std::max(0.0, double(document.worldWidth) - ScreenWidthUnits));
@@ -982,6 +999,16 @@ bool SceneDocument::setItemValue(int index, const QString& property, const QVari
     } else if (property == "platformer") {
         item.platformer = value.toBool();
         if (item.platformer) item.topDown = false;
+    } else if (property == "upright") {
+        item.upright = value.toBool();
+    } else if (property == "drawWidth" || property == "drawHeight") {
+        bool isNumber = false;
+        const auto number = value.toDouble(&isNumber);
+        if (!isNumber || !std::isfinite(number) || number < 0) {
+            setError(QString("%1 must be a number of 0 or more.").arg(property == "drawWidth" ? "Picture width" : "Picture height"));
+            return false;
+        }
+        (property == "drawWidth" ? item.drawWidth : item.drawHeight) = number;
     } else if (property == "topDown") {
         item.topDown = value.toBool();
         if (item.topDown) item.platformer = false;

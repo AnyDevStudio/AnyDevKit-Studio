@@ -992,6 +992,81 @@ private slots:
         QVERIFY2(header.contains("world.CameraFollow(0); // b3"), header.constData());
         QVERIFY2(header.contains("world.SetCameraPosition(12.0f, 30.0f); // b4"), header.constData());
     }
+
+    void aTiltedSceneWithUprightItemsRoundTrips() {
+        Scene scene;
+        scene.id = "field";
+        scene.name = "Field";
+        scene.worldWidth = 3000;
+        scene.worldHeight = 2000;
+        scene.tilt = 60;
+        SceneItem tree;
+        tree.id = "tree";
+        tree.type = "image";
+        tree.name = "Tree";
+        tree.width = tree.height = 64;
+        tree.source = "assets/tree.png";
+        tree.upright = true;
+        tree.drawWidth = 200;
+        tree.drawHeight = 320;
+        scene.items = {tree};
+        QVERIFY2(validateScene(scene).isEmpty(), qPrintable(validateScene(scene)));
+        SceneSet set;
+        set.scenes = {scene};
+        set.startScene = "field";
+        QTemporaryDir directory;
+        const auto path = directory.path() + "/scene.json";
+        QString error;
+        QVERIFY2(saveSceneSet(path, set, error), qPrintable(error));
+        const auto loaded = loadSceneSet(path);
+        QVERIFY2(loaded.set.has_value(), qPrintable(loaded.error));
+        QCOMPARE(loaded.set->scenes[0].tilt, 60);
+        QVERIFY(loaded.set->scenes[0].items[0].upright);
+        QCOMPARE(loaded.set->scenes[0].items[0].drawHeight, 320.0);
+        const auto header = generateSceneHeader(loaded.set.value(), {SceneImageData{"assets/tree.png", 8, 8, QByteArray(8 * 8 * 4, '\0')}});
+        QVERIFY2(header.contains("60.0f}"), header.right(400).constData());
+        QVERIFY2(header.contains("true, 200.0f, 320.0f}"), header.right(600).constData());
+    }
+
+    void tiltAndUprightAreChecked() {
+        Scene scene;
+        scene.tilt = 71;
+        QVERIFY(!validateScene(scene).isEmpty());
+        scene.tilt = 40;
+        QVERIFY(validateScene(scene).isEmpty());
+        SceneItem shape;
+        shape.id = "s";
+        shape.type = "rectangle";
+        shape.name = "S";
+        shape.width = shape.height = 10;
+        shape.upright = true;
+        scene.items = {shape};
+        QVERIFY2(!validateScene(scene).isEmpty(), "only an image can stand upright");
+        shape.type = "image";
+        shape.source = "assets/a.png";
+        shape.screenFixed = true;
+        scene.items = {shape};
+        QVERIFY2(!validateScene(scene).isEmpty(), "an item on the screen is not standing in the world");
+    }
+
+    void manyUprightItemsAreAllowedInATiltedScene() {
+        Scene scene;
+        scene.worldWidth = 3000;
+        scene.worldHeight = 2000;
+        scene.tilt = 50;
+        for (int index = 0; index < 120; ++index) {
+            SceneItem item;
+            item.id = QString("t%1").arg(index);
+            item.type = "image";
+            item.name = item.id;
+            item.width = item.height = 64;
+            item.source = index % 2 ? "assets/a.png" : "assets/b.png";
+            item.frameWidth = item.frameHeight = 16;
+            item.upright = true;
+            scene.items.append(item);
+        }
+        QVERIFY2(validateScene(scene).isEmpty(), qPrintable(validateScene(scene)));
+    }
 };
 
 QTEST_GUILESS_MAIN(SpritesTilemapTests)

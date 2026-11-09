@@ -159,6 +159,16 @@ screen. The Logic tab's camera blocks move the camera while the game runs.
 A larger world only changes where the game looks: tiles and sprites off the screen are not drawn at all,
 and pixel art lands on whole screen pixels so it does not shimmer as the camera moves.
 
+### Tilted camera (2.5D)
+
+A scene can have `"tilt"`, a whole percent from 1 to 70. The game then shows its 2D world as ground leaning away from the
+viewer: rows further up the screen are smaller, and an item with `"upright": true`, which must be an image, stands up
+from the ground point at the middle of its bottom edge and is drawn in depth order. `drawWidth` and `drawHeight`, both
+optional, are the size of an upright item's picture, so it can stand taller than the box it collides with. A tilted
+camera changes only how the scene is drawn: positions, physics and blocks are the same 2D ones. A flat picture costs 270
+quads of the budget. Tiles are drawn as far as a flat camera would reach, so a tilted scene normally paints its ground as
+one picture. The Scene tab stays a flat top-down view.
+
 ### Sprite sheets
 
 ```json
@@ -369,6 +379,8 @@ struct Item {
     bool flipped = false; // drawn mirrored left to right when the game starts
     std::int32_t body = -1; // index into Bodies for a moving body
     bool solid = false; // a wall or platform that moving bodies collide with
+    bool upright = false; // stands up from the ground in a tilted scene
+    float drawWidth = 0.0f, drawHeight = 0.0f; // an upright item's picture size; 0 means its width or height
 };
 
 // Row by row, top row first, 4 bytes per pixel: red, green, blue, alpha, with alpha already applied.
@@ -415,6 +427,7 @@ struct SceneInfo {
     std::uint32_t firstItem, itemCount;
     float worldWidth, worldHeight, cameraStartX, cameraStartY;
     std::array<float, 3> background;
+    float tilt = 0.0f; // percent; 0 is the flat 2D camera
 };
 
 inline constexpr float WorldWidth = 1920.0f;

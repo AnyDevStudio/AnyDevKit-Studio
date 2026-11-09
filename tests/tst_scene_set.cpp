@@ -385,6 +385,8 @@ private slots:
         writeBytes(directory.path() + "/include/Scene/SceneState.hpp", "#include \"Scene/Physics2D.hpp\"");
         QVERIFY2(sceneRuntimeLacksPhysics(directory.path()), "a runtime from before the top-down blocks needs replacing");
         writeBytes(directory.path() + "/include/Scene/SceneState.hpp", "#include \"Scene/Physics2D.hpp\"\nbool Pressed(unsigned button) const;");
+        QVERIFY2(sceneRuntimeLacksPhysics(directory.path()), "a runtime from before the tilted camera needs replacing");
+        writeBytes(directory.path() + "/include/Scene/World2D.hpp", "constexpr Point TiltProject();");
         QVERIFY(!sceneRuntimeLacksPhysics(directory.path()));
     }
 

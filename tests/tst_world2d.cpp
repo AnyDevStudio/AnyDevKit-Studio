@@ -234,7 +234,58 @@ void* operator new(std::size_t size) {
 void operator delete(void* memory) noexcept { std::free(memory); }
 void operator delete(void* memory, std::size_t) noexcept { std::free(memory); }
 
+static void tiltedCameraKeepsTheScreenCenterAndGrowsTowardThePlayer() {
+    const auto view = MakeTiltView(60.0f, {100.0f, 200.0f});
+    const float centerY = 200.0f + ScreenHeight / 2.0f;
+    EXPECT(std::fabs(TiltScale(view, centerY) - 1.0f) < 0.001f);
+    EXPECT(TiltScale(view, centerY + 300.0f) > 1.05f);
+    EXPECT(TiltScale(view, centerY - 300.0f) < 0.95f);
+    const auto center = TiltProject(view, 100.0f + ScreenWidth / 2.0f, centerY);
+    EXPECT(std::fabs(center.x - ScreenWidth / 2.0f) < 0.01f && std::fabs(center.y - TiltAnchorY) < 0.01f);
+    for (float y = 0.0f; y <= ScreenHeight; y += 45.0f) {
+        const auto world = TiltWorldY(view, y);
+        EXPECT(std::fabs(TiltProject(view, 0.0f, world).y - y) < 0.05f);
+    }
+    EXPECT(TiltScale(view, 1000000.0f) < 10.0f); // nothing blows up however far below the camera it is
+}
+
+static void tiltedGroundCoversTheScreenWithNoGapsAndInOrder() {
+    const auto view = MakeTiltView(60.0f, {0.0f, 400.0f});
+    float lastBottom = -1.0f, lastV = -1.0f;
+    std::size_t count = 0;
+    const auto before = allocations;
+    const auto emitted = EmitTiltedGround(view, 0.0f, -3000.0f, 3000.0f, 9000.0f, [&](const GroundStrip& strip) {
+        if (count != 0) {
+            EXPECT(std::fabs(strip.y - lastBottom) < 0.01f);
+            EXPECT(std::fabs(strip.v0 - lastV) < 0.0001f);
+        }
+        EXPECT(strip.height > 0.0f && strip.v1 > strip.v0);
+        lastBottom = strip.y + strip.height;
+        lastV = strip.v1;
+        ++count;
+    });
+    EXPECT(allocations == before);
+    EXPECT(emitted == count && count == TiltStrips);
+    EXPECT(std::fabs(lastBottom - ScreenHeight) < 0.01f);
+    std::size_t none = 0;
+    EmitTiltedGround(view, 0.0f, -9000.0f, 3000.0f, 100.0f, [&](const GroundStrip&) { ++none; });
+    EXPECT(none == 0);
+}
+
+static void anUprightItemStandsOnItsFoot() {
+    const auto view = MakeTiltView(60.0f, {0.0f, 0.0f});
+    const auto near = TiltUpright(view, 960.0f, 800.0f, 100.0f, 200.0f);
+    const auto far = TiltUpright(view, 960.0f, 300.0f, 100.0f, 200.0f);
+    EXPECT(near.height > far.height && near.width > far.width);
+    const auto foot = TiltProject(view, 960.0f, 800.0f);
+    EXPECT(std::fabs(near.y + near.height - foot.y) < 0.01f);
+    EXPECT(std::fabs(near.x + near.width / 2.0f - foot.x) < 0.01f);
+}
+
 int main(int argc, char** argv) {
+    tiltedCameraKeepsTheScreenCenterAndGrowsTowardThePlayer();
+    tiltedGroundCoversTheScreenWithNoGapsAndInOrder();
+    anUprightItemStandsOnItsFoot();
     cameraStaysInTheWorld();
     followingCentersAnItem();
     animationAdvancesAtItsSpeedAndLoops();

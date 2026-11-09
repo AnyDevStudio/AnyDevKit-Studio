@@ -125,6 +125,8 @@ struct Item {
     bool flipped = false; // drawn mirrored left to right when the game starts
     std::int32_t body = -1; // index into Bodies for a moving body
     bool solid = false; // a wall or platform that moving bodies collide with
+    bool upright = false; // stands up from the ground in a tilted scene
+    float drawWidth = 0.0f, drawHeight = 0.0f; // an upright item's picture size; 0 means its width or height
 };
 
 // Row by row, top row first, 4 bytes per pixel: red, green, blue, alpha, with alpha already applied.
@@ -171,6 +173,7 @@ struct SceneInfo {
     std::uint32_t firstItem, itemCount;
     float worldWidth, worldHeight, cameraStartX, cameraStartY;
     std::array<float, 3> background;
+    float tilt = 0.0f; // percent; 0 is the flat 2D camera
 };
 
 inline constexpr float WorldWidth = 1920.0f;

@@ -211,7 +211,15 @@ QString validatePhysics(const SceneItem& item, qsizetype index) {
     return {};
 }
 
+QString validateUpright(const SceneItem& item, qsizetype index) {
+    if (!item.upright) return {};
+    if (item.type != ImageType) return itemError(item, index, "only an image can stand upright.");
+    if (item.screenFixed) return itemError(item, index, "an item that stays on the screen cannot stand upright in the world. Turn one of them off.");
+    return {};
+}
+
 QString validateItem(const SceneItem& item, qsizetype index, QSet<QString>& usedIds) {
+    if (const auto problem = validateUpright(item, index); !problem.isEmpty()) return problem;
     if (item.id.isEmpty()) return itemError(item, index, "id must be a non-empty string.");
     if (usedIds.contains(item.id)) return itemError(item, index, QString("id \"%1\" is already used. Give each item its own id.").arg(item.id));
     usedIds.insert(item.id);
@@ -393,6 +401,16 @@ QString parseItem(const QJsonValue& value, qsizetype index, SceneItem& item) {
         }
     }
 
+    const auto upright = object.value("upright");
+    if (!upright.isUndefined() && !upright.isBool()) return itemError(item, index, "upright must be true or false.");
+    item.upright = upright.toBool();
+    for (const auto* field : {"drawWidth", "drawHeight"}) {
+        const auto size = object.value(field);
+        if (size.isUndefined()) continue;
+        if (!size.isDouble() || size.toDouble() < 0) return itemError(item, index, QString("%1 must be a number of 0 or more.").arg(field));
+        (QString(field) == "drawWidth" ? item.drawWidth : item.drawHeight) = size.toDouble();
+    }
+
     const auto controllable = object.value("controllable");
     if (!controllable.isUndefined() && !controllable.isBool()) return itemError(item, index, "controllable must be true or false.");
     item.controllable = controllable.toBool();
@@ -412,6 +430,9 @@ QJsonObject itemToJson(const SceneItem& item) {
         {"controllable", item.controllable},
     };
     if (item.screenFixed) object.insert("screenFixed", true);
+    if (item.upright) object.insert("upright", true);
+    if (item.drawWidth > 0) object.insert("drawWidth", item.drawWidth);
+    if (item.drawHeight > 0) object.insert("drawHeight", item.drawHeight);
     if (!item.physics.isEmpty()) {
         object.insert("physics", item.physics);
         if (item.physics == BodyPhysics) {
@@ -503,14 +524,15 @@ QByteArray itemLine(const SceneItem& item, const QStringList& imageSources, int 
     line += item.controllable ? "true" : "false";
     const auto imageIndex = (isImage || isTilemap) ? QByteArray::number(imageSources.indexOf(item.source)) : QByteArray("-1");
     const auto hasPhysics = !item.physics.isEmpty();
-    if (isTilemap || spriteIndex >= 0 || item.pixelated || item.flipX || item.screenFixed || hasPhysics) {
+    if (isTilemap || spriteIndex >= 0 || item.pixelated || item.flipX || item.screenFixed || hasPhysics || item.upright) {
         // These items spell out every field, so the older lines below stay as they were.
         line += ", " + imageIndex + ", " + QByteArray::number(isParticles ? particleIndex : -1);
         line += ", " + QByteArray::number(isTilemap ? tilemapIndex : -1) + ", " + QByteArray::number(spriteIndex);
         line += QByteArray(", ") + (item.screenFixed ? "true" : "false");
         line += QByteArray(", ") + ((item.pixelated || isTilemap) ? "true" : "false");
         line += QByteArray(", ") + (item.flipX ? "true" : "false");
-        if (hasPhysics) line += ", " + QByteArray::number(bodyIndex) + ", " + (item.physics == SolidPhysics ? "true" : "false");
+        if (hasPhysics || item.upright) line += ", " + QByteArray::number(hasPhysics ? bodyIndex : -1) + ", " + (item.physics == SolidPhysics ? "true" : "false");
+        if (item.upright) line += ", true, " + floatLiteral(item.drawWidth) + ", " + floatLiteral(item.drawHeight);
     } else if (isImage) {
         line += ", " + imageIndex;
     } else if (isParticles) {
@@ -572,6 +594,7 @@ QString newBackupFolderName(const QString& root) {
 
 QString validateScene(const Scene& scene) {
     if (!isColor(scene.background)) return "Background color must look like #RRGGBB, for example #151C3A.";
+    if (scene.tilt < 0 || scene.tilt > MaximumSceneTilt) return QString("Camera tilt must be a whole percent from 0 to %1.").arg(MaximumSceneTilt);
     if (scene.worldWidth < ScreenWidthUnits || scene.worldWidth > MaximumWorldSide) return QString("The world's width must be a whole number from %1 to %2.").arg(ScreenWidthUnits).arg(MaximumWorldSide);
     if (scene.worldHeight < ScreenHeightUnits || scene.worldHeight > MaximumWorldSide) return QString("The world's height must be a whole number from %1 to %2.").arg(ScreenHeightUnits).arg(MaximumWorldSide);
     const auto inCameraRange = [](double value, int worldSide, int screenSide) { return std::isfinite(value) && value >= 0 && value <= worldSide - screenSide; };
@@ -604,7 +627,7 @@ QString validateScene(const Scene& scene) {
         if (hasTilemap) return QString("This scene would draw %1 tiles and blocks at once, but a scene can draw at most %2. Make the tiles bigger or remove a layer.").arg(sceneQuadCount(scene)).arg(MaximumSceneBlocks);
         return QString("This scene would draw %1 blocks, but a scene with particles can draw at most %2. Lower Amount on a particles item or remove some text.").arg(sceneQuadCount(scene)).arg(MaximumSceneBlocks);
     }
-    if ((hasTilemap || hasSheet) && sceneDrawCalls(scene) > MaximumSceneDrawCalls) {
+    if (scene.tilt == 0 && (hasTilemap || hasSheet) && sceneDrawCalls(scene) > MaximumSceneDrawCalls) {
         return QString("This scene would need %1 draw calls, but a scene with tiles or sprites can use at most %2. Put items that use the same picture next to each other in the Layers list, or remove some.").arg(sceneDrawCalls(scene)).arg(MaximumSceneDrawCalls);
     }
     return {};
@@ -851,6 +874,7 @@ int sceneQuadCount(const Scene& scene) {
         if (item.type == TextType) total += widestText(item.text).size();
         else if (item.type == ParticlesType) total += item.amount;
         else if (item.type == TilemapType) total += tilemapReservedQuads(item);
+        else if (scene.tilt > 0 && item.type == ImageType && !item.screenFixed && !item.upright) total += TiltedPictureQuads;
         else total += 1;
     }
     return static_cast<int>(std::min<qint64>(total, std::numeric_limits<int>::max()));
@@ -910,6 +934,8 @@ QString parseSceneObject(const QJsonObject& root, int version, const QString& fi
     scene.background = root.value("background").toString();
     const auto world = root.value("world");
     const auto camera = root.value("camera");
+    const auto tilt = root.value("tilt");
+    if (!tilt.isUndefined()) scene.tilt = tilt.isDouble() ? tilt.toInt(-1) : -1;
     if (!world.isUndefined() || !camera.isUndefined()) {
         if (version < WorldSchema) return QString("%1 uses a world or camera, which needs schemaVersion %2. Change schemaVersion to %2 and try again.").arg(fileName).arg(WorldSchema);
         if (!world.isUndefined()) {
@@ -944,6 +970,7 @@ QJsonObject sceneToJson(const Scene& scene) {
     // A stage-sized world saves no world and no camera, so the file reads as it did.
     if (scene.worldWidth != ScreenWidthUnits || scene.worldHeight != ScreenHeightUnits) object.insert("world", QJsonObject{{"width", scene.worldWidth}, {"height", scene.worldHeight}});
     if (scene.cameraX != 0 || scene.cameraY != 0) object.insert("camera", QJsonObject{{"x", scene.cameraX}, {"y", scene.cameraY}});
+    if (scene.tilt != 0) object.insert("tilt", scene.tilt);
     return object;
 }
 
@@ -1269,6 +1296,8 @@ struct Item {
     bool flipped = false; // drawn mirrored left to right when the game starts
     std::int32_t body = -1; // index into Bodies for a moving body
     bool solid = false; // a wall or platform that moving bodies collide with
+    bool upright = false; // stands up from the ground in a tilted scene
+    float drawWidth = 0.0f, drawHeight = 0.0f; // an upright item's picture size; 0 means its width or height
 };
 
 // Row by row, top row first, 4 bytes per pixel: red, green, blue, alpha, with alpha already applied.
@@ -1315,6 +1344,7 @@ struct SceneInfo {
     std::uint32_t firstItem, itemCount;
     float worldWidth, worldHeight, cameraStartX, cameraStartY;
     std::array<float, 3> background;
+    float tilt = 0.0f; // percent; 0 is the flat 2D camera
 };
 
 )cpp";
@@ -1363,7 +1393,7 @@ struct SceneInfo {
     for (qsizetype index = 0; index < set.scenes.size(); ++index) {
         const auto& oneScene = set.scenes[index];
         if (oneScene.id == set.startScene) startIndex = static_cast<int>(index);
-        sceneLines += "    {" + QByteArray::number(firstItem) + ", " + QByteArray::number(oneScene.items.size()) + ", " + floatLiteral(oneScene.worldWidth) + ", " + floatLiteral(oneScene.worldHeight) + ", " + floatLiteral(oneScene.cameraX) + ", " + floatLiteral(oneScene.cameraY) + ", {" + colorLiterals(oneScene.background) + "}},\n";
+        sceneLines += "    {" + QByteArray::number(firstItem) + ", " + QByteArray::number(oneScene.items.size()) + ", " + floatLiteral(oneScene.worldWidth) + ", " + floatLiteral(oneScene.worldHeight) + ", " + floatLiteral(oneScene.cameraX) + ", " + floatLiteral(oneScene.cameraY) + ", {" + colorLiterals(oneScene.background) + "}" + (oneScene.tilt > 0 ? ", " + floatLiteral(oneScene.tilt) : QByteArray()) + "},\n";
         firstItem += static_cast<int>(oneScene.items.size());
     }
     header += "inline constexpr std::size_t SceneCount = " + QByteArray::number(set.scenes.size()) + ";\n";
@@ -1573,7 +1603,9 @@ bool sceneRuntimeLacksPhysics(const QString& projectRoot) {
     QFile file(QDir::cleanPath(QDir(projectRoot).absolutePath()) + "/include/Scene/SceneState.hpp");
     if (!file.open(QIODevice::ReadOnly)) return false;
     const auto contents = file.readAll();
-    return !contents.contains("Scene/Physics2D.hpp") || !contents.contains("Pressed("); // older physics runtimes have no top-down blocks
+    QFile world(QDir::cleanPath(QDir(projectRoot).absolutePath()) + "/include/Scene/World2D.hpp");
+    const auto worldCode = world.open(QIODevice::ReadOnly) ? world.readAll() : QByteArray();
+    return !contents.contains("Scene/Physics2D.hpp") || !contents.contains("Pressed(") || !worldCode.contains("TiltProject"); // older physics runtimes have no top-down blocks or tilted camera
 }
 
 bool sceneSetUsesPhysics(const SceneSet& set) {
