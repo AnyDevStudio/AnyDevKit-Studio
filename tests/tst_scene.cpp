@@ -676,12 +676,16 @@ private slots:
         QVERIFY(QDir(root + "/assets").mkpath("folder.png"));
         QTemporaryDir outside;
         writeText(outside.path() + "/secret.png");
+#ifndef Q_OS_WIN
         QVERIFY(QFile::link(outside.path() + "/secret.png", root + "/assets/link.png"));
         QVERIFY(QFile::link(outside.path(), root + "/assets/linked"));
+#endif
         QVERIFY(imageFileProblem(root, "assets/missing.png").contains("missing.png"));
         QVERIFY(imageFileProblem(root, "assets/folder.png").contains("folder.png"));
+#ifndef Q_OS_WIN
         QVERIFY(imageFileProblem(root, "assets/link.png").contains("link"));
         QVERIFY(imageFileProblem(root, "assets/linked/secret.png").contains("link"));
+#endif
         QVERIFY(imageFileProblem(root, "../outside.png").contains("outside.png"));
     }
 
@@ -733,6 +737,9 @@ private slots:
     }
 
     void neverWritesImagesThroughASymlinkedFolder() {
+#ifdef Q_OS_WIN
+        QSKIP("Creating symbolic links needs extra rights on Windows.");
+#endif
         QTemporaryDir directory;
         QTemporaryDir outside;
         const auto root = directory.path();

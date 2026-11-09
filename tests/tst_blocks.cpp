@@ -208,7 +208,7 @@ bool sameBlock(const Block& left, const Block& right) {
 
 // The first ```json block of docs/blocks-format.md, so the example there has to stay valid.
 QByteArray docExample() {
-    const auto doc = readBytes(QString(STUDIO_TEST_SOURCE_DIR) + "/docs/blocks-format.md");
+    const auto doc = readBytes(QString(STUDIO_TEST_SOURCE_DIR) + "/docs/blocks-format.md").replace("\r\n", "\n");
     const auto match = QRegularExpression("```json\\n(.*?)```", QRegularExpression::DotMatchesEverythingOption).match(QString::fromUtf8(doc));
     return match.hasMatch() ? match.captured(1).toUtf8() : QByteArray();
 }
@@ -435,7 +435,7 @@ private slots:
     }
 
     void headerSectionOfTheDocsMatchesTheGenerator() {
-        const auto doc = readBytes(QString(STUDIO_TEST_SOURCE_DIR) + "/docs/blocks-format.md");
+        const auto doc = readBytes(QString(STUDIO_TEST_SOURCE_DIR) + "/docs/blocks-format.md").replace("\r\n", "\n");
         QVERIFY2(doc.contains(DocHeader), "the header in docs/blocks-format.md differs from the generator");
     }
 
