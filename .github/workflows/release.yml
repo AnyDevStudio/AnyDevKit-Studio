@@ -205,9 +205,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
-          prerelease=()
-          case "$TAG" in *-*) prerelease=(--prerelease) ;; esac
-          gh release create "$TAG" packages/* "${prerelease[@]}" \
+          # Every Studio version is alpha for now. A pre-release is hidden from the repository's front
+          # page, so publish each one as the latest release; the notes say it is alpha.
+          gh release create "$TAG" packages/* --latest \
             --repo "$GITHUB_REPOSITORY" \
             --title "AnyDevKit Studio $TAG" \
             --notes-file packaging/release-notes.md \

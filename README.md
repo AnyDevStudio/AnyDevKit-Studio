@@ -15,8 +15,9 @@ Drag shapes and text onto the stage, press one button, and the same scene runs a
 |---|---|
 | ![Studio finishing a PS5 build with a live log](docs/screenshots/build.png) | ![The built package running in AnyPS5 on macOS](docs/screenshots/game.png) |
 
-> **Status: alpha.** Packages for macOS, Windows and Linux appear on the Releases page once a version
-> is tagged; until then, build it from source. The full flow has been tested on Apple Silicon macOS,
+> **Status: alpha.** Download Studio for macOS, Windows or Linux from the
+> [latest release](https://github.com/AnyDevStudio/AnyDevKit-Studio/releases/latest), or build it from
+> source. The full flow has been tested on Apple Silicon macOS,
 > and CI also builds Studio on Windows and Linux. The scene above runs in the AnyPS5 compatibility
 > layer on macOS. Nothing has been run on a real PS5 yet.
 
