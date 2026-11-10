@@ -236,16 +236,10 @@ Renderer::Renderer(int width, int height) : memory(requiredMemory(), 0x240000000
             for (std::size_t itemIndex = scene.firstItem; itemIndex < scene.firstItem + scene.itemCount; ++itemIndex) {
                 const auto& item = GeneratedScene::Items[itemIndex];
                 const std::array color{item.red, item.green, item.blue, 1.0f};
-                if (item.kind == GeneratedScene::Kind::Particles) {
-                    next += GeneratedScene::ParticleEffects[static_cast<std::size_t>(item.particles)].amount;
-                    continue;
-                }
-                if (item.kind == GeneratedScene::Kind::Tilemap) {
-                    next += GeneratedScene::Tilemaps[static_cast<std::size_t>(item.tilemap)].reservedQuads;
-                    continue;
-                }
                 if (item.kind != GeneratedScene::Kind::Text) {
-                    frames[next++].color = color;
+                    // The same count the layout reserved, or every glyph after this item lands in the wrong quad.
+                    const auto reserved = itemFrames(item, scene.tilt > 0.0f);
+                    for (std::size_t quad = 0; quad < reserved; ++quad) frames[next++].color = color;
                     continue;
                 }
 
