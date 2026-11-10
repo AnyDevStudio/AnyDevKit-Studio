@@ -1,4 +1,5 @@
 #include "Blocks.h"
+#include "Formula.h"
 
 #include <QDir>
 #include <QFile>
@@ -14,8 +15,10 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <tuple>
+#include <utility>
 
 namespace Studio {
 
@@ -23,8 +26,10 @@ namespace {
 
 // The version saved today. Older files still load: version 1's score blocks become variable blocks,
 // version 2 has no sounds, version 3 adds sounds, saving, animation, flip and camera blocks, and in
-// version 4 logic is per scene, in a "scenes" list, and there are physics and Go to scene blocks.
-constexpr int CurrentSchema = 4;
+// version 4 logic is per scene, in a "scenes" list, and there are physics and Go to scene blocks. Version 5 adds
+// formulas, players, templates and their copies, behaviors, and player and copy variables.
+constexpr int CurrentSchema = 5;
+constexpr int LanguageSchema = 5;
 constexpr int OldestLoadableSchema = 1;
 constexpr int VariableSchema = 2;
 constexpr int SoundSchema = 3; // sounds and the blocks that play them, set the volume, save or load
@@ -81,12 +86,45 @@ void countBlocks(const QList<Block>& blocks, int depth, qsizetype& count) {
     for (const auto& block : blocks) countBlocks(block.children, depth + 1, count);
 }
 
+bool isSpecialItem(const QString& id) {
+    return id == QLatin1String(SelfItem) || id == QLatin1String(PlayerItem) || id == QLatin1String(NearestPlayerItem);
+}
+
+bool isLanguageBlock(BlockType type) {
+    return type >= BlockType::SetFormula;
+}
+
+// Blocks whose item must be a template: they work on its copies.
+bool needsTemplate(BlockType type) {
+    return type == BlockType::EveryFrameForEachCopy || type == BlockType::WhenCopyTouches || type == BlockType::SpawnCopy || type == BlockType::ForEachCopy || type == BlockType::AlertNearby;
+}
+
+// Blocks whose actions run for one copy at a time.
+bool startsCopyContext(BlockType type) {
+    return type == BlockType::EveryFrameForEachCopy || type == BlockType::WhenCopyTouches || type == BlockType::SpawnCopy || type == BlockType::ForEachCopy;
+}
+
+bool isIfBlock(BlockType type) {
+    return type == BlockType::IfVariable || type == BlockType::IfFormula || type == BlockType::IfItemDistance || type == BlockType::IfOnGround;
+}
+
+bool isPlayerButtonEvent(BlockType type) {
+    return type == BlockType::WhenPlayerPresses || type == BlockType::WhilePlayerHolds;
+}
+
+QString scopeName(VariableScope scope) {
+    return scope == VariableScope::Player ? QStringLiteral("player") : scope == VariableScope::Copy ? QStringLiteral("copy") : QStringLiteral("game");
+}
+
 // One walk over the tree, so problems come out in the order the blocks appear. With no scene, only
 // the rules a saved file must follow are checked.
 class Validator {
 public:
     Validator(const Scene* scene, const LogicProgram& program, const QStringList& sceneIds = {}) : scene(scene), sceneIds(sceneIds) {
-        for (const auto& variable : program.variables) variableNames.insert(variable.name);
+        for (const auto& variable : program.variables) {
+            variableNames.insert(variable.name);
+            variableScopes.insert(variable.name, variable.scope);
+        }
         for (const auto& sound : program.sounds) soundNames.insert(sound.name);
         if (scene) {
             for (const auto& item : scene->items) {
@@ -108,7 +146,7 @@ public:
         }
         checkVariables(program);
         if (const auto problem = validateSounds(program.sounds); !problem.isEmpty()) problems.append({{}, problem});
-        for (const auto& block : program.events) visit(block, 1);
+        visitList(program.events, 1, {});
         // Another scene's blocks are not checked against this scene, only that each is a well formed block.
         const auto* checkedScene = scene;
         scene = nullptr;
@@ -123,7 +161,7 @@ public:
                 problems.append({{}, QString("The scene \"%1\" has %2 blocks, but a scene can hold at most %3. Remove some blocks and try again.").arg(other.scene).arg(total).arg(MaximumLogicBlocks)});
                 continue;
             }
-            for (const auto& block : other.events) visit(block, 1);
+            visitList(other.events, 1, {});
         }
         scene = checkedScene;
         return problems;
@@ -148,6 +186,9 @@ private:
             if (std::abs(static_cast<qint64>(variable.initial)) > MaximumVariableValue) {
                 problems.append({{}, QString("The variable \"%1\" needs a whole number from -%2 to %2 to start at.").arg(variable.name).arg(MaximumVariableValue)});
             }
+            if (folded == "player" || folded == "players" || isFormulaPlaceName(variable.name)) {
+                problems.append({{}, QString("\"%1\" is a name formulas already use. Give the variable another name.").arg(variable.name)});
+            }
         }
     }
 
@@ -155,21 +196,72 @@ private:
         problems.append({block.id, message});
     }
 
-    void checkItem(const Block& block, const QString& id) {
+    struct Context {
+        QString copyTemplate; // the template whose copy the blocks run for; empty outside copy blocks
+    };
+
+    bool isTemplate(const QString& id) const { return itemsById.contains(id) && itemsById.value(id).copies > 0; }
+
+    // The scene item a choice stands for, when it is known before the game runs.
+    const SceneItem* resolve(const QString& id, const Context& context) const {
+        if (id == QLatin1String(SelfItem)) return itemsById.contains(context.copyTemplate) ? &*itemsById.find(context.copyTemplate) : nullptr;
+        return itemsById.contains(id) ? &*itemsById.find(id) : nullptr;
+    }
+
+    void checkItem(const Block& block, const QString& id, const Context& context, bool wantsTemplate = false) {
         if (!scene) return;
+        const auto label = describeBlock(block);
+        if (id == QLatin1String(SelfItem) || id == QLatin1String(NearestPlayerItem)) {
+            if (wantsTemplate) report(block, QString("%1 needs a template, not %2. Choose an item with copies.").arg(label, id));
+            else if (context.copyTemplate.isEmpty()) report(block, QString("%1 uses %2, which only means something for a copy: inside \"Every frame, for each copy of\", \"When a copy touches\", \"Spawn a copy\" or \"For each copy of\".").arg(label, id));
+            return;
+        }
+        if (id == QLatin1String(PlayerItem)) {
+            if (wantsTemplate) report(block, QString("%1 needs a template, not %2. Choose an item with copies.").arg(label, id));
+            return;
+        }
         if (id.isEmpty()) {
-            report(block, QString("%1 has no item chosen. Choose an item from the scene.").arg(describeBlock(block)));
+            report(block, QString("%1 has no item chosen. Choose an item from the scene.").arg(label));
         } else if (!itemIds.contains(id)) {
-            report(block, QString("%1 uses the item \"%2\", which is not in the scene. Choose an item that exists, or delete this block.").arg(describeBlock(block), id));
+            report(block, QString("%1 uses the item \"%2\", which is not in the scene. Choose an item that exists, or delete this block.").arg(label, id));
+        } else if (wantsTemplate && (!isTemplate(id) || !itemsById.value(id).follows.isEmpty())) {
+            if (isTemplate(id)) report(block, QString("%1 uses \"%2\", which follows another template and comes and goes with it. Choose the template it follows.").arg(label, id));
+            else report(block, QString("%1 needs a template, but \"%2\" is an ordinary item. Give it a number of copies in the Scene tab, or choose another item.").arg(label, id));
+        } else if (!wantsTemplate && isTemplate(id)) {
+            report(block, QString("%1 uses the template \"%2\" directly. A template stands for its copies: use @self inside one of its copy blocks, such as \"Every frame, for each copy of\".").arg(label, id));
         }
     }
 
-    void checkVariable(const Block& block) {
+    void checkVariable(const Block& block, const Context& context) {
         if (!scene) return;
         if (block.variable.isEmpty()) {
             report(block, QString("%1 has no variable chosen. Choose a variable, or add one in the Variables area.").arg(describeBlock(block)));
         } else if (!variableNames.contains(block.variable)) {
             report(block, QString("%1 uses the variable \"%2\", which does not exist. Choose another variable, or add one named %2 in the Variables area.").arg(describeBlock(block), block.variable));
+        } else if (block.type == BlockType::AlertNearby) {
+            if (variableScopes.value(block.variable) != VariableScope::Copy) report(block, QString("%1 sets \"%2\" on other copies, so it must be a copy variable. Choose a copy variable.").arg(describeBlock(block), block.variable));
+        } else if (variableScopes.value(block.variable) == VariableScope::Copy && context.copyTemplate.isEmpty()) {
+            report(block, QString("%1 uses the copy variable \"%2\", which each copy has its own of. Use it inside a copy block, such as \"Every frame, for each copy of\".").arg(describeBlock(block), block.variable));
+        }
+    }
+
+    void checkFormula(const Block& block, const Context& context) {
+        const auto label = describeBlock(block);
+        const auto result = compileFormula(block.formula, [&](const QString& name) {
+            const auto lower = name.toLower();
+            if (lower == "player") return FormulaName{FormulaNameKind::Player, 0};
+            if (lower == "players") return FormulaName{FormulaNameKind::Players, 0};
+            if (!variableNames.contains(name)) return FormulaName{};
+            const auto scope = variableScopes.value(name);
+            return FormulaName{scope == VariableScope::Player ? FormulaNameKind::PlayerVariable : scope == VariableScope::Copy ? FormulaNameKind::CopyVariable : FormulaNameKind::GameVariable, 0};
+        });
+        if (!result.problem.isEmpty()) {
+            // Without a scene a file may be unfinished, so only its form is checked.
+            if (scene || compileFormula(block.formula).problem.size() > 0) report(block, QString("%1: %2").arg(label, scene ? result.problem : compileFormula(block.formula).problem));
+            return;
+        }
+        if (scene && result.usesCopyVariables && context.copyTemplate.isEmpty()) {
+            report(block, QString("%1 uses a copy variable, which each copy has its own of. Use it inside a copy block, such as \"Every frame, for each copy of\".").arg(label));
         }
     }
 
@@ -183,6 +275,9 @@ private:
     }
 
     void checkWorldBlock(const Block& block, const QString& label, const SceneItem& item) {
+        if (block.type == BlockType::SetLook && !isSpriteSheet(item)) {
+            report(block, QString("%1 uses the item \"%2\", which is not a sprite sheet. Choose an image with frames, and give it more than one look.").arg(label, block.item));
+        }
         if (block.type == BlockType::PlayAnimation) {
             if (!isSpriteSheet(item)) {
                 report(block, QString("%1 uses the item \"%2\", which is not a sprite sheet. Choose an image with frames, or give this image a frame size.").arg(label, block.item));
@@ -191,7 +286,7 @@ private:
             }
         } else if (block.type == BlockType::FlipItem && item.type != "image") {
             report(block, QString("%1 uses the item \"%2\", but only an image can be flipped.").arg(label, block.item));
-        } else if (block.type == BlockType::CameraFollow && item.screenFixed) {
+        } else if ((block.type == BlockType::CameraFollow || block.type == BlockType::CameraFollowBoth) && item.screenFixed) {
             report(block, QString("%1 follows the item \"%2\", which has \"Stays on screen\" turned on, so the camera could never leave it. Choose another item.").arg(label, block.item));
         }
         if (isBodyBlock(block.type) && item.physics != "body") {
@@ -212,7 +307,18 @@ private:
         }
     }
 
-    void visit(const Block& block, int depth) {
+    void visitList(const QList<Block>& blocks, int depth, const Context& context) {
+        const Block* previous = nullptr;
+        for (const auto& block : blocks) {
+            if (block.type == BlockType::Otherwise && (!previous || !isIfBlock(previous->type))) {
+                report(block, QString("%1 must come right after an If block, and runs when that one does not. Move it under an If block.").arg(describeBlock(block)));
+            }
+            visit(block, depth, context);
+            previous = &block;
+        }
+    }
+
+    void visit(const Block& block, int depth, const Context& context) {
         const auto& info = blockInfo(block.type);
         const auto label = describeBlock(block);
 
@@ -227,8 +333,25 @@ private:
         if (depth > 1 && info.isEvent) report(block, QString("%1 is an event, so it cannot go inside another block. Move it to the top level.").arg(label));
         if (!info.holdsActions && !block.children.isEmpty()) report(block, QString("%1 cannot hold other blocks. Move them out of it.").arg(label));
 
-        if (info.usesItem) checkItem(block, block.item);
-        if (info.usesVariable) checkVariable(block);
+        if (info.usesItem) checkItem(block, block.item, context, needsTemplate(block.type));
+        if (info.usesVariable) checkVariable(block, context);
+        if (info.usesFormula) checkFormula(block, context);
+        if (info.usesRadius && (block.radius < 0 || block.radius > MaximumRadius)) report(block, QString("%1 needs a distance from 0 to %2.").arg(label).arg(MaximumRadius));
+        if ((block.type == BlockType::Wander || block.type == BlockType::Flee) && (block.value < 0 || block.value > MaximumChaseSpeed)) {
+            report(block, QString("%1 needs a speed from 0 to %2 units per second.").arg(label).arg(MaximumChaseSpeed));
+        }
+        if (isPlayerButtonEvent(block.type) && block.button >= ControllerButton::P2Cross) {
+            report(block, QString("%1 runs for every player with their own controller, so choose a button without \"Player 2\" in its name.").arg(label));
+        }
+        if (block.type == BlockType::RemoveCopy && block.item != QLatin1String(SelfItem)) {
+            report(block, QString("%1 removes the copy it runs for, so its item must be @self.").arg(label));
+        }
+        if (scene && block.type == BlockType::SpawnCopy && block.otherItem == QLatin1String(NearestPlayerItem) && context.copyTemplate.isEmpty()) {
+            report(block, QString("%1 spawns at %2, which only means something inside a copy block.").arg(label, block.otherItem));
+        }
+        if (scene && block.type == BlockType::WhenCopyTouches && (block.otherItem == QLatin1String(SelfItem) || block.otherItem == QLatin1String(NearestPlayerItem))) {
+            report(block, QString("%1 checks each copy against one other item. Choose a scene item or @player.").arg(label));
+        }
         if (info.usesSound) checkSound(block);
         if (info.usesScene) checkScene(block);
         if (block.type == BlockType::IfItemDistance && block.value < 0) report(block, QString("%1 needs a distance of 0 or more.").arg(label));
@@ -241,10 +364,14 @@ private:
         if (block.type == BlockType::BurstParticles && scene && itemIds.contains(block.item) && !particleIds.contains(block.item)) {
             report(block, QString("%1 uses the item \"%2\", which is not a Particles item. Choose a Particles item to burst from.").arg(label, block.item));
         }
-        if (scene && itemIds.contains(block.item)) checkWorldBlock(block, label, itemsById.value(block.item));
+        if (const auto* resolved = scene ? resolve(block.item, context) : nullptr) checkWorldBlock(block, label, *resolved);
+        if (block.type == BlockType::CameraFollowBoth && scene && itemIds.contains(block.otherItem) && itemsById.value(block.otherItem).screenFixed) {
+            report(block, QString("%1 follows the item \"%2\", which has \"Stays on screen\" turned on, so the camera could never leave it. Choose another item.").arg(label, block.otherItem));
+        }
         if (info.usesAnimation && scene && block.animation.isEmpty()) report(block, QString("%1 has no animation chosen. Choose one of this item's animations.").arg(label));
         if (info.usesOtherItem) {
-            checkItem(block, block.otherItem);
+            const auto touchesPlayer = block.type == BlockType::WhenCopyTouches && block.otherItem == QLatin1String(PlayerItem);
+            if (!touchesPlayer && !(block.type == BlockType::WhenCopyTouches && isSpecialItem(block.otherItem))) checkItem(block, block.otherItem, context);
             if (scene && !block.item.isEmpty() && block.item == block.otherItem) {
                 report(block, QString("%1 needs two different items, but both sides are \"%2\". Choose another item for one side.").arg(label, block.item));
             }
@@ -264,7 +391,9 @@ private:
             report(block.children.first(), nestingMessage(block.children.first()));
             return;
         }
-        for (const auto& child : block.children) visit(child, depth + 1);
+        auto inner = context;
+        if (startsCopyContext(block.type) && !isSpecialItem(block.item)) inner.copyTemplate = block.item;
+        visitList(block.children, depth + 1, inner);
     }
 
     const Scene* scene;
@@ -273,6 +402,7 @@ private:
     QSet<QString> particleIds;
     QHash<QString, SceneItem> itemsById;
     QSet<QString> variableNames;
+    QHash<QString, VariableScope> variableScopes;
     QSet<QString> soundNames;
     QSet<QString> usedIds;
     QList<LogicProblem> problems;
@@ -301,15 +431,16 @@ const QHash<QString, BlockType>& legacyScoreBlocks() {
 }
 
 bool isWorldBlock(BlockType type) {
-    return type == BlockType::PlayAnimation || type == BlockType::FlipItem || type == BlockType::CameraFollow || type == BlockType::SetCameraPosition;
+    return type == BlockType::PlayAnimation || type == BlockType::FlipItem || type == BlockType::CameraFollow || type == BlockType::SetCameraPosition || type == BlockType::CameraFollowBoth;
 }
 
 bool isPhysicsBlock(BlockType type) {
-    return type == BlockType::WhenItemLands || type == BlockType::WhenItemHitsSolid || type == BlockType::WhenItemLeavesWorld || type == BlockType::SetVelocity || type == BlockType::JumpItem || type == BlockType::IfOnGround || type == BlockType::GoToScene || type == BlockType::RestartScene || type == BlockType::WhenButtonPressed || type == BlockType::IfItemDistance || type == BlockType::ChaseItem || type == BlockType::PutAtItem;
+    return type == BlockType::WhenItemLands || type == BlockType::WhenItemHitsSolid || type == BlockType::WhenItemLeavesWorld || type == BlockType::SetVelocity || type == BlockType::JumpItem || type == BlockType::IfOnGround || type == BlockType::GoToScene || type == BlockType::RestartScene || type == BlockType::WhenButtonPressed || type == BlockType::IfItemDistance || type == BlockType::ChaseItem || type == BlockType::PutAtItem || type == BlockType::PauseGame || type == BlockType::ResumeGame || type == BlockType::CameraFollowBoth;
 }
 
+// The stick directions, Options and the second player's buttons came with the top-down runtime or later.
 bool usesStickButton(const Block& block) {
-    return blockInfo(block.type).usesButton && (block.button == ControllerButton::MoveUp || block.button == ControllerButton::MoveDown || block.button == ControllerButton::MoveLeft || block.button == ControllerButton::MoveRight);
+    return blockInfo(block.type).usesButton && block.button >= ControllerButton::MoveUp;
 }
 
 struct Parsing {
@@ -364,6 +495,9 @@ QString parseBlock(const QJsonValue& value, qsizetype index, int depth, Parsing&
     if (info.usesVariable && parsing.schema < VariableSchema && !legacyScore) {
         return QString("%1 uses a variable, which needs schemaVersion %2. Change schemaVersion to %2 and add a \"variables\" list.").arg(label).arg(VariableSchema);
     }
+    if (isLanguageBlock(info.type) && parsing.schema < LanguageSchema) {
+        return QString("%1 needs schemaVersion %2. Change schemaVersion to %2 and try again.").arg(label).arg(LanguageSchema);
+    }
     if (needsSoundSchema(info) && parsing.schema < SoundSchema) {
         return QString("%1 needs schemaVersion %2, the first version with sounds and saving. Change schemaVersion to %2 and add a \"sounds\" list.").arg(label).arg(SoundSchema);
     }
@@ -395,6 +529,18 @@ QString parseBlock(const QJsonValue& value, qsizetype index, int depth, Parsing&
         block.y = numberOrInvalid(object.value("y"));
     }
     if (info.usesColor) block.color = object.value("color").toString();
+    if (info.usesFormula) {
+        const auto formula = object.value("formula");
+        if (!formula.isString()) return QString("%1 needs a formula, written as text.").arg(label);
+        block.formula = formula.toString();
+    }
+    if (info.usesRadius) {
+        const auto radius = object.value("radius");
+        if (!radius.isDouble() || radius.toDouble() != std::floor(radius.toDouble()) || radius.toDouble() < 0 || radius.toDouble() > MaximumRadius) {
+            return QString("%1 needs a radius, a whole number from 0 to %2.").arg(label).arg(MaximumRadius);
+        }
+        block.radius = static_cast<int>(radius.toDouble());
+    }
     if (info.usesValue) {
         const auto number = object.value("value");
         const auto amount = number.toDouble();
@@ -426,7 +572,7 @@ QString parseBlock(const QJsonValue& value, qsizetype index, int depth, Parsing&
     return {};
 }
 
-QString parseVariables(const QJsonArray& list, QList<LogicVariable>& variables) {
+QString parseVariables(const QJsonArray& list, QList<LogicVariable>& variables, int schema) {
     for (qsizetype index = 0; index < list.size(); ++index) {
         if (!list.at(index).isObject()) return QString("Variable number %1 must be a JSON object.").arg(index + 1);
         const auto object = list.at(index).toObject();
@@ -436,7 +582,15 @@ QString parseVariables(const QJsonArray& list, QList<LogicVariable>& variables) 
         if (!initial.isDouble() || number != std::floor(number) || std::abs(number) > MaximumVariableValue) {
             return QString("The variable \"%1\" needs a whole number from -%2 to %2 to start at.").arg(name).arg(MaximumVariableValue);
         }
-        variables.append({name, static_cast<int>(number)});
+        auto scope = VariableScope::Game;
+        if (const auto value = object.value("scope"); !value.isUndefined()) {
+            const auto text = value.toString();
+            if (text == "player") scope = VariableScope::Player;
+            else if (text == "copy") scope = VariableScope::Copy;
+            else if (text != "game") return QString("The variable \"%1\" has the scope \"%2\". A scope is game, player or copy.").arg(name, text);
+            if (scope != VariableScope::Game && schema < LanguageSchema) return QString("The variable \"%1\" is a %2 variable, which needs schemaVersion %3.").arg(name, text).arg(LanguageSchema);
+        }
+        variables.append({name, static_cast<int>(number), scope});
     }
     return {};
 }
@@ -476,6 +630,8 @@ QJsonObject blockToJson(const Block& block) {
         object.insert("y", block.y);
     }
     if (info.usesColor) object.insert("color", block.color);
+    if (info.usesFormula) object.insert("formula", block.formula);
+    if (info.usesRadius) object.insert("radius", block.radius);
     if (info.usesValue) object.insert("value", block.value);
     if (info.usesComparison) {
         for (const auto& candidate : comparisonCatalog()) {
@@ -505,7 +661,11 @@ QByteArray colorLiterals(const QString& color) {
 
 QJsonArray variablesToJson(const QList<LogicVariable>& variables) {
     QJsonArray list;
-    for (const auto& variable : variables) list.append(QJsonObject{{"name", variable.name}, {"initial", variable.initial}});
+    for (const auto& variable : variables) {
+        QJsonObject object{{"name", variable.name}, {"initial", variable.initial}};
+        if (variable.scope != VariableScope::Game) object.insert("scope", scopeName(variable.scope));
+        list.append(object);
+    }
     return list;
 }
 
@@ -523,6 +683,20 @@ QByteArray buttonConstant(ControllerButton button) {
     case ControllerButton::MoveDown: return "MoveDown";
     case ControllerButton::MoveLeft: return "MoveLeft";
     case ControllerButton::MoveRight: return "MoveRight";
+    case ControllerButton::Options: return "Options";
+    case ControllerButton::P2Cross: return "P2Cross";
+    case ControllerButton::P2Circle: return "P2Circle";
+    case ControllerButton::P2Square: return "P2Square";
+    case ControllerButton::P2Triangle: return "P2Triangle";
+    case ControllerButton::P2Options: return "P2Options";
+    case ControllerButton::P2DpadUp: return "P2DpadUp";
+    case ControllerButton::P2DpadDown: return "P2DpadDown";
+    case ControllerButton::P2DpadLeft: return "P2DpadLeft";
+    case ControllerButton::P2DpadRight: return "P2DpadRight";
+    case ControllerButton::P2MoveUp: return "P2MoveUp";
+    case ControllerButton::P2MoveDown: return "P2MoveDown";
+    case ControllerButton::P2MoveLeft: return "P2MoveLeft";
+    case ControllerButton::P2MoveRight: return "P2MoveRight";
     }
     return {};
 }
@@ -549,7 +723,12 @@ class Generator {
 public:
     Generator(const Scene& scene, const LogicProgram& program, int firstItem = 0, QHash<QString, int> sceneIndexes = {}) : scene(scene), firstItem(firstItem), sceneIndexes(std::move(sceneIndexes)) {
         for (qsizetype index = 0; index < scene.items.size(); ++index) itemIndexes.insert(scene.items[index].id, index);
-        for (qsizetype index = 0; index < program.variables.size(); ++index) variableIndexes.insert(program.variables[index].name, index);
+        std::array<qsizetype, 3> counts{};
+        for (const auto& variable : program.variables) {
+            auto& count = counts[static_cast<std::size_t>(variable.scope)];
+            variableIndexes.insert(variable.name, count++);
+            variableScopes.insert(variable.name, variable.scope);
+        }
         for (qsizetype index = 0; index < program.sounds.size(); ++index) soundIndexes.insert(program.sounds[index].name, index);
     }
 
@@ -557,11 +736,86 @@ public:
 
     QByteArray variable(const QString& name) const { return QByteArray::number(variableIndexes.value(name)); }
 
+    // The C++ for an item choice: a scene item's number, or the runtime's answer for @self, @player and @nearestPlayer.
+    QByteArray item(const QString& id) const {
+        if (id == QLatin1String(SelfItem)) return "world.Self()";
+        if (id == QLatin1String(PlayerItem)) return "world.PlayerHero()";
+        if (id == QLatin1String(NearestPlayerItem)) return "world.NearestPlayerHero(world.Self())";
+        return index(id);
+    }
+
+    // The scene item an item choice stands for, as far as the generator knows: @self is its template.
+    QString realItem(const QString& id) const { return id == QLatin1String(SelfItem) && !copyTemplates.isEmpty() ? copyTemplates.last() : id; }
+
+    QByteArray scopeSuffix(const QString& name) const {
+        const auto scope = variableScopes.value(name);
+        return scope == VariableScope::Player ? "PlayerVariable" : scope == VariableScope::Copy ? "CopyVariable" : "Variable";
+    }
+    QByteArray readVariable(const QString& name) const { return "world." + scopeSuffix(name) + "(" + variable(name) + ")"; }
+    QByteArray setVariable(const QString& name, const QByteArray& value) const { return "world.Set" + scopeSuffix(name) + "(" + variable(name) + ", " + value + ")"; }
+    QByteArray changeVariable(const QString& name, const QByteArray& amount) const { return "world.Change" + scopeSuffix(name) + "(" + variable(name) + ", " + amount + ")"; }
+
+    QByteArray formula(const QString& text) const {
+        return compileFormula(text, [&](const QString& name) {
+            const auto lower = name.toLower();
+            if (lower == "player") return FormulaName{FormulaNameKind::Player, 0};
+            if (lower == "players") return FormulaName{FormulaNameKind::Players, 0};
+            if (!variableIndexes.contains(name)) return FormulaName{};
+            const auto scope = variableScopes.value(name);
+            const auto kind = scope == VariableScope::Player ? FormulaNameKind::PlayerVariable : scope == VariableScope::Copy ? FormulaNameKind::CopyVariable : FormulaNameKind::GameVariable;
+            return FormulaName{kind, static_cast<int>(variableIndexes.value(name))};
+        }).code;
+    }
+
+    // The first copy of a template and one past its last, as numbers in the game's item list.
+    std::pair<QByteArray, QByteArray> copyRange(const QString& templateId) const {
+        const auto first = firstItem + itemIndexes.value(templateId);
+        const auto count = scene.items[itemIndexes.value(templateId)].copies;
+        return {QByteArray::number(first), QByteArray::number(first + count)};
+    }
+
+    // Runs `body` once for each live copy of the template, with @self set to it, and puts @self back after.
+    void forEachCopy(const QString& templateId, int level, QByteArray& code, const std::function<void(int)>& body) const {
+        const auto pad = indentation(level);
+        const auto [first, last] = copyRange(templateId);
+        code += pad + "{\n";
+        code += pad + "    const auto outerSelf = world.Self();\n";
+        code += pad + "    for (std::size_t copyItem = " + first + "; copyItem < " + last + "; ++copyItem) {\n";
+        code += pad + "        if (!world.Alive(copyItem)) continue;\n";
+        code += pad + "        world.SetSelf(copyItem);\n";
+        copyTemplates.append(templateId);
+        body(level + 2);
+        copyTemplates.removeLast();
+        code += pad + "    }\n";
+        code += pad + "    world.SetSelf(outerSelf);\n";
+        code += pad + "}\n";
+    }
+
+    // Runs `body` once for each player in the scene, as the current player, and puts the current player back after.
+    void forEachPlayer(int level, QByteArray& code, const QByteArray& condition, const std::function<void(int)>& body) const {
+        const auto pad = indentation(level);
+        code += pad + "{\n";
+        code += pad + "    const auto outerPlayer = world.CurrentPlayer();\n";
+        code += pad + "    for (std::size_t player = 0; player < world.PlayerSlots(); ++player) {\n";
+        code += pad + "        if (!world.PlayerHere(player)) continue;\n";
+        code += pad + "        world.SetCurrentPlayer(player);\n";
+        if (condition.isEmpty()) {
+            body(level + 2);
+        } else {
+            code += pad + "        if (" + condition + ") {\n";
+            body(level + 3);
+            code += pad + "        }\n";
+        }
+        code += pad + "    }\n";
+        code += pad + "    world.SetCurrentPlayer(outerPlayer);\n";
+        code += pad + "}\n";
+    }
+
     QByteArray sound(const QString& name) const { return QByteArray::number(soundIndexes.value(name)); }
     int animationIndex(const Block& block) const {
-        const auto& item = scene.items[itemIndexes.value(block.item)];
-        const auto found = std::ranges::find(item.animations, block.animation, &SceneAnimation::name);
-        return found == item.animations.end() ? 0 : static_cast<int>(found - item.animations.begin());
+        const auto& sheet = scene.items[itemIndexes.value(realItem(block.item))];
+        const auto found = std::ranges::find(sheet.animations, block.animation, &SceneAnimation::name);
+        return found == sheet.animations.end() ? 0 : static_cast<int>(found - sheet.animations.begin());
     }
 
     void actions(const QList<Block>& blocks, int level, QByteArray& code) const {
@@ -573,28 +827,85 @@ public:
         const auto comment = " // " + block.id.toLatin1() + '\n';
         switch (block.type) {
         case BlockType::MoveBy:
-            code += pad + "world.MoveBy(" + index(block.item) + ", " + floatLiteral(block.x) + ", " + floatLiteral(block.y) + ");" + comment;
+            code += pad + "world.MoveBy(" + item(block.item) + ", " + floatLiteral(block.x) + ", " + floatLiteral(block.y) + ");" + comment;
             return;
         case BlockType::SetPosition:
-            code += pad + "world.SetPosition(" + index(block.item) + ", " + floatLiteral(block.x) + ", " + floatLiteral(block.y) + ");" + comment;
+            code += pad + "world.SetPosition(" + item(block.item) + ", " + floatLiteral(block.x) + ", " + floatLiteral(block.y) + ");" + comment;
             return;
         case BlockType::Show:
-            code += pad + "world.SetVisible(" + index(block.item) + ", true);" + comment;
+            code += pad + "world.SetVisible(" + item(block.item) + ", true);" + comment;
             return;
         case BlockType::Hide:
-            code += pad + "world.SetVisible(" + index(block.item) + ", false);" + comment;
+            code += pad + "world.SetVisible(" + item(block.item) + ", false);" + comment;
             return;
         case BlockType::SetColor:
-            code += pad + "world.SetColor(" + index(block.item) + ", " + colorLiterals(block.color) + ");" + comment;
+            code += pad + "world.SetColor(" + item(block.item) + ", " + colorLiterals(block.color) + ");" + comment;
             return;
         case BlockType::SetVariable:
-            code += pad + "world.SetVariable(" + variable(block.variable) + ", " + QByteArray::number(block.value) + ");" + comment;
+            code += pad + setVariable(block.variable, QByteArray::number(block.value)) + ";" + comment;
             return;
         case BlockType::ChangeVariable:
-            code += pad + "world.ChangeVariable(" + variable(block.variable) + ", " + QByteArray::number(block.value) + ");" + comment;
+            code += pad + changeVariable(block.variable, QByteArray::number(block.value)) + ";" + comment;
             return;
+        case BlockType::SetFormula:
+            code += pad + setVariable(block.variable, "Formula::ToVariable(" + formula(block.formula) + ")") + ";" + comment;
+            return;
+        case BlockType::IfFormula:
+            code += pad + "if (" + formula(block.formula) + " != 0) {" + comment;
+            actions(block.children, level + 1, code);
+            code += pad + "}\n";
+            return;
+        case BlockType::Otherwise:
+            code += pad + "else {" + comment;
+            actions(block.children, level + 1, code);
+            code += pad + "}\n";
+            return;
+        case BlockType::ForEachPlayer:
+            code += pad + "// " + block.id.toLatin1() + ": " + blockInfo(block.type).title.toLatin1() + '\n';
+            forEachPlayer(level, code, {}, [&](int inner) { actions(block.children, inner, code); });
+            return;
+        case BlockType::ForEachCopy:
+            code += pad + "// " + block.id.toLatin1() + ": " + blockInfo(block.type).title.toLatin1() + '\n';
+            forEachCopy(block.item, level, code, [&](int inner) { actions(block.children, inner, code); });
+            return;
+        case BlockType::SpawnCopy: {
+            const auto [first, last] = copyRange(block.item);
+            code += pad + "{" + comment;
+            code += pad + "    const auto spawned = world.SpawnCopy(" + first + ", " + last + ", " + item(block.otherItem) + ", " + floatLiteral(block.x) + ", " + floatLiteral(block.y) + ");\n";
+            if (!block.children.isEmpty()) {
+                code += pad + "    if (spawned != world.NoItem()) {\n";
+                code += pad + "        const auto outerSelf = world.Self();\n";
+                code += pad + "        world.SetSelf(spawned);\n";
+                copyTemplates.append(block.item);
+                actions(block.children, level + 2, code);
+                copyTemplates.removeLast();
+                code += pad + "        world.SetSelf(outerSelf);\n";
+                code += pad + "    }\n";
+            } else {
+                code += pad + "    static_cast<void>(spawned);\n";
+            }
+            code += pad + "}\n";
+            return;
+        }
+        case BlockType::RemoveCopy:
+            code += pad + "world.RemoveCopy(" + item(block.item) + ");" + comment;
+            return;
+        case BlockType::SetLook:
+            code += pad + "world.SetLook(" + item(block.item) + ", " + formula(block.formula) + ");" + comment;
+            return;
+        case BlockType::Wander:
+            code += pad + "world.Wander(" + item(block.item) + ", " + floatLiteral(block.value) + ", " + floatLiteral(block.radius) + ");" + comment;
+            return;
+        case BlockType::Flee:
+            code += pad + "world.Flee(" + item(block.item) + ", " + item(block.otherItem) + ", " + floatLiteral(block.value) + ");" + comment;
+            return;
+        case BlockType::AlertNearby: {
+            const auto [first, last] = copyRange(block.item);
+            code += pad + "world.AlertNearby(" + first + ", " + last + ", " + variable(block.variable) + ", " + QByteArray::number(block.value) + ", " + floatLiteral(block.radius) + ");" + comment;
+            return;
+        }
         case BlockType::BurstParticles:
-            code += pad + "world.BurstParticles(" + index(block.item) + ");" + comment;
+            code += pad + "world.BurstParticles(" + item(block.item) + ");" + comment;
             return;
         case BlockType::PlaySound:
             code += pad + "world.PlaySound(" + sound(block.sound) + ");" + comment;
@@ -615,25 +926,25 @@ public:
             code += pad + "world.LoadVariables();" + comment;
             return;
         case BlockType::PlayAnimation:
-            code += pad + "world.PlayAnimation(" + index(block.item) + ", " + QByteArray::number(animationIndex(block)) + ");" + comment;
+            code += pad + "world.PlayAnimation(" + item(block.item) + ", " + QByteArray::number(animationIndex(block)) + ");" + comment;
             return;
         case BlockType::FlipItem:
-            code += pad + "world.SetFlipped(" + index(block.item) + ", " + (block.flipped ? "true" : "false") + ");" + comment;
+            code += pad + "world.SetFlipped(" + item(block.item) + ", " + (block.flipped ? "true" : "false") + ");" + comment;
             return;
         case BlockType::CameraFollow:
-            code += pad + "world.CameraFollow(" + index(block.item) + ");" + comment;
+            code += pad + "world.CameraFollow(" + item(block.item) + ");" + comment;
             return;
         case BlockType::SetCameraPosition:
             code += pad + "world.SetCameraPosition(" + floatLiteral(block.x) + ", " + floatLiteral(block.y) + ");" + comment;
             return;
         case BlockType::SetVelocity:
-            code += pad + "world.SetVelocity(" + index(block.item) + ", " + floatLiteral(block.x) + ", " + floatLiteral(block.y) + ");" + comment;
+            code += pad + "world.SetVelocity(" + item(block.item) + ", " + floatLiteral(block.x) + ", " + floatLiteral(block.y) + ");" + comment;
             return;
         case BlockType::JumpItem:
-            code += pad + "world.Jump(" + index(block.item) + ");" + comment;
+            code += pad + "world.Jump(" + item(block.item) + ");" + comment;
             return;
         case BlockType::IfOnGround:
-            code += pad + "if (world.OnGround(" + index(block.item) + ")) {" + comment;
+            code += pad + "if (world.OnGround(" + item(block.item) + ")) {" + comment;
             actions(block.children, level + 1, code);
             code += pad + "}\n";
             return;
@@ -644,18 +955,27 @@ public:
             code += pad + "world.RestartScene();" + comment;
             return;
         case BlockType::IfItemDistance:
-            code += pad + "if (world.Distance(" + index(block.item) + ", " + index(block.otherItem) + ") " + comparisonOperator(block.comparison) + ' ' + floatLiteral(block.value) + ") {" + comment;
+            code += pad + "if (world.Distance(" + item(block.item) + ", " + item(block.otherItem) + ") " + comparisonOperator(block.comparison) + ' ' + floatLiteral(block.value) + ") {" + comment;
             actions(block.children, level + 1, code);
             code += pad + "}\n";
             return;
         case BlockType::ChaseItem:
-            code += pad + "world.Chase(" + index(block.item) + ", " + index(block.otherItem) + ", " + floatLiteral(block.value) + ");" + comment;
+            code += pad + "world.Chase(" + item(block.item) + ", " + item(block.otherItem) + ", " + floatLiteral(block.value) + ");" + comment;
             return;
         case BlockType::PutAtItem:
-            code += pad + "world.PutAt(" + index(block.item) + ", " + index(block.otherItem) + ", " + floatLiteral(block.x) + ", " + floatLiteral(block.y) + ");" + comment;
+            code += pad + "world.PutAt(" + item(block.item) + ", " + item(block.otherItem) + ", " + floatLiteral(block.x) + ", " + floatLiteral(block.y) + ");" + comment;
+            return;
+        case BlockType::PauseGame:
+            code += pad + "world.PauseGame();" + comment;
+            return;
+        case BlockType::ResumeGame:
+            code += pad + "world.ResumeGame();" + comment;
+            return;
+        case BlockType::CameraFollowBoth:
+            code += pad + "world.CameraFollowBoth(" + item(block.item) + ", " + item(block.otherItem) + ");" + comment;
             return;
         case BlockType::IfVariable:
-            code += pad + "if (world.Variable(" + variable(block.variable) + ") " + comparisonOperator(block.comparison) + ' ' + QByteArray::number(block.value) + ") {" + comment;
+            code += pad + "if (" + readVariable(block.variable) + " " + comparisonOperator(block.comparison) + ' ' + QByteArray::number(block.value) + ") {" + comment;
             actions(block.children, level + 1, code);
             code += pad + "}\n";
             return;
@@ -667,11 +987,17 @@ public:
         case BlockType::WhenItemLands:
         case BlockType::WhenItemHitsSolid:
         case BlockType::WhenItemLeavesWorld:
+        case BlockType::WhenPlayerPresses:
+        case BlockType::WhilePlayerHolds:
+        case BlockType::WhenPlayerJoins:
+        case BlockType::EveryFrameForEachCopy:
+        case BlockType::WhenCopyTouches:
             return; // validation keeps events out of an action list
         }
     }
 
-    void frameEvent(const Block& block, int touchIndex, QByteArray& code) const {
+    // Writes one event that runs each frame, and returns how many touch slots of Memory it used from `touchIndex` on.
+    int frameEvent(const Block& block, int touchIndex, QByteArray& code) const {
         code += "    // " + block.id.toLatin1() + ": " + blockInfo(block.type).title.toLatin1() + '\n';
         if (block.type == BlockType::EveryFrame) {
             actions(block.children, 1, code);
@@ -683,22 +1009,70 @@ public:
             code += "    if (world.Pressed(Buttons::" + buttonConstant(block.button) + ")) {\n";
             actions(block.children, 2, code);
             code += "    }\n";
+        } else if (block.type == BlockType::WhenItemsTouch && (block.item == QLatin1String(PlayerItem) || block.otherItem == QLatin1String(PlayerItem))) {
+            const auto slot = "memory.touching[" + QByteArray::number(touchIndex) + " + player]";
+            forEachPlayer(1, code, {}, [&](int inner) {
+                const auto pad = indentation(inner);
+                code += pad + "const bool touching = world.Touching(" + item(block.item) + ", " + item(block.otherItem) + ");\n";
+                code += pad + "const bool started = touching && !" + slot + ";\n";
+                code += pad + slot + " = touching;\n";
+                code += pad + "if (started) {\n";
+                actions(block.children, inner + 1, code);
+                code += pad + "}\n";
+            });
+            return MaximumPlayers;
         } else if (block.type == BlockType::WhenItemsTouch) {
             const auto slot = "memory.touching[" + QByteArray::number(touchIndex) + "]";
             code += "    {\n";
-            code += "        const bool touching = world.Touching(" + index(block.item) + ", " + index(block.otherItem) + ");\n";
+            code += "        const bool touching = world.Touching(" + item(block.item) + ", " + item(block.otherItem) + ");\n";
             code += "        const bool started = touching && !" + slot + ";\n";
             code += "        " + slot + " = touching;\n";
             code += "        if (started) {\n";
             actions(block.children, 3, code);
             code += "        }\n";
             code += "    }\n";
+            return 1;
+        } else if (block.type == BlockType::WhenPlayerPresses || block.type == BlockType::WhilePlayerHolds) {
+            const auto call = block.type == BlockType::WhenPlayerPresses ? "world.PlayerPressed(Buttons::" : "world.PlayerHeld(Buttons::";
+            forEachPlayer(1, code, call + buttonConstant(block.button) + ")", [&](int inner) { actions(block.children, inner, code); });
+        } else if (block.type == BlockType::WhenPlayerJoins) {
+            forEachPlayer(1, code, "world.PlayerJoined(player)", [&](int inner) { actions(block.children, inner, code); });
+        } else if (block.type == BlockType::EveryFrameForEachCopy) {
+            forEachCopy(block.item, 1, code, [&](int inner) { actions(block.children, inner, code); });
+        } else if (block.type == BlockType::WhenCopyTouches) {
+            const auto [first, last] = copyRange(block.item);
+            const bool perPlayer = block.otherItem == QLatin1String(PlayerItem);
+            const auto base = QByteArray::number(touchIndex);
+            const auto slot = perPlayer ? "memory.touching[" + base + " + (copyItem - " + first + ") * " + QByteArray::number(MaximumPlayers) + " + player]" : "memory.touching[" + base + " + (copyItem - " + first + ")]";
+            const auto check = [&](int inner) {
+                const auto pad = indentation(inner);
+                code += pad + "const bool touching = world.Touching(copyItem, " + item(block.otherItem) + ");\n";
+                code += pad + "const bool started = touching && !" + slot + ";\n";
+                code += pad + slot + " = touching;\n";
+                code += pad + "if (started) {\n";
+                actions(block.children, inner + 1, code);
+                code += pad + "}\n";
+            };
+            // A dead copy touches nothing, so its slots are cleared and it starts touching afresh when spawned again.
+            code += "    {\n";
+            code += "        const auto outerSelf = world.Self();\n";
+            code += "        for (std::size_t copyItem = " + first + "; copyItem < " + last + "; ++copyItem) {\n";
+            code += "            world.SetSelf(copyItem);\n";
+            copyTemplates.append(block.item);
+            if (perPlayer) forEachPlayer(3, code, {}, check);
+            else check(3);
+            copyTemplates.removeLast();
+            code += "        }\n";
+            code += "        world.SetSelf(outerSelf);\n";
+            code += "    }\n";
+            return static_cast<int>((last.toInt() - first.toInt()) * (perPlayer ? MaximumPlayers : 1));
         } else if (block.type == BlockType::WhenItemLands || block.type == BlockType::WhenItemHitsSolid || block.type == BlockType::WhenItemLeavesWorld) {
             const auto call = block.type == BlockType::WhenItemLands ? "Landed" : block.type == BlockType::WhenItemHitsSolid ? "HitSolid" : "LeftWorld";
-            code += QByteArray("    if (world.") + call + "(" + index(block.item) + ")) {\n";
+            code += QByteArray("    if (world.") + call + "(" + item(block.item) + ")) {\n";
             actions(block.children, 2, code);
             code += "    }\n";
         }
+        return 0;
     }
 
 private:
@@ -706,7 +1080,9 @@ private:
     int firstItem;
     QHash<QString, int> sceneIndexes;
     QHash<QString, qsizetype> itemIndexes;
-    QHash<QString, qsizetype> variableIndexes;
+    QHash<QString, qsizetype> variableIndexes; // each variable's place among the variables of its scope
+    QHash<QString, VariableScope> variableScopes;
+    mutable QStringList copyTemplates; // the templates whose copy the blocks being written run for, innermost last
     QHash<QString, qsizetype> soundIndexes;
 };
 
@@ -734,6 +1110,15 @@ bool programUsesSaveData(const LogicProgram& program) {
     return std::ranges::any_of(program.otherScenes, [](const SceneLogic& other) { return usesSaveData(other.events); });
 }
 
+bool usesFormulaBlock(const QList<Block>& blocks) {
+    return std::ranges::any_of(blocks, [](const Block& block) { return blockInfo(block.type).usesFormula || usesFormulaBlock(block.children); });
+}
+
+bool usesFormulas(const LogicProgram& program) {
+    if (usesFormulaBlock(program.events)) return true;
+    return std::ranges::any_of(program.otherScenes, [](const SceneLogic& other) { return usesFormulaBlock(other.events); });
+}
+
 bool usesWorldBlock(const QList<Block>& blocks) {
     return std::ranges::any_of(blocks, [](const Block& block) { return isWorldBlock(block.type) || usesWorldBlock(block.children); });
 }
@@ -746,13 +1131,14 @@ bool referencesItems(const QList<Block>& blocks) {
     return false;
 }
 
-QByteArray assembleHeader(bool includeScene, bool includeSounds, bool includeButtons, int itemCount, int soundCount, int touchEvents, const QList<QByteArray>& startCodes, const QList<QByteArray>& frameCodes) {
+QByteArray assembleHeader(bool includeScene, bool includeSounds, bool includeButtons, int itemCount, int soundCount, int touchEvents, const QList<QByteArray>& startCodes, const QList<QByteArray>& frameCodes, bool includeFormula = false) {
     QByteArray header = "// Generated by AnyDevKit Studio from logic.json. Do not edit.\n#pragma once\n\n";
     if (includeScene) header += "#include \"GeneratedScene.hpp\"\n";
     if (includeSounds) header += "#include \"GeneratedSounds.hpp\"\n";
     if (includeButtons) header += "#include \"Input/Buttons.hpp\"\n";
-    if (includeScene || includeSounds || includeButtons) header += '\n';
-    header += "#include <array>\n#include <cstddef>\n\nnamespace GeneratedLogic {\n\n";
+    if (includeFormula) header += "#include \"Scene/Formula.hpp\"\n";
+    if (includeScene || includeSounds || includeButtons || includeFormula) header += '\n';
+    header += "#include <array>\n#include <cstddef>\n#include <cstdint>\n\nnamespace GeneratedLogic {\n\n";
     if (includeScene) {
         header += "static_assert(GeneratedScene::Items.size() == " + QByteArray::number(itemCount)
             + ", \"GeneratedScene.hpp and GeneratedLogic.hpp do not match. Build the project again from Studio.\");\n\n";
@@ -833,6 +1219,26 @@ const QList<BlockInfo>& blockCatalog() {
         {BlockType::IfItemDistance, "ifItemDistance", "If distance between",         false, true,  false, true,  true,  false, false, true,  true,  false, false},
         {BlockType::ChaseItem, "chaseItem", "Chase",                                 false, false, false, true,  true,  false, false, true,  false, false, false},
         {BlockType::PutAtItem, "putAtItem", "Put item",                              false, false, false, true,  true,  true,  false, false, false, false, false},
+        {BlockType::PauseGame, "pauseGame", "Pause the game",                        false, false, false, false, false, false, false, false, false, false, false},
+        {BlockType::ResumeGame, "resumeGame", "Resume the game",                     false, false, false, false, false, false, false, false, false, false, false},
+        {BlockType::CameraFollowBoth, "cameraFollowBoth", "Camera follows two items", false, false, false, true, true,  false, false, false, false, false, false},
+        //                                                                                event  holds  button item   other  pos    color  value  cmp    variable sound  anim   flip   scene  formula radius
+        {BlockType::SetFormula, "setFormula", "Set variable to a formula",            false, false, false, false, false, false, false, false, false, true,  false, false, false, false, true,  false},
+        {BlockType::IfFormula, "ifFormula", "If",                                     false, true,  false, false, false, false, false, false, false, false, false, false, false, false, true,  false},
+        {BlockType::Otherwise, "otherwise", "Otherwise",                              false, true,  false, false, false, false, false, false, false, false, false, false, false, false, false, false},
+        {BlockType::WhenPlayerPresses, "whenPlayerPresses", "When a player presses",   true,  true,  true,  false, false, false, false, false, false, false, false},
+        {BlockType::WhilePlayerHolds, "whilePlayerHolds", "While a player holds",      true,  true,  true,  false, false, false, false, false, false, false, false},
+        {BlockType::WhenPlayerJoins, "whenPlayerJoins", "When a player joins",         true,  true,  false, false, false, false, false, false, false, false, false},
+        {BlockType::ForEachPlayer, "forEachPlayer", "For each player",                false, true,  false, false, false, false, false, false, false, false, false},
+        {BlockType::EveryFrameForEachCopy, "everyFrameForEachCopy", "Every frame, for each copy of", true, true, false, true, false, false, false, false, false, false, false},
+        {BlockType::WhenCopyTouches, "whenCopyTouches", "When a copy touches",         true,  true,  false, true,  true,  false, false, false, false, false, false},
+        {BlockType::SpawnCopy, "spawnCopy", "Spawn a copy",                           false, true,  false, true,  true,  true,  false, false, false, false, false},
+        {BlockType::RemoveCopy, "removeCopy", "Remove this copy",                     false, false, false, true,  false, false, false, false, false, false, false},
+        {BlockType::ForEachCopy, "forEachCopy", "For each copy of",                   false, true,  false, true,  false, false, false, false, false, false, false},
+        {BlockType::Wander, "wander", "Wander",                                       false, false, false, true,  false, false, false, true,  false, false, false, false, false, false, false, true},
+        {BlockType::Flee, "flee", "Run away from",                                    false, false, false, true,  true,  false, false, true,  false, false, false},
+        {BlockType::AlertNearby, "alertNearby", "Tell nearby copies",                 false, false, false, true,  false, false, false, true,  false, true,  false, false, false, false, false, true},
+        {BlockType::SetLook, "setLook", "Set look",                                   false, false, false, true,  false, false, false, false, false, false, false, false, false, false, true,  false},
     };
     return catalog;
 }
@@ -855,6 +1261,20 @@ const QList<ButtonInfo>& buttonCatalog() {
         {ControllerButton::MoveDown, "moveDown", "Move down"},
         {ControllerButton::MoveLeft, "moveLeft", "Move left"},
         {ControllerButton::MoveRight, "moveRight", "Move right"},
+        {ControllerButton::Options, "options", "Options"},
+        {ControllerButton::P2Cross, "p2Cross", "Player 2 Cross"},
+        {ControllerButton::P2Circle, "p2Circle", "Player 2 Circle"},
+        {ControllerButton::P2Square, "p2Square", "Player 2 Square"},
+        {ControllerButton::P2Triangle, "p2Triangle", "Player 2 Triangle"},
+        {ControllerButton::P2Options, "p2Options", "Player 2 Options"},
+        {ControllerButton::P2DpadUp, "p2DpadUp", "Player 2 D-pad up"},
+        {ControllerButton::P2DpadDown, "p2DpadDown", "Player 2 D-pad down"},
+        {ControllerButton::P2DpadLeft, "p2DpadLeft", "Player 2 D-pad left"},
+        {ControllerButton::P2DpadRight, "p2DpadRight", "Player 2 D-pad right"},
+        {ControllerButton::P2MoveUp, "p2MoveUp", "Player 2 move up"},
+        {ControllerButton::P2MoveDown, "p2MoveDown", "Player 2 move down"},
+        {ControllerButton::P2MoveLeft, "p2MoveLeft", "Player 2 move left"},
+        {ControllerButton::P2MoveRight, "p2MoveRight", "Player 2 move right"},
     };
     return catalog;
 }
@@ -943,7 +1363,7 @@ LogicLoadResult loadLogic(const QString& path) {
     LogicProgram program;
     if (version >= VariableSchema) {
         if (!root.value("variables").isArray()) return failure(QString("%1 has no variables list. Add \"variables\": [] to the file.").arg(fileName));
-        const auto problem = parseVariables(root.value("variables").toArray(), program.variables);
+        const auto problem = parseVariables(root.value("variables").toArray(), program.variables, version);
         if (!problem.isEmpty()) return failure(problem);
     }
     if (version >= SoundSchema) {
@@ -1047,8 +1467,9 @@ QByteArray generateLogicHeader(const LogicProgram& program, const Scene& scene) 
     return generateLogicHeader(sceneProgram, set);
 }
 
-QByteArray generateLogicHeader(const LogicProgram& program, const SceneSet& set) {
-    if (!validateSceneSet(set).isEmpty() || !validateGameLogic(program, set).isEmpty()) return {};
+QByteArray generateLogicHeader(const LogicProgram& program, const SceneSet& original) {
+    if (!validateSceneSet(original).isEmpty() || !validateGameLogic(program, original).isEmpty()) return {};
+    const auto set = expandCopies(original); // the game numbers every copy as an item of its own
 
     QHash<QString, int> sceneIndexes;
     for (qsizetype index = 0; index < set.scenes.size(); ++index) sceneIndexes.insert(set.scenes[index].id, static_cast<int>(index));
@@ -1088,9 +1509,8 @@ QByteArray generateLogicHeader(const LogicProgram& program, const SceneSet& set)
                 generator.actions(block.children, 1, startCode);
                 continue;
             }
-            generator.frameEvent(block, touchEvents, frameCode);
-            if (block.type == BlockType::WhenItemsTouch) ++touchEvents;
-            if (block.type == BlockType::WhileButtonHeld || block.type == BlockType::WhenButtonPressed) usesButtons = true;
+            touchEvents += generator.frameEvent(block, touchEvents, frameCode);
+            if (block.type == BlockType::WhileButtonHeld || block.type == BlockType::WhenButtonPressed || isPlayerButtonEvent(block.type)) usesButtons = true;
         }
         startCodes.append(startCode);
         frameCodes.append(frameCode);
@@ -1100,7 +1520,7 @@ QByteArray generateLogicHeader(const LogicProgram& program, const SceneSet& set)
         if (set.scenes.size() == 1) return generateEmptyLogicHeader();
         return assembleHeader(false, false, false, 0, 0, 0, startCodes, frameCodes);
     }
-    return assembleHeader(usesItems, usesSounds, usesButtons, totalItems, static_cast<int>(program.sounds.size()), touchEvents, startCodes, frameCodes);
+    return assembleHeader(usesItems, usesSounds, usesButtons, totalItems, static_cast<int>(program.sounds.size()), touchEvents, startCodes, frameCodes, usesFormulas(program));
 }
 
 bool programUsesWorldBlocks(const LogicProgram& program) {
@@ -1126,25 +1546,41 @@ QByteArray generateVariablesHeader(const LogicProgram& program, const Scene& sce
     return generateVariablesHeader(sceneProgram, set);
 }
 
-QByteArray generateVariablesHeader(const LogicProgram& program, const SceneSet& set) {
-    if (!validateSceneSet(set).isEmpty() || !validateGameLogic(program, set).isEmpty()) return {};
-    Scene scene; // every scene's items in one list, as the runtime numbers them
-    for (const auto& oneScene : set.scenes) {
+QByteArray generateVariablesHeader(const LogicProgram& program, const SceneSet& original) {
+    if (!validateSceneSet(original).isEmpty() || !validateGameLogic(program, original).isEmpty()) return {};
+    for (const auto& oneScene : original.scenes) {
         if (!validateTextBindings(oneScene, program).isEmpty()) return {};
-        scene.items += oneScene.items;
     }
+    const auto set = expandCopies(original);
+    Scene scene; // every scene's items in one list, as the runtime numbers them
+    for (const auto& oneScene : set.scenes) scene.items += oneScene.items;
 
-    QHash<QString, qsizetype> variableIndexes;
-    QByteArrayList initialValues;
-    QByteArrayList names;
-    QByteArrayList hashes;
-    for (qsizetype index = 0; index < program.variables.size(); ++index) {
-        variableIndexes.insert(program.variables[index].name, index);
-        initialValues << QByteArray::number(program.variables[index].initial);
-        names << program.variables[index].name.toLatin1(); // names are letters, digits and _, safe in a comment
+    const auto nameHash = [](const QString& name) {
         std::uint32_t hash = 2166136261u; // FNV-1a, the same as SaveData::NameHash in the runtime
-        for (const char byte : program.variables[index].name.toUtf8()) hash = (hash ^ static_cast<unsigned char>(byte)) * 16777619u;
-        hashes << QByteArray::number(hash) + "u";
+        for (const char byte : name.toUtf8()) hash = (hash ^ static_cast<unsigned char>(byte)) * 16777619u;
+        return QByteArray::number(hash) + "u";
+    };
+    QHash<QString, qsizetype> variableIndexes; // each variable's place among the variables of its scope
+    QHash<QString, VariableScope> scopes;
+    std::array<QByteArrayList, 3> initialValues;
+    std::array<QByteArrayList, 3> names;
+    QByteArrayList gameHashes;
+    QStringList playerNames;
+    for (const auto& variable : program.variables) {
+        const auto scope = static_cast<std::size_t>(variable.scope);
+        variableIndexes.insert(variable.name, initialValues[scope].size());
+        scopes.insert(variable.name, variable.scope);
+        initialValues[scope] << QByteArray::number(variable.initial);
+        names[scope] << variable.name.toLatin1(); // names are letters, digits and _, safe in a comment
+        if (variable.scope == VariableScope::Game) gameHashes << nameHash(variable.name);
+        if (variable.scope == VariableScope::Player) playerNames << variable.name;
+    }
+    // A save keeps the game variables first, as older games did, then each player's variables in turn.
+    auto savedHashes = gameHashes;
+    auto savedValues = initialValues[0];
+    for (int player = 1; player <= MaximumPlayers; ++player) {
+        for (const auto& name : playerNames) savedHashes << nameHash(name + "@" + QString::number(player));
+        savedValues += initialValues[1];
     }
 
     QByteArray parts;
@@ -1163,8 +1599,11 @@ QByteArray generateVariablesHeader(const LogicProgram& program, const SceneSet& 
                 parts += "    {\"" + textLiteral(part.text) + "\", -1},\n";
                 quads += part.text.size();
             } else {
-                parts += "    {\"\", " + QByteArray::number(variableIndexes.value(part.variable)) + "},\n";
-                quads += MaximumVariableCharacters;
+                const auto scope = static_cast<int>(scopes.value(part.variable));
+                auto extra = scope != 0 || part.player > 0 || part.letter ? ", " + QByteArray::number(scope) + ", " + QByteArray::number(part.player - 1) : QByteArray();
+                if (part.letter) extra += ", true";
+                parts += "    {\"\", " + QByteArray::number(variableIndexes.value(part.variable)) + extra + "},\n";
+                quads += part.letter ? 1 : MaximumVariableCharacters;
             }
             ++partCount;
         }
@@ -1173,20 +1612,37 @@ QByteArray generateVariablesHeader(const LogicProgram& program, const SceneSet& 
         ++boundCount;
     }
 
+    const auto list = [](const QByteArray& type, const QByteArray& name, const QByteArrayList& values, const QByteArray& comment) {
+        QByteArray line = "inline constexpr std::array<" + type + ", " + QByteArray::number(values.size()) + "> " + name;
+        return line + (values.isEmpty() ? QByteArray("{};\n") : "{{" + values.join(", ") + "}};" + (comment.isEmpty() ? QByteArray() : " // " + comment) + "\n");
+    };
     QByteArray header = "// Generated by AnyDevKit Studio from logic.json and scene.json. Do not edit.\n#pragma once\n\n";
     if (boundCount > 0) header += "#include \"GeneratedScene.hpp\"\n\n";
     header += "#include <array>\n#include <cstddef>\n#include <cstdint>\n#include <string_view>\n\nnamespace GeneratedVariables {\n\n";
-    header += "inline constexpr std::size_t VariableCount = " + QByteArray::number(program.variables.size()) + ";\n";
-    header += "inline constexpr std::array<std::int32_t, " + QByteArray::number(program.variables.size()) + "> InitialValues";
-    header += initialValues.isEmpty() ? QByteArray("{};\n") : "{{" + initialValues.join(", ") + "}}; // " + names.join(", ") + "\n";
-    header += "inline constexpr std::array<std::uint32_t, " + QByteArray::number(program.variables.size()) + "> NameHashes";
-    header += hashes.isEmpty() ? QByteArray("{};\n") : "{{" + hashes.join(", ") + "}}; // how a saved value finds its variable\n";
+    header += "inline constexpr std::size_t VariableCount = " + QByteArray::number(initialValues[0].size()) + ";\n";
+    header += list("std::int32_t", "InitialValues", initialValues[0], names[0].join(", "));
+    header += list("std::uint32_t", "NameHashes", gameHashes, "how a saved value finds its variable");
+    header += "// Each player has their own value of these, and each copy of a template its own value of the copy variables.\n";
+    header += "inline constexpr std::size_t PlayerSlots = " + QByteArray::number(MaximumPlayers) + ";\n";
+    header += "inline constexpr std::size_t PlayerVariableCount = " + QByteArray::number(initialValues[1].size()) + ";\n";
+    header += list("std::int32_t", "PlayerInitialValues", initialValues[1], names[1].join(", "));
+    header += "inline constexpr std::size_t CopyVariableCount = " + QByteArray::number(initialValues[2].size()) + ";\n";
+    header += list("std::int32_t", "CopyInitialValues", initialValues[2], names[2].join(", "));
+    header += "// What a save holds: the game variables, then each player's variables, player 1 first.\n";
+    header += "inline constexpr std::size_t SavedCount = " + QByteArray::number(savedValues.size()) + ";\n";
+    header += list("std::int32_t", "SavedInitialValues", savedValues, {});
+    header += list("std::uint32_t", "SavedHashes", savedHashes, {});
     header += QByteArray("inline constexpr bool UsesSaveData = ") + (programUsesSaveData(program) ? "true" : "false") + ";\n";
     header += R"cpp(
 // One piece of a text item that shows variables: plain text, or a variable's value when variable is not -1.
+// scope is 0 for a game variable, 1 for a player variable and 2 for a copy variable; player is the player whose
+// value it shows, or -1 for the first player.
 struct Part {
     std::string_view text;
     std::int32_t variable;
+    std::int32_t scope = 0;
+    std::int32_t player = -1;
+    bool letter = false; // shows the value as one letter: 1 to 26 as A to Z, 27 to 36 as 0 to 9, else a space
 };
 
 // A text item that shows variables. quads is how many characters it can ever need, sign and all digits included.

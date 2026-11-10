@@ -20,7 +20,7 @@ constexpr int DefaultFps = 8;
 constexpr int NewTileSize = 16;
 constexpr int NewTileScale = 4;
 constexpr double MinimumSize = 8;
-constexpr int MaximumItems = 256;
+constexpr int MaximumItems = MaximumSceneItems;
 constexpr int MaximumUndoSteps = 200;
 constexpr double DuplicateOffset = 32;
 constexpr qsizetype MaximumNameLength = 64; // the Name field's limit, so a copy's name stays editable
@@ -152,6 +152,7 @@ bool SceneDocument::open(const QString& newPath) {
     scenes = *result.set;
     currentIndex = std::max(indexOfSceneId(scenes.startScene), 0);
     document = scenes.scenes[currentIndex];
+    hideItemsMarkedInTheFile();
     loaded = true;
     refreshImageProblems();
     endResetModel();
@@ -312,6 +313,11 @@ QVariantMap SceneDocument::selected() const {
         {"gravityScale", item.gravityScale},
         {"platformer", item.platformer},
         {"topDown", item.topDown},
+        {"player", item.player},
+        {"copies", item.copies},
+        {"follows", item.follows},
+        {"followX", item.followX},
+        {"followY", item.followY},
         {"upright", item.upright},
         {"drawWidth", item.drawWidth},
         {"drawHeight", item.drawHeight},
@@ -371,12 +377,19 @@ bool SceneDocument::persist() {
     return saved;
 }
 
+void SceneDocument::hideItemsMarkedInTheFile() {
+    hiddenItems.clear();
+    for (const auto& item : document.items) {
+        if (item.hiddenWhileEditing) hiddenItems.insert(item.id);
+    }
+}
+
 void SceneDocument::showScene(int index) {
     beginResetModel();
     currentIndex = index;
     document = scenes.scenes[currentIndex];
     selection = -1;
-    hiddenItems.clear();
+    hideItemsMarkedInTheFile();
     refreshImageProblems();
     endResetModel();
     emit countChanged();
@@ -939,6 +952,16 @@ void SceneDocument::resizeItem(int index, double width, double height, bool keep
     notifyItem(index);
 }
 
+QVariantList SceneDocument::itemChoices(int except) const {
+    QVariantList list;
+    for (qsizetype index = 0; index < document.items.size(); ++index) {
+        if (index == except) continue;
+        const auto& item = document.items[index];
+        list.append(QVariantMap{{"id", item.id}, {"name", item.name.isEmpty() ? item.id : item.name}});
+    }
+    return list;
+}
+
 bool SceneDocument::setItemValue(int index, const QString& property, const QVariant& value) {
     if (!isValidIndex(index) || changing) return false;
     auto item = document.items[index];
@@ -996,9 +1019,32 @@ bool SceneDocument::setItemValue(int index, const QString& property, const QVari
         const auto mode = value.toString();
         item.physics = mode == "solid" || mode == "body" ? mode : QString();
         if (!item.physics.isEmpty()) item.controllable = false;
+        if (item.physics != "body") item.player = 1;
     } else if (property == "platformer") {
         item.platformer = value.toBool();
         if (item.platformer) item.topDown = false;
+        if (!item.platformer && !item.topDown) item.player = 1;
+    } else if (property == "player") {
+        const auto player = value.toInt();
+        item.player = player >= 1 && player <= MaximumPlayers ? player : 1;
+    } else if (property == "copies") {
+        bool isNumber = false;
+        const auto number = value.toDouble(&isNumber);
+        if (!isNumber || number != std::floor(number) || number < 0 || number > MaximumCopies) {
+            setError(QString("Copies must be a whole number from 0 to %1.").arg(MaximumCopies));
+            return false;
+        }
+        item.copies = static_cast<int>(number);
+    } else if (property == "follows") {
+        item.follows = value.toString() == item.id ? QString() : value.toString();
+    } else if (property == "followX" || property == "followY") {
+        bool isNumber = false;
+        const auto number = value.toDouble(&isNumber);
+        if (!isNumber || !std::isfinite(number)) {
+            setError("Type a number for the offset.");
+            return false;
+        }
+        (property == "followX" ? item.followX : item.followY) = number;
     } else if (property == "upright") {
         item.upright = value.toBool();
     } else if (property == "drawWidth" || property == "drawHeight") {
@@ -1012,6 +1058,7 @@ bool SceneDocument::setItemValue(int index, const QString& property, const QVari
     } else if (property == "topDown") {
         item.topDown = value.toBool();
         if (item.topDown) item.platformer = false;
+        if (!item.platformer && !item.topDown) item.player = 1;
     } else if (physicsNumbers.contains(property)) {
         bool isNumber = false;
         const auto number = value.toDouble(&isNumber);
@@ -1177,6 +1224,7 @@ int SceneDocument::duplicateItem(int index) {
     auto copy = document.items[index];
     copy.name = copyName(copy, document.items);
     copy.id = nextItemId();
+    copy.hiddenWhileEditing = false;
     const auto bounds = itemBounds(copy);
     copy.x = offsetForCopy(copy.x, drawnWidth(copy), bounds.width());
     copy.y = offsetForCopy(copy.y, drawnHeight(copy), bounds.height());

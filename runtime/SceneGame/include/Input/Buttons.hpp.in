@@ -4,18 +4,34 @@
 
 // Bits of the pad's button mask, as Controller::Read returns it.
 namespace Buttons {
-inline constexpr std::uint32_t DpadUp = 0x10;
-inline constexpr std::uint32_t DpadRight = 0x20;
-inline constexpr std::uint32_t DpadDown = 0x40;
-inline constexpr std::uint32_t DpadLeft = 0x80;
-inline constexpr std::uint32_t Triangle = 0x1000;
-inline constexpr std::uint32_t Circle = 0x2000;
-inline constexpr std::uint32_t Cross = 0x4000;
-inline constexpr std::uint32_t Square = 0x8000;
+inline constexpr std::uint64_t Options = 0x0008;
+inline constexpr std::uint64_t DpadUp = 0x10;
+inline constexpr std::uint64_t DpadRight = 0x20;
+inline constexpr std::uint64_t DpadDown = 0x40;
+inline constexpr std::uint64_t DpadLeft = 0x80;
+inline constexpr std::uint64_t Triangle = 0x1000;
+inline constexpr std::uint64_t Circle = 0x2000;
+inline constexpr std::uint64_t Cross = 0x4000;
+inline constexpr std::uint64_t Square = 0x8000;
 // Not pad bits: SceneState sets these from the stick or D-pad direction.
-inline constexpr std::uint32_t MoveUp = 0x01000000;
-inline constexpr std::uint32_t MoveDown = 0x02000000;
-inline constexpr std::uint32_t MoveLeft = 0x04000000;
-inline constexpr std::uint32_t MoveRight = 0x08000000;
+inline constexpr std::uint64_t MoveUp = 0x01000000;
+inline constexpr std::uint64_t MoveDown = 0x02000000;
+inline constexpr std::uint64_t MoveLeft = 0x04000000;
+inline constexpr std::uint64_t MoveRight = 0x08000000;
+// The second player's buttons and directions are the first player's, this many bits higher.
+inline constexpr unsigned Player2Shift = 32;
+inline constexpr std::uint64_t P2Options = Options << Player2Shift;
+inline constexpr std::uint64_t P2DpadUp = DpadUp << Player2Shift;
+inline constexpr std::uint64_t P2DpadRight = DpadRight << Player2Shift;
+inline constexpr std::uint64_t P2DpadDown = DpadDown << Player2Shift;
+inline constexpr std::uint64_t P2DpadLeft = DpadLeft << Player2Shift;
+inline constexpr std::uint64_t P2Triangle = Triangle << Player2Shift;
+inline constexpr std::uint64_t P2Circle = Circle << Player2Shift;
+inline constexpr std::uint64_t P2Cross = Cross << Player2Shift;
+inline constexpr std::uint64_t P2Square = Square << Player2Shift;
+inline constexpr std::uint64_t P2MoveUp = MoveUp << Player2Shift;
+inline constexpr std::uint64_t P2MoveDown = MoveDown << Player2Shift;
+inline constexpr std::uint64_t P2MoveLeft = MoveLeft << Player2Shift;
+inline constexpr std::uint64_t P2MoveRight = MoveRight << Player2Shift;
 }
 #endif

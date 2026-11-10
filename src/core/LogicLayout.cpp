@@ -25,6 +25,7 @@ double fieldWidth(const BlockField& field) {
     if (field.kind == "animation") return 140;
     if (field.kind == "flip") return 118;
     if (field.kind == "scene") return 168;
+    if (field.kind == "formula") return 280;
     return 120;
 }
 
@@ -106,11 +107,16 @@ QList<BlockField> blockFields(const BlockInfo& info) {
     if (info.usesScene) fields.append({"scene", "scene", ""});
     if (info.usesAnimation) fields.append({"animation", "animation", "plays"});
     if (info.usesFlipped) fields.append({"flipped", "flip", ""});
-    if (info.usesOtherItem) fields.append({"otherItem", "item", info.type == BlockType::ChaseItem ? "toward" : info.type == BlockType::PutAtItem ? "at" : "and"});
+    if (info.usesOtherItem) {
+        const auto* joiner = info.type == BlockType::ChaseItem ? "toward" : info.type == BlockType::PutAtItem || info.type == BlockType::SpawnCopy ? "at" : info.type == BlockType::Flee ? "from" : "and";
+        fields.append({"otherItem", "item", joiner});
+    }
     if (info.usesVariable) fields.append({"variable", "variable", ""});
+    if (info.usesFormula) fields.append({"formula", "formula", info.type == BlockType::SetFormula ? "to" : ""});
     if (info.usesSound) fields.append({"sound", "sound", ""});
     if (info.usesComparison) fields.append({"comparison", "comparison", ""});
-    if (info.usesValue) fields.append({"value", "whole", info.type == BlockType::ChaseItem ? "speed" : ""});
+    if (info.usesValue) fields.append({"value", "whole", info.type == BlockType::ChaseItem || info.type == BlockType::Wander || info.type == BlockType::Flee ? "speed" : info.type == BlockType::AlertNearby ? "to" : ""});
+    if (info.usesRadius) fields.append({"radius", "whole", "within"});
     if (info.usesPosition) {
         fields.append({"x", "number", "x"});
         fields.append({"y", "number", "y"});
@@ -120,10 +126,33 @@ QList<BlockField> blockFields(const BlockInfo& info) {
 }
 
 QString blockCategory(const BlockInfo& info) {
+    switch (info.type) {
+    case BlockType::WhenPlayerPresses:
+    case BlockType::WhilePlayerHolds:
+    case BlockType::WhenPlayerJoins:
+    case BlockType::ForEachPlayer:
+        return "players";
+    case BlockType::EveryFrameForEachCopy:
+    case BlockType::WhenCopyTouches:
+    case BlockType::SpawnCopy:
+    case BlockType::RemoveCopy:
+    case BlockType::ForEachCopy:
+        return "copies";
+    case BlockType::Wander:
+    case BlockType::Flee:
+    case BlockType::AlertNearby:
+        return "behavior";
+    case BlockType::SetFormula:
+    case BlockType::IfFormula:
+    case BlockType::Otherwise:
+        return "variables";
+    default:
+        break;
+    }
     if (info.isEvent) return "events";
     if (info.type == BlockType::SetVelocity || info.type == BlockType::JumpItem || info.type == BlockType::IfOnGround || info.type == BlockType::ChaseItem) return "physics";
     if (info.type == BlockType::IfItemDistance) return "movement";
-    if (info.usesScene || info.type == BlockType::RestartScene) return "scenes";
+    if (info.usesScene || info.type == BlockType::RestartScene || info.type == BlockType::PauseGame || info.type == BlockType::ResumeGame) return "scenes";
     if (info.usesPosition) return "movement";
     if (info.usesVariable) return "variables";
     if (info.usesSound || info.type == BlockType::StopMusic || info.type == BlockType::SetVolume) return "sound";
@@ -140,6 +169,9 @@ QString blockCategoryTitle(const QString& category) {
     if (category == "saving") return "Saving";
     if (category == "physics") return "Physics";
     if (category == "scenes") return "Scenes";
+    if (category == "players") return "Players";
+    if (category == "copies") return "Copies";
+    if (category == "behavior") return "Behavior";
     return category;
 }
 

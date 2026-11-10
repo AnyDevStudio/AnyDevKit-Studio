@@ -102,6 +102,7 @@ struct BodyConfig {
     std::int32_t moveSpeed;  // units per second
     std::int32_t jumpHeight; // units
     bool topDown = false;    // walks on both axes, with no gravity, and the world's edges are walls
+    std::int32_t player = 1; // whose stick and buttons drive the controls, 1 or 2
 };
 
 struct Body {
@@ -437,9 +438,15 @@ inline void StepBody(const WorldView& world, Body& body, const Input& input) {
     body.started = true;
 }
 
-// One fixed step for every body, each against the world's solids and tiles. Bodies do not collide with each other.
-inline void Step(const WorldView& world, const Input& input) {
-    for (auto& body : world.bodies) StepBody(world, body, input);
+// One fixed step for every body, each against the world's solids and tiles, each driven by its own player's
+// input; a body whose player has no input stands still. Bodies do not collide with each other.
+inline void StepPlayers(const WorldView& world, std::span<const Input> inputs) {
+    for (auto& body : world.bodies) {
+        const auto player = static_cast<std::size_t>(body.config.player > 1 ? body.config.player - 1 : 0);
+        StepBody(world, body, player < inputs.size() ? inputs[player] : Input{});
+    }
 }
+
+inline void Step(const WorldView& world, const Input& input) { StepPlayers(world, std::span<const Input>(&input, 1)); }
 
 }

@@ -87,9 +87,20 @@ no entry, and an entry whose `scene` is empty means the project's first scene, a
 | `whenItemHitsSolid` | When item hits a solid | `item`              | when a moving body bumps into a solid or tile it was not already against |
 | `whenItemLeavesWorld` | When item leaves the world | `item`         | once when a moving body falls out of the world, for pits |
 | `whenButtonPressed` | When a button is pressed | `button`          | once each time the button goes down                   |
+| `whenPlayerPresses` | When a player presses | `button`             | once for each player in the scene who pressed the button this frame, as the current player |
+| `whilePlayerHolds` | While a player holds  | `button`              | every frame, for each player in the scene holding the button, as the current player |
+| `whenPlayerJoins` | When a player joins    |                       | for a player who just arrived, as the current player: player 1 on the first frame, another player when their pad presses its first button |
+| `everyFrameForEachCopy` | Every frame, for each copy of | `item`     | every frame, once for each live copy of the template `item`, with `@self` as that copy |
+| `whenCopyTouches` | When a copy touches    | `item`, `otherItem`   | once when a live copy of the template `item` starts touching `otherItem`, with `@self` as that copy. `otherItem` may be `@player`: then once for each player, as the current player |
+
+In the player events `button` is one without `p2`: each player uses their own pad.
 
 `button` is one of `cross`, `circle`, `square`, `triangle`, `dpadUp`, `dpadDown`, `dpadLeft`,
-`dpadRight`, or `moveUp`, `moveDown`, `moveLeft`, `moveRight`, which are the left stick or the D-pad pushed that way. Every event needs an `actions` list, which may be empty.
+`dpadRight`, or `moveUp`, `moveDown`, `moveLeft`, `moveRight`, which are the left stick or the D-pad pushed that way, or
+`options`. The second player's pad has the same buttons with a `p2` prefix: `p2Cross`, `p2Circle`, `p2Square`,
+`p2Triangle`, `p2Options`, `p2DpadUp`, `p2DpadDown`, `p2DpadLeft`, `p2DpadRight`, `p2MoveUp`, `p2MoveDown`, `p2MoveLeft`
+and `p2MoveRight`. The second player is any other user logged in on the console with their own pad; until one is,
+their buttons are never pressed. Every event needs an `actions` list, which may be empty.
 
 ### Actions
 
@@ -122,6 +133,46 @@ no entry, and an entry whose `scene` is empty means the project's first scene, a
 | `ifItemDistance` | If distance between | `item`, `otherItem`, `comparison`, `value`, `actions` | runs `actions` when the distance between the two items' centers compares true to `value`, in world units. Hidden items are measured too |
 | `chaseItem` | Chase | `item`, `otherItem`, `value` | sets a moving body's velocity toward the other item at `value` units per second, 0 to 3000. It takes effect on the next physics step and lasts until something changes it. The item must be a moving body |
 | `putAtItem` | Put item | `item`, `otherItem`, `x`, `y` | puts the item at the other item's position plus `x` and `y` |
+| `pauseGame` | Pause the game | | stops moving bodies, controllable items, animations and particles. Blocks keep running and buttons keep working, so a pause menu can be made of blocks. Going to a scene resumes |
+| `resumeGame` | Resume the game | | lets the world move again after `pauseGame` |
+| `cameraFollowBoth` | Camera follows two items | `item`, `otherItem` | keeps the camera centered on the middle of both items, every frame, as far as the world allows; while one of them is hidden, it follows the other. Neither may have Stays on screen turned on |
+| `setFormula` | Set variable to a formula | `variable`, `formula` | replaces the variable's value with the formula's |
+| `ifFormula` | If | `formula`, `actions` | runs `actions` when the formula is not 0 |
+| `otherwise` | Otherwise | `actions` | right after an `ifVariable`, `ifFormula`, `ifItemDistance` or `ifOnGround`, runs `actions` when that block did not run its own |
+| `forEachPlayer` | For each player | `actions` | runs `actions` once for each player in the scene, as the current player |
+| `spawnCopy` | Spawn a copy | `item`, `otherItem`, `x`, `y`, `actions` | brings out a hidden copy of the template `item` at `otherItem`'s position plus `x` and `y`, with its copy variables at their starting values, and runs `actions` for it as `@self`. When every copy is out, nothing happens |
+| `removeCopy` | Remove this copy | `item` | hides the copy and frees it for a later spawn. `item` is `@self` |
+| `forEachCopy` | For each copy of | `item`, `actions` | runs `actions` once for each live copy of the template, with `@self` as that copy |
+| `wander` | Wander | `item`, `value`, `radius` | walks about within `radius` of where the item started or was spawned, at `value` units per second, resting now and then |
+| `flee` | Run away from | `item`, `otherItem`, `value` | moves away from the other item at `value` units per second |
+| `alertNearby` | Tell nearby copies | `item`, `variable`, `value`, `radius` | sets the copy variable `variable` to `value` for every live copy of the template `item` within `radius` of `@self`, `@self` included. This is how a pack hears that one of them was hit |
+| `setLook` | Set look | `item`, `formula` | shows look number `formula`, counted from 0, of a sprite sheet that holds several looks |
+
+`wander` and `flee` set a moving body's velocity and move any other item directly, and turn an image to face the way
+it goes.
+
+### Formulas
+
+`formula` is a whole-number expression of up to 400 characters: numbers, variable names, `+ - * / %`, brackets,
+the comparisons `= == != < <= > >=`, `and`, `or`, `not` (or `&& || !`), and the functions `rand(low, high)`,
+`min(a, b)`, `max(a, b)`, `abs(a)` and `clamp(value, low, high)`. `/` and `%` round toward zero and give 0 when
+dividing by 0, a comparison gives 1 or 0, and no step can overflow. Besides the variables a formula can read
+`player` (the current player, 1 to 4), `players` (how many are in the scene), and these, in world units:
+`selfX` and `selfY` (the middle of `@self`), `playerX` and `playerY` (the middle of the current player's
+character), `dist` (between those two), `nearestDist` (from `@self` to the nearest player's character), and
+`selfVX` and `selfVY` (how fast `@self`, a moving body, is going). For example `hp - max(1, atk * 2 - def)` or
+`mstate = 0 and nearestDist < 400`.
+
+### Players, templates and copies
+
+A game has up to 4 players. Blocks run for a current player: player 1 unless a player event or `forEachPlayer`
+says otherwise. A player's character in a scene is the moving body with controls whose `player` is theirs; blocks
+name it `@player`.
+
+A template is a scene item with `copies` above 0 (see [scene-format.md](scene-format.md)). Blocks never name a
+template directly: they spawn its copies, go through them, and inside those blocks name the copy as `@self`.
+`@nearestPlayer` is the shown player character nearest to `@self`. Any block given a player or a copy that is not
+there does nothing.
 
 `comparison` is one of `equal`, `notEqual`, `less`, `lessOrEqual`, `greater`, `greaterOrEqual`.
 
@@ -134,7 +185,11 @@ no entry, and an entry whose `scene` is empty means the project's first scene, a
 | `name`    | letters, digits and `_`, 1 to 24 characters, no digit first | what blocks and text call it |
 | `initial` | whole number from -1000000000 to 1000000000                 | its value when the game starts |
 
-A name is unique regardless of case. At most 64 variables. A text item shows one by writing `{name}` in
+| `scope`   | `game` (left out), `player` or `copy`                       | how many values it has       |
+
+A game variable has one value. A player variable has one for each player, and blocks use the current player's.
+A copy variable has one for each copy of a template, and is only used inside blocks for a copy. A name is unique
+regardless of case, and cannot be `player`, `players` or one of a formula's place names. At most 512 variables. A text item shows one by writing `{name}` in
 its `text`, as described in [scene-format.md](scene-format.md). A program with no variables and text with
 no `{name}` behave exactly as before.
 
@@ -158,7 +213,8 @@ the same as a deleted variable.
 
 ### Rules
 
-- `schemaVersion` is `4`, the version Studio saves. A file saved with `2` still loads and simply has no
+- `schemaVersion` is `5`, the version Studio saves. Version `5` adds formulas, players, templates and copies,
+  behaviors, `setLook`, and player and copy variables; a file saved with `4` loads as it was. A file saved with `2` still loads and simply has no
   sounds. A file saved with `1` still loads too: it has no `variables` list, and its `addScore`,
   `setScore` and `ifScore` blocks become `changeVariable`, `setVariable` and `ifVariable` on a variable named
   `score` that starts at 0. A file with no score blocks gets no variables. The block types `addScore`,
@@ -168,7 +224,7 @@ the same as a deleted variable.
   blocks. A file saved with `3` or earlier loads as the logic of the project's first scene.
 - `id` is 1 to 64 letters, digits, `-` or `_`, unique across the whole program, every scene included. It stays the same
   across saves, so an editor can refer to a block.
-- Events go at the top level only. Actions go inside an event or inside `ifVariable`.
+- Events go at the top level only. Actions go inside an event or inside a block that holds actions.
 - `item` and `otherItem` are `id` values from `scene.json`. A build fails when one is missing or not
   in the scene, when an event's two items are the same, when `burstParticles` names an item that is
   not a Particles item, when `playAnimation` names an item without that animation, when `flipItem` names an
@@ -183,7 +239,7 @@ the same as a deleted variable.
 - `x` and `y` are numbers from -1000000 to 1000000. `color` is `#RRGGBB`.
 - `value` and `initial` are whole numbers from -1000000000 to 1000000000, except that `setVolume`'s `value` is
   a percentage from 0 to 100.
-- Limits, per scene: 128 events, 2048 blocks in total, blocks nested at most 8 levels deep counting the event as
+- Limits, per scene: 1024 events, 16384 blocks in total, blocks nested at most 12 levels deep counting the event as
   level 1. A file is at most 64 MB.
 
 Problems are reported with the block's title and id, for example:
@@ -265,6 +321,7 @@ The program above, with the example scene from [scene-format.md](scene-format.md
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 
 namespace GeneratedLogic {
 
@@ -353,12 +410,27 @@ namespace GeneratedVariables {
 inline constexpr std::size_t VariableCount = 2;
 inline constexpr std::array<std::int32_t, 2> InitialValues{{0, 3}}; // score, lives
 inline constexpr std::array<std::uint32_t, 2> NameHashes{{3526332565u, 1526042452u}}; // how a saved value finds its variable
+// Each player has their own value of these, and each copy of a template its own value of the copy variables.
+inline constexpr std::size_t PlayerSlots = 4;
+inline constexpr std::size_t PlayerVariableCount = 0;
+inline constexpr std::array<std::int32_t, 0> PlayerInitialValues{};
+inline constexpr std::size_t CopyVariableCount = 0;
+inline constexpr std::array<std::int32_t, 0> CopyInitialValues{};
+// What a save holds: the game variables, then each player's variables, player 1 first.
+inline constexpr std::size_t SavedCount = 2;
+inline constexpr std::array<std::int32_t, 2> SavedInitialValues{{0, 3}};
+inline constexpr std::array<std::uint32_t, 2> SavedHashes{{3526332565u, 1526042452u}};
 inline constexpr bool UsesSaveData = false;
 
 // One piece of a text item that shows variables: plain text, or a variable's value when variable is not -1.
+// scope is 0 for a game variable, 1 for a player variable and 2 for a copy variable; player is the player whose
+// value it shows, or -1 for the first player.
 struct Part {
     std::string_view text;
     std::int32_t variable;
+    std::int32_t scope = 0;
+    std::int32_t player = -1;
+    bool letter = false; // shows the value as one letter: 1 to 26 as A to Z, 27 to 36 as 0 to 9, else a space
 };
 
 // A text item that shows variables. quads is how many characters it can ever need, sign and all digits included.

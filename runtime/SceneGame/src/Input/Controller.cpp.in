@@ -30,6 +30,8 @@ std::array<float, 2> direction(const PadData& data) {
     return normalized(stickX, stickY);
 }
 
+constexpr int FramesBetweenLooks = 60;
+
 }
 
 Controller::Controller() {
@@ -39,11 +41,35 @@ Controller::Controller() {
     int userId = 0;
     if (sceUserServiceGetInitialUser(&userId) < 0) return;
     if (scePadInit_nid_postfix() < 0) return;
+    firstUser = userId;
+    ready = true;
     const int handle = scePadOpen_nid_postfix(userId, 0, 0, nullptr);
-    if (handle >= 0) pad = handle;
+    if (handle >= 0) pads[0] = handle;
 }
 
-Controller::Input Controller::Read() const {
+// A second player is another logged-in user. On a console they log in with their own pad at any time, so
+// until one is found the list is read again every so often, never every frame.
+void Controller::findSecondPad() {
+    UserServiceLoginUserIdList users{};
+    if (sceUserServiceGetLoginUserIdList(&users) < 0) return;
+    for (const int userId : users.user_id) {
+        if (userId == USER_SERVICE_USER_ID_INVALID || userId == firstUser) continue;
+        const int handle = scePadOpen_nid_postfix(userId, 0, 0, nullptr);
+        if (handle >= 0 && handle != pads[0]) {
+            pads[1] = handle;
+            return;
+        }
+    }
+}
+
+Controller::Input Controller::Read(int player) {
+    if (!ready || player < 0 || player >= Players) return {};
+    if (player == 1 && pads[1] < 0) {
+        if (--framesUntilLook > 0) return {};
+        framesUntilLook = FramesBetweenLooks;
+        findSecondPad();
+    }
+    const int pad = pads[static_cast<std::size_t>(player)];
     if (pad < 0) return {};
     PadData data{};
     if (scePadReadState(pad, &data) < 0 || !data.connected) return {};

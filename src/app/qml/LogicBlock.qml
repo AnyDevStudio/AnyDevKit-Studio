@@ -41,6 +41,8 @@ T.Control {
     required property string animation
     required property bool flipped
     required property string targetScene
+    required property string formula
+    required property int radius
     required property string problem
     required property bool dragged
     required property bool emptyCavity
@@ -72,6 +74,8 @@ T.Control {
         case "animation": return animation
         case "flipped": return flipped ? "true" : "false"
         case "scene": return targetScene
+        case "formula": return formula
+        case "radius": return String(radius)
         default: return ""
         }
     }
@@ -217,7 +221,7 @@ T.Control {
         Loader {
             id: loader
             x: labelText.visible ? labelText.implicitWidth + 8 : 0
-            sourceComponent: editor.kind === "number" || editor.kind === "whole" ? numberField : editor.kind === "color" ? colorField : pickerField
+            sourceComponent: editor.kind === "number" || editor.kind === "whole" ? numberField : editor.kind === "color" ? colorField : editor.kind === "formula" ? formulaField : pickerField
         }
 
         Component {
@@ -247,6 +251,18 @@ T.Control {
                 whole: editor.kind === "whole"
                 value: block.fieldValue(editor.key)
                 onCommitted: (text) => block.doc.setField(block.blockId, editor.key, Number(text))
+            }
+        }
+
+        Component {
+            id: formulaField
+            BlockFormula {
+                function forceFocus() { takeFocus() }
+                inputName: "field_" + block.blockId + "_" + editor.key
+                label: editor.label
+                labelColor: block.softColor
+                value: block.fieldValue(editor.key)
+                onCommitted: (text) => block.doc.setField(block.blockId, editor.key, text)
             }
         }
 

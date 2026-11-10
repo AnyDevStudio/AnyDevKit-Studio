@@ -22,7 +22,7 @@ constexpr int FileWriteCreateTruncate = 0x601;
 constexpr std::uint16_t FileMode = 0666;
 constexpr KernelUseconds IdleDelayMicroseconds = 20000;
 
-constexpr std::size_t MaxFileBytes = SaveData::FileBytes(GeneratedVariables::VariableCount);
+constexpr std::size_t MaxFileBytes = SaveData::FileBytes(GeneratedVariables::SavedCount);
 
 bool ok(int result) { return result >= 0; }
 
@@ -121,7 +121,7 @@ void SaveService::writeSave(const SaveDataMountResult& mount, const Values& valu
     }
 
     std::array<std::uint8_t, MaxFileBytes> bytes{};
-    const auto size = SaveData::Encode(values, GeneratedVariables::NameHashes, bytes);
+    const auto size = SaveData::Encode(values, GeneratedVariables::SavedHashes, bytes);
     if (size == 0) return;
 
     char path[64];
@@ -152,7 +152,7 @@ void SaveService::load() {
     if (!mount(mounted)) return;
     if ((mounted.mount_status & 1u) != 0) {
         // Just created: there is nothing to read yet, so it starts with the game's initial values.
-        writeSave(mounted, GeneratedVariables::InitialValues);
+        writeSave(mounted, GeneratedVariables::SavedInitialValues);
         unmount(mounted.mount_point);
         return;
     }
@@ -171,8 +171,8 @@ void SaveService::load() {
     sceKernelClose(file);
     unmount(mounted.mount_point);
     if (size < 0) return;
-    Values values = GeneratedVariables::InitialValues;
-    if (SaveData::Decode(std::span<const std::uint8_t>(bytes.data(), static_cast<std::size_t>(size)), GeneratedVariables::NameHashes, values)) {
+    Values values = GeneratedVariables::SavedInitialValues;
+    if (SaveData::Decode(std::span<const std::uint8_t>(bytes.data(), static_cast<std::size_t>(size)), GeneratedVariables::SavedHashes, values)) {
         mailbox.PublishLoaded(values);
     }
 }

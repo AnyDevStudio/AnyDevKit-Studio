@@ -152,6 +152,7 @@ struct Animation {
 // A sprite sheet's layout, and which of Animations are its own.
 struct Sprite {
     std::uint32_t frameWidth, frameHeight, columns, rows, firstAnimation, animationCount, startAnimation;
+    std::uint32_t lookFrames = 0; // frames in one look, when the sheet holds several looks one under another
 };
 
 // A tilemap. Its cells live in TilemapCells; solid tiles are SolidTiles[firstSolid] onward, solidCount of them.
@@ -166,6 +167,7 @@ struct Body {
     std::int32_t gravityPercent, moveSpeed, jumpHeight;
     bool platformer;
     bool topDown = false;
+    std::int32_t player = 1; // whose pad drives its controls
 };
 
 // One scene of the game: which of Items are its own, its world and where its camera starts.
@@ -174,6 +176,17 @@ struct SceneInfo {
     float worldWidth, worldHeight, cameraStartX, cameraStartY;
     std::array<float, 3> background;
     float tilt = 0.0f; // percent; 0 is the flat 2D camera
+};
+
+// The copies of one template: Items[firstItem] onward, count of them, all hidden until a block spawns one.
+struct CopyGroup {
+    std::uint32_t firstItem, count;
+};
+
+// An item that stays at an offset from another, and is shown only while that one is.
+struct Follow {
+    std::uint32_t item, target;
+    float x, y;
 };
 
 inline constexpr float WorldWidth = 1920.0f;
@@ -199,6 +212,10 @@ extern const std::array<const std::int32_t*, TilemapCount> TilemapCells; // defi
 inline constexpr std::size_t BodyCount = 0;
 inline constexpr std::array<Body, 0> Bodies{};
 inline constexpr std::size_t SolidItemCount = 0;
+inline constexpr std::size_t CopyGroupCount = 0;
+inline constexpr std::array<CopyGroup, 0> CopyGroups{};
+inline constexpr std::size_t FollowCount = 0;
+inline constexpr std::array<Follow, 0> Follows{};
 inline constexpr std::size_t SceneCount = 1;
 inline constexpr std::size_t StartScene = 0;
 inline constexpr std::array<SceneInfo, 1> Scenes{{
@@ -576,9 +593,10 @@ private slots:
         QCOMPARE(validateScene(scene), QString());
     }
 
-    void allowsAtMost256Items() {
+    void allowsAtMost1024Items() {
         QCOMPARE(validateScene(sceneOfSize(256)), QString());
-        QVERIFY(validateScene(sceneOfSize(257)).contains("256"));
+        QCOMPARE(validateScene(sceneOfSize(1024)), QString());
+        QVERIFY(validateScene(sceneOfSize(1025)).contains("1024"));
 
         QTemporaryDir directory;
         const auto path = directory.path() + "/scene.json";
@@ -588,19 +606,19 @@ private slots:
         QVERIFY2(loaded.scene.has_value(), qPrintable(loaded.error));
         QCOMPARE(loaded.scene->items.size(), 256);
 
-        QVERIFY(!saveScene(directory.path() + "/too-many.json", sceneOfSize(257), error));
-        QVERIFY(error.contains("256"));
+        QVERIFY(!saveScene(directory.path() + "/too-many.json", sceneOfSize(1025), error));
+        QVERIFY(error.contains("1024"));
 
         auto root = docObject();
         QJsonArray items;
-        for (int index = 0; index < 257; ++index) {
+        for (int index = 0; index < 1025; ++index) {
             items.append(QJsonObject{{"id", QString::number(index)}, {"type", "rectangle"}, {"x", 0}, {"y", 0}, {"width", 1}, {"height", 1}, {"color", "#000000"}});
         }
         root["items"] = items;
         writeText(path, QJsonDocument(root).toJson());
         const auto rejected = loadScene(path);
         QVERIFY(!rejected.scene.has_value());
-        QVERIFY2(rejected.error.contains("256"), qPrintable(rejected.error));
+        QVERIFY2(rejected.error.contains("1024"), qPrintable(rejected.error));
     }
 
     void savesAndLoadsTheSameScene() {

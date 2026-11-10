@@ -1,6 +1,8 @@
 add_library(studio_core STATIC
     Blocks.cpp
+    Formula.cpp
     Blocks.h
+    Formula.h
     LogicDocument.cpp
     LogicDocument.h
     LogicLayout.cpp

@@ -3,18 +3,25 @@
 #include <array>
 #include <cstdint>
 
-// Reads the initial user's pad. Every failure is treated as "no input" so the game keeps drawing.
+// Reads the pads of the first two players: the initial user's, and the pad of any other user who logs in later,
+// looked for again about once a second until one is found. Every failure is treated as "no input" so the game
+// keeps drawing.
 class Controller final {
 public:
+    static constexpr int Players = 2;
     struct Input {
         // Unit direction from the D-pad or left stick, or {0, 0} when idle or unavailable. +y points down.
         std::array<float, 2> Direction{};
         std::uint32_t Buttons = 0; // bits from Input/Buttons.hpp, 0 when unavailable
     };
     Controller();
-    Input Read() const; // reads the pad once, so the direction and the buttons come from one moment
+    Input Read(int player); // reads one player's pad once, so the direction and the buttons come from one moment
 
 private:
-    int pad = -1;
+    void findSecondPad();
+    std::array<int, Players> pads{-1, -1};
+    int firstUser = -1;
+    int framesUntilLook = 0;
+    bool ready = false;
 };
 #endif

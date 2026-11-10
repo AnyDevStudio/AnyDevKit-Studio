@@ -300,11 +300,12 @@ QByteArray generateSoundSource(const QList<SoundPcm>& pcms) {
     if (!pcms.isEmpty()) {
         // PCM is pulled in by the assembler, so the compiler never parses it and a build stays fast.
         source += "// SCENE_SOUND_DIRECTORY comes from CMakeLists.txt and points at src/GeneratedSounds.\n";
+        source += "// Raw data pulled in by the assembler. Windows objects have no .hidden and keep read-only data in .rdata.\n#ifndef STUDIO_EMBED\n#if defined(_WIN32)\n#define STUDIO_EMBED(symbol) \".pushsection .rdata,\\\"dr\\\"\\n.balign 16\\n\" #symbol \":\\n\"\n#else\n#define STUDIO_EMBED(symbol) \".pushsection .rodata\\n.balign 16\\n.hidden \" #symbol \"\\n\" #symbol \":\\n\"\n#endif\n#endif\n";
     }
     for (qsizetype index = 0; index < pcms.size(); ++index) {
         const auto number = QByteArray::number(index);
         const auto symbol = "StudioSound" + number;
-        source += "__asm__(\".pushsection .rodata\\n.balign 16\\n.hidden " + symbol + "\\n" + symbol + ":\\n.incbin \\\"\" SCENE_SOUND_DIRECTORY \"/sound-" + number + ".pcm\\\"\\n.popsection\\n\");\n";
+        source += "__asm__(STUDIO_EMBED(" + symbol + ") \".incbin \\\"\" SCENE_SOUND_DIRECTORY \"/sound-" + number + ".pcm\\\"\\n.popsection\\n\");\n";
         source += "extern \"C\" const std::int16_t " + symbol + "[];\n";
     }
     source += "\nnamespace GeneratedSounds {\n\n";

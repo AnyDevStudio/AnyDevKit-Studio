@@ -125,3 +125,13 @@ set_target_properties(tst_scene_set tst_physics_blocks tst_particles tst_core ts
 
 # qt_standard_project_setup makes Windows executables GUI apps, which hides test output.
 set_target_properties(tst_particles tst_core tst_scene tst_scene_document tst_gamepage tst_blocks tst_logic_document tst_scene_export tst_font_tables tst_sounds tst_world2d tst_sprites_tilemap tst_setup tst_scene_set tst_physics_blocks PROPERTIES WIN32_EXECUTABLE FALSE)
+
+qt_add_executable(tst_language tst_language.cpp)
+target_link_libraries(tst_language PRIVATE studio_core Qt6::Test)
+target_compile_definitions(tst_language PRIVATE
+    STUDIO_TEST_CXX="${CMAKE_CXX_COMPILER}"
+    STUDIO_TEST_SYSROOT="${CMAKE_OSX_SYSROOT}"
+    STUDIO_TEST_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
+)
+add_test(NAME tst_language COMMAND tst_language)
+set_target_properties(tst_language PROPERTIES WIN32_EXECUTABLE FALSE)

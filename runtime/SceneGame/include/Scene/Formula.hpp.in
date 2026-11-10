@@ -1,0 +1,50 @@
+#ifndef @NAME@_SCENE_FORMULA_HPP
+#define @NAME@_SCENE_FORMULA_HPP
+
+#include <algorithm>
+#include <cstdint>
+#include <limits>
+
+// The arithmetic of formula blocks. Every step stays within +-Limit, so no formula can overflow, and dividing
+// by zero gives 0. A comparison or and/or/not gives 1 or 0.
+namespace Formula {
+
+inline constexpr std::int64_t Limit = std::int64_t{1} << 61;
+
+constexpr std::int64_t Bound(std::int64_t value) { return std::clamp(value, -Limit, Limit); }
+constexpr std::int64_t Add(std::int64_t a, std::int64_t b) { return Bound(Bound(a) + Bound(b)); }
+constexpr std::int64_t Subtract(std::int64_t a, std::int64_t b) { return Bound(Bound(a) - Bound(b)); }
+constexpr std::int64_t Negate(std::int64_t a) { return -Bound(a); }
+constexpr std::int64_t Multiply(std::int64_t a, std::int64_t b) {
+    a = Bound(a);
+    b = Bound(b);
+    if (a == 0 || b == 0) return 0;
+    const auto magnitudeA = a < 0 ? -a : a;
+    const auto magnitudeB = b < 0 ? -b : b;
+    const bool negative = (a < 0) != (b < 0);
+    if (magnitudeA > Limit / magnitudeB) return negative ? -Limit : Limit;
+    return a * b;
+}
+constexpr std::int64_t Divide(std::int64_t a, std::int64_t b) { return b == 0 ? 0 : Bound(a) / Bound(b); }
+constexpr std::int64_t Remainder(std::int64_t a, std::int64_t b) { return b == 0 ? 0 : Bound(a) % Bound(b); }
+constexpr std::int64_t Min(std::int64_t a, std::int64_t b) { return std::min(a, b); }
+constexpr std::int64_t Max(std::int64_t a, std::int64_t b) { return std::max(a, b); }
+constexpr std::int64_t Abs(std::int64_t a) { return a < 0 ? -Bound(a) : Bound(a); }
+constexpr std::int64_t Clamp(std::int64_t value, std::int64_t low, std::int64_t high) { return low > high ? low : std::clamp(value, low, high); }
+constexpr std::int64_t Equal(std::int64_t a, std::int64_t b) { return a == b ? 1 : 0; }
+constexpr std::int64_t NotEqual(std::int64_t a, std::int64_t b) { return a != b ? 1 : 0; }
+constexpr std::int64_t Less(std::int64_t a, std::int64_t b) { return a < b ? 1 : 0; }
+constexpr std::int64_t LessOrEqual(std::int64_t a, std::int64_t b) { return a <= b ? 1 : 0; }
+constexpr std::int64_t Greater(std::int64_t a, std::int64_t b) { return a > b ? 1 : 0; }
+constexpr std::int64_t GreaterOrEqual(std::int64_t a, std::int64_t b) { return a >= b ? 1 : 0; }
+constexpr std::int64_t And(std::int64_t a, std::int64_t b) { return a != 0 && b != 0 ? 1 : 0; }
+constexpr std::int64_t Or(std::int64_t a, std::int64_t b) { return a != 0 || b != 0 ? 1 : 0; }
+constexpr std::int64_t Not(std::int64_t a) { return a == 0 ? 1 : 0; }
+// What a variable keeps of a formula's value.
+constexpr std::int32_t ToVariable(std::int64_t value) {
+    return static_cast<std::int32_t>(std::clamp<std::int64_t>(value, std::numeric_limits<std::int32_t>::min(), std::numeric_limits<std::int32_t>::max()));
+}
+
+}
+
+#endif

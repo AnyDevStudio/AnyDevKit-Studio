@@ -76,6 +76,8 @@ public:
         AnimationRole,
         FlippedRole,
         SceneRole,
+        FormulaRole,
+        RadiusRole,
     };
 
     explicit LogicDocument(QObject* parent = nullptr);
@@ -135,6 +137,8 @@ public:
     Q_INVOKABLE bool addVariable(const QString& name);
     Q_INVOKABLE bool renameVariable(const QString& name, const QString& newName); // updates every block
     Q_INVOKABLE bool setVariableInitial(const QString& name, const QVariant& value);
+    // "game": one value; "player": one for each player; "copy": one for each copy of a template.
+    Q_INVOKABLE bool setVariableScope(const QString& name, const QString& scope);
     // Blocks using it become problems to fix, so this is for after the person has been told.
     Q_INVOKABLE void removeVariable(const QString& name);
     // Everything that shows or changes the variable: [{kind: block|text, title, where}].

@@ -230,6 +230,7 @@ private:
     QString lastNewGameError;
     QString savedSdkRoot;
     QString savedDependencyRoot;
+    DesktopBuildContext desktopContext() const;
     QString currentOpeningTab = "scene";
     NetworkHttpClient setupHttp;
     SystemToolProbe setupProbe;

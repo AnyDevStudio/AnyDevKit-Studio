@@ -29,6 +29,7 @@ qt_add_qml_module(AnyDevKitStudio
         qml/ExportFormatPicker.qml
         qml/PkgKeysPanel.qml
         qml/SceneStage.qml
+        qml/ZoomButtons.qml
         qml/SceneView.qml
         qml/SceneStrip.qml
         qml/SceneInspector.qml
@@ -46,6 +47,7 @@ qt_add_qml_module(AnyDevKitStudio
         qml/BlockGlyph.qml
         qml/BlockPicker.qml
         qml/BlockNumber.qml
+        qml/BlockFormula.qml
         qml/BlockColorPicker.qml
         qml/GamePageView.qml
         qml/ConsolePreview.qml

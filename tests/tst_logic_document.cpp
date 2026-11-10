@@ -129,7 +129,7 @@ private slots:
     void paletteComesFromTheCatalogInGroups() {
         LogicDocument document;
         const auto groups = document.palette();
-        QCOMPARE(groups.size(), 8);
+        QCOMPARE(groups.size(), 11);
         QStringList keys;
         QStringList seen;
         for (const auto& group : groups) {
@@ -137,7 +137,7 @@ private slots:
             keys << map.value("key").toString();
             for (const auto& block : map.value("blocks").toList()) seen << block.toMap().value("type").toString();
         }
-        QCOMPARE(keys, QStringList({"events", "movement", "looks", "variables", "sound", "saving", "physics", "scenes"}));
+        QCOMPARE(keys, QStringList({"events", "players", "movement", "looks", "variables", "copies", "behavior", "sound", "saving", "physics", "scenes"}));
         QStringList catalog;
         for (const auto& info : blockCatalog()) catalog << info.jsonName;
         auto sortedSeen = seen;
@@ -446,9 +446,9 @@ private slots:
         LogicDocument document;
         openWithScene(directory, document);
         document.addFromPalette("everyFrame");
-        // An event is level 1, so wrappers reach level 7 here and a leaf can land at level 8 only.
+        // An event is level 1, so wrappers reach the level below the deepest here and a leaf can land at the deepest only.
         QString deepest;
-        for (int level = 2; level <= 7; ++level) {
+        for (int level = 2; level <= MaximumLogicDepth - 1; ++level) {
             deepest = document.addFromPalette("ifVariable");
             QVERIFY2(!deepest.isEmpty(), qPrintable(document.error()));
             document.setSelectedId(deepest);
@@ -459,7 +459,7 @@ private slots:
         const auto leaf = document.addFromPalette("hide");
         Q_UNUSED(leaf);
 
-        // A wrapper holding a block needs 2 levels, so level 8 inside "deepest" has no spot for it.
+        // A wrapper holding a block needs 2 levels, so the deepest level inside "deepest" has no spot for it.
         document.startMoving(wrapperBelow);
         for (int y = 0; y < 4000; y += 8) {
             document.dragTo(document.positionOf(deepest).value("x").toDouble() + 40, y);
@@ -627,8 +627,9 @@ private slots:
         QCOMPARE(roleOf(document, id, LogicDocument::ItemNameRole), QString("Coin"));
 
         const auto items = document.sceneItems();
-        QCOMPARE(items.size(), 2);
+        QCOMPARE(items.size(), 5); // the scene's two, then the player, this copy and the nearest player
         QCOMPARE(items.first().toMap().value("id").toString(), QString("item-1"));
+        QCOMPARE(items.last().toMap().value("id").toString(), QString(NearestPlayerItem));
         QCOMPARE(items.first().toMap().value("name").toString(), QString("Hero"));
     }
 
@@ -737,7 +738,7 @@ private slots:
         openWithScene(directory, document);
         for (int i = 0; i < MaximumLogicEvents; ++i) QVERIFY(!document.addFromPalette("everyFrame").isEmpty());
         QVERIFY(document.addFromPalette("everyFrame").isEmpty());
-        QVERIFY(document.error().contains("128"));
+        QVERIFY(document.error().contains(QString::number(MaximumLogicEvents)));
     }
     // Variables.
 

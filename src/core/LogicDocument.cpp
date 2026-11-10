@@ -1,4 +1,5 @@
 #include "LogicDocument.h"
+#include "Formula.h"
 
 #include <QFile>
 #include <QFileInfo>
@@ -113,6 +114,9 @@ QVariant LogicDocument::data(const QModelIndex& index, int role) const {
 
     const auto nameOf = [&](const QString& itemId) -> QString {
         if (itemId.isEmpty()) return {};
+        if (itemId == QLatin1String(PlayerItem)) return "The player";
+        if (itemId == QLatin1String(SelfItem)) return "This copy";
+        if (itemId == QLatin1String(NearestPlayerItem)) return "Nearest player";
         for (const auto& item : scene.items) {
             if (item.id == itemId) return item.name.isEmpty() ? item.id : item.name;
         }
@@ -166,6 +170,8 @@ QVariant LogicDocument::data(const QModelIndex& index, int role) const {
     case AnimationRole: return block->animation;
     case FlippedRole: return block->flipped;
     case SceneRole: return block->scene;
+    case FormulaRole: return block->formula;
+    case RadiusRole: return block->radius;
     default: return {};
     }
 }
@@ -208,6 +214,8 @@ QHash<int, QByteArray> LogicDocument::roleNames() const {
         {AnimationRole, "animation"},
         {FlippedRole, "flipped"},
         {SceneRole, "targetScene"},
+        {FormulaRole, "formula"},
+        {RadiusRole, "radius"},
     };
 }
 
@@ -395,7 +403,7 @@ void LogicDocument::setSelectedId(const QString& id) {
 
 QVariantList LogicDocument::palette() const {
     QVariantList groups;
-    for (const auto* key : {"events", "movement", "looks", "variables", "sound", "saving", "physics", "scenes"}) {
+    for (const auto* key : {"events", "players", "movement", "looks", "variables", "copies", "behavior", "sound", "saving", "physics", "scenes"}) {
         const QString category(key);
         QVariantList blocks;
         for (const auto& info : blockCatalog()) {
@@ -427,7 +435,10 @@ QVariantList LogicDocument::sounds() const {
 
 QVariantList LogicDocument::variables() const {
     QVariantList list;
-    for (const auto& variable : document.variables) list.append(QVariantMap{{"id", variable.name}, {"name", variable.name}, {"initial", variable.initial}});
+    for (const auto& variable : document.variables) {
+        const auto scope = variable.scope == VariableScope::Player ? "player" : variable.scope == VariableScope::Copy ? "copy" : "game";
+        list.append(QVariantMap{{"id", variable.name}, {"name", variable.name}, {"initial", variable.initial}, {"scope", scope}});
+    }
     return list;
 }
 
@@ -438,6 +449,10 @@ QVariantList LogicDocument::sceneItems() const {
         for (const auto& animation : item.animations) animations.append(QVariantMap{{"id", animation.name}, {"name", animation.name}});
         list.append(QVariantMap{{"id", item.id}, {"name", item.name.isEmpty() ? item.id : item.name}, {"animations", animations}});
     }
+    // What a block can choose besides the scene's own items: these change with who or what the block runs for.
+    list.append(QVariantMap{{"id", QString(PlayerItem)}, {"name", "The player"}, {"animations", QVariantList{}}});
+    list.append(QVariantMap{{"id", QString(SelfItem)}, {"name", "This copy"}, {"animations", QVariantList{}}});
+    list.append(QVariantMap{{"id", QString(NearestPlayerItem)}, {"name", "Nearest player"}, {"animations", QVariantList{}}});
     return list;
 }
 
@@ -747,6 +762,21 @@ bool LogicDocument::setField(const QString& id, const QString& key, const QVaria
         block.sound = value.toString();
     } else if (key == "scene") {
         block.scene = value.toString();
+    } else if (key == "formula") {
+        const auto text = value.toString().trimmed();
+        if (const auto problem = compileFormula(text).problem; !problem.isEmpty()) {
+            setError(problem);
+            return false;
+        }
+        block.formula = text;
+    } else if (key == "radius") {
+        bool numeric = false;
+        const auto number = value.toDouble(&numeric);
+        if (!numeric || number != std::floor(number) || number < 0 || number > MaximumRadius) {
+            setError(QString("Type a whole distance from 0 to %1.").arg(MaximumRadius));
+            return false;
+        }
+        block.radius = static_cast<int>(number);
     } else if (key == "button") {
         const auto name = value.toString();
         const auto found2 = std::ranges::find(buttonCatalog(), name, &ButtonInfo::jsonName);
@@ -763,7 +793,8 @@ bool LogicDocument::setField(const QString& id, const QString& key, const QVaria
 
     const auto unchanged = block.item == before.item && block.otherItem == before.otherItem && block.x == before.x && block.y == before.y
         && block.value == before.value && block.color == before.color && block.button == before.button && block.comparison == before.comparison
-        && block.variable == before.variable && block.sound == before.sound && block.animation == before.animation && block.flipped == before.flipped && block.scene == before.scene;
+        && block.variable == before.variable && block.sound == before.sound && block.animation == before.animation && block.flipped == before.flipped && block.scene == before.scene
+        && block.formula == before.formula && block.radius == before.radius;
     if (unchanged) {
         setError({});
         return true;
@@ -840,6 +871,7 @@ bool LogicDocument::renameVariable(const QString& name, const QString& newName) 
     const auto renameIn = [&](const auto& self, QList<Block>& blocks) -> void {
         for (auto& block : blocks) {
             if (blockInfo(block.type).usesVariable && block.variable == name) block.variable = newName;
+            if (blockInfo(block.type).usesFormula) block.formula = renameVariableInFormula(block.formula, name, newName);
             self(self, block.children);
         }
     };
@@ -870,6 +902,20 @@ bool LogicDocument::setVariableInitial(const QString& name, const QVariant& valu
         return true;
     }
     entry->initial = static_cast<int>(number);
+    return commit(candidate);
+}
+
+bool LogicDocument::setVariableScope(const QString& name, const QString& scope) {
+    if (!loaded || drag) return false;
+    auto candidate = document;
+    const auto entry = std::ranges::find(candidate.variables, name, &LogicVariable::name);
+    if (entry == candidate.variables.end()) return false;
+    const auto chosen = scope == "player" ? VariableScope::Player : scope == "copy" ? VariableScope::Copy : scope == "game" ? VariableScope::Game : entry->scope;
+    if (chosen == entry->scope) {
+        setError({});
+        return scope == "player" || scope == "copy" || scope == "game";
+    }
+    entry->scope = chosen;
     return commit(candidate);
 }
 

@@ -34,8 +34,8 @@ inline constexpr int MaximumTileIndex = 65535;
 inline constexpr int MaximumScenes = 32;
 inline constexpr int MaximumSceneNameLength = 40;
 // Physics limits. The game checks every moving body against the solids of its scene, so a scene is held to this.
-inline constexpr int MaximumSceneBodies = 64;
-inline constexpr int MaximumSceneSolidItems = 128;
+inline constexpr int MaximumSceneBodies = 128;
+inline constexpr int MaximumSceneSolidItems = 256;
 inline constexpr int MaximumBodySide = 2048;
 inline constexpr int MaximumGravityScale = 300;
 inline constexpr int MinimumMoveSpeed = 60;
@@ -49,10 +49,16 @@ inline constexpr int DefaultJumpHeight = 260;   // units
 inline constexpr int MaximumAnimationsPerSprite = 16;
 inline constexpr int MaximumFramesPerAnimation = 256;
 inline constexpr int MaximumFramesPerSecond = 60;
+inline constexpr int MaximumLooks = 64;
 // A variable name is short and simple, so it reads well inside text and blocks.
 inline constexpr int MaximumVariableNameLength = 24;
 // The widest a whole number can be: the sign and all ten digits of -2147483648.
 inline constexpr int MaximumVariableCharacters = 11;
+// A scene holds at most this many items, every copy of a template counted.
+inline constexpr int MaximumSceneItems = 1024;
+// How many copies one template can make, and how many players a game can have.
+inline constexpr int MaximumCopies = 256;
+inline constexpr int MaximumPlayers = 4;
 
 // A named run of frames on a sprite sheet.
 struct SceneAnimation {
@@ -80,6 +86,7 @@ struct SceneItem {
     int frameHeight = 0;
     QList<SceneAnimation> animations;
     QString animation; // the one that plays from the start; empty means the first
+    int looks = 1;     // a sheet can hold several looks of the same frames, each under the last; Set look picks one
     // Tilemap items only. width and height are derived; see updateTilemapSize.
     int tileWidth = 16, tileHeight = 16;
     int tileScale = 4; // drawn size of a tile is tileWidth * tileScale world units
@@ -102,8 +109,14 @@ struct SceneItem {
     int gravityScale = DefaultGravityScale; // percent of normal gravity
     bool platformer = false;                // moves with the stick or D-pad, jumps on Cross
     bool topDown = false;                   // walks in every direction with the stick or D-pad, with no gravity
+    int player = 1;                         // whose pad drives a body's controls: 1 to MaximumPlayers
+    bool hiddenWhileEditing = false;        // starts hidden on the editing stage; the game still shows it
     bool upright = false;                   // stands up from the ground in a tilted scene, in depth order
     double drawWidth = 0, drawHeight = 0;   // an upright item's picture size; 0 means its width or height
+    int copies = 0;                         // 0: an ordinary item; 1 or more: a template the game makes that many copies of, all hidden until a block spawns one
+    QString follows;                        // an item this one stays on, at followX and followY from its top left, shown only while it is
+    double followX = 0, followY = 0;
+    int copyNumber = -1;                    // set by expandCopies on each copy, 0 for the first; never saved
     int moveSpeed = DefaultMoveSpeed;       // units per second
     int jumpHeight = DefaultJumpHeight;     // units
 };
@@ -130,10 +143,17 @@ struct SceneSet {
 
 // A named whole number. The list lives in logic.json (see Blocks.h); it is declared here because a
 // text item can show one, and the scene needs nothing else from the logic.
+// Game variables have one value. Player variables have one value for each player, and blocks use the current
+// player's. Copy variables have one value for each copy of a template, and blocks inside a copy's event use that copy's.
+enum class VariableScope { Game, Player, Copy };
+
 struct LogicVariable {
     QString name;
     int initial = 0;
+    VariableScope scope = VariableScope::Game;
 };
+
+// A text can show a player variable for one player with {name@2}; plain {name} shows the first player's.
 
 // Letters, digits and _, not starting with a digit, at most MaximumVariableNameLength long.
 bool isVariableName(const QString& name);
@@ -142,6 +162,8 @@ bool isVariableName(const QString& name);
 struct TextPart {
     QString text;     // plain text with no escapes left, when variable is empty
     QString variable; // the name, when this part shows a variable
+    int player = 0;   // {name@2} shows player 2's value of a player variable; 0 when no player is named
+    bool letter = false; // {name:letter} shows 1 to 26 as A to Z, 27 to 36 as 0 to 9, and anything else as a space
 };
 
 struct TextTemplate {
@@ -208,6 +230,9 @@ QByteArray tilemapCellBytes(const SceneItem& item);
 // Empty when every sheet frame and tile fits its image. Needs decoded images, so it runs at export.
 QString sceneImagesProblem(const Scene& scene, const QList<SceneImageData>& images);
 QString validateScene(const Scene& scene); // empty string when valid
+// The set with each template replaced by its copies, in place: the first keeps the template's id, the others
+// are named id~2, id~3 and so on. A copy that follows a template with copies follows the copy with its number.
+SceneSet expandCopies(const SceneSet& set);
 Scene starterScene(); // a 2D game: a player the controller moves and a title
 Scene appStarterScene(); // an app: a header title and labeled buttons, nothing moves
 QStringList sceneImageSources(const Scene& scene); // each image's source once, in the order first used

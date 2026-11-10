@@ -64,10 +64,45 @@ enum class BlockType {
     IfItemDistance,    // also holds actions; center to center, in world units
     ChaseItem,         // the item must be a moving body; sets its velocity toward the other item
     PutAtItem,         // places the item at the other item's position plus x and y
+    // Menus and two players.
+    PauseGame,         // bodies, animations and particles stand still; blocks keep running
+    ResumeGame,
+    CameraFollowBoth,  // keeps both items in view; neither may be screen-fixed
+    // Formulas: a whole-number expression over variables (Formula.h).
+    SetFormula,        // sets the variable to the formula's value
+    IfFormula,         // also holds actions; runs them when the formula is not 0
+    Otherwise,         // also holds actions; right after an If block, runs when that one did not
+    // Players: the current player is the one a block runs for; player variables and @player use theirs.
+    WhenPlayerPresses, // once for each player in the scene who pressed the button this frame
+    WhilePlayerHolds,  // for each player in the scene holding the button
+    WhenPlayerJoins,   // for a player whose controller presses its first button, or who joins online
+    ForEachPlayer,     // also holds actions; runs them once for each player in the scene
+    // Templates and their copies: inside these, @self is the copy and copy variables are its own.
+    EveryFrameForEachCopy, // an event for each live copy of the template
+    WhenCopyTouches,       // an event for each live copy of the template that starts touching the other item
+    SpawnCopy,             // also holds actions; brings a hidden copy of the template to the other item, then runs them for it
+    RemoveCopy,            // hides the copy and frees it for a later spawn
+    ForEachCopy,           // also holds actions; runs them for each live copy of the template
+    // Behaviors.
+    Wander,                // walks about within `radius` of where it was spawned or placed, at `value` units per second
+    Flee,                  // runs from the other item at `value` units per second
+    AlertNearby,           // sets a copy variable to `value` for every live copy of the template within `radius` of @self
+    SetLook,               // shows look number `formula` of a sprite sheet that holds several looks, counted from 0
 };
 
-// MoveUp to MoveRight are the left stick or the D-pad, whichever is pushed that way.
-enum class ControllerButton { Cross, Circle, Square, Triangle, DpadUp, DpadDown, DpadLeft, DpadRight, MoveUp, MoveDown, MoveLeft, MoveRight };
+// Item choices a block can make besides a scene item: the copy a block runs for, the current player's
+// character, and the character of the player nearest to the copy.
+inline constexpr auto SelfItem = "@self";
+inline constexpr auto PlayerItem = "@player";
+inline constexpr auto NearestPlayerItem = "@nearestPlayer";
+
+// MoveUp to MoveRight are the left stick or the D-pad, whichever is pushed that way. The P2 buttons are the second
+// player's pad; every button from MoveUp on needs a runtime that has them.
+enum class ControllerButton {
+    Cross, Circle, Square, Triangle, DpadUp, DpadDown, DpadLeft, DpadRight, MoveUp, MoveDown, MoveLeft, MoveRight,
+    Options,
+    P2Cross, P2Circle, P2Square, P2Triangle, P2Options, P2DpadUp, P2DpadDown, P2DpadLeft, P2DpadRight, P2MoveUp, P2MoveDown, P2MoveLeft, P2MoveRight,
+};
 
 enum class VariableComparison { Equal, NotEqual, Less, LessOrEqual, Greater, GreaterOrEqual };
 
@@ -88,6 +123,8 @@ struct Block {
     QString animation;                                 // PlayAnimation: an animation's name
     bool flipped = true;                               // FlipItem: true faces left, false faces right
     QString scene;                                     // GoToScene: a scene's id
+    QString formula;                                   // SetFormula, IfFormula
+    int radius = 0;                                    // Wander, AlertNearby: in world units
 
     QList<Block> children; // the actions inside an event or an IfVariable, run in order
 };
@@ -125,6 +162,8 @@ struct BlockInfo {
     bool usesAnimation = false;
     bool usesFlipped = false;
     bool usesScene = false;
+    bool usesFormula = false;
+    bool usesRadius = false;
 };
 
 struct ButtonInfo {
@@ -144,13 +183,14 @@ const BlockInfo& blockInfo(BlockType type);
 const QList<ButtonInfo>& buttonCatalog();
 const QList<ComparisonInfo>& comparisonCatalog();
 
-inline constexpr int MaximumLogicEvents = 128;
-inline constexpr int MaximumLogicBlocks = 2048; // events and actions together
-inline constexpr int MaximumLogicDepth = 8;     // an event is level 1, its actions level 2
+inline constexpr int MaximumLogicEvents = 1024;
+inline constexpr int MaximumLogicBlocks = 16384; // events and actions together
+inline constexpr int MaximumLogicDepth = 12;     // an event is level 1, its actions level 2
 inline constexpr int MaximumBlockIdLength = 64;
 inline constexpr double MaximumLogicCoordinate = 1000000; // both for positions and for moves
 inline constexpr int MaximumVariableValue = 1000000000; // the largest a block or an initial value can say
-inline constexpr int MaximumLogicVariables = 64;
+inline constexpr int MaximumLogicVariables = 512;
+inline constexpr int MaximumRadius = 20000;
 inline constexpr int MaximumVolumePercent = 100;
 inline constexpr int MaximumChaseSpeed = 3000; // units per second, the same as a moving body's top speed
 inline constexpr qint64 MaximumLogicFileBytes = 64 * 1024 * 1024; // every scene together

@@ -84,8 +84,8 @@ Rules:
   `1` and `2` cannot hold particles items, before `4` a brace in `text` was only a brace, so `{` and
   `}` in an older file are read as `{{` and `}}`, before `5` a scene cannot hold sprite sheets, tilemaps,
   a world or a camera, and before `6` a project is one scene: the file's `background`, `world`, `camera` and
-  `items` sit at its top level and load as one scene with no name of its own. A scene holds at most 256 items,
-  drawn in list order, later items on top.
+  `items` sit at its top level and load as one scene with no name of its own. A scene holds at most 1024 items, every copy of a
+  template counted, drawn in list order, later items on top.
 - `startScene` is the `id` of the scene the game starts in. `scenes` lists 1 to 32 scenes in the order the
   Scene tab shows them. A scene's `id` is 1 to 64 letters, digits, `-` or `_`, unique and unchanging, so logic
   and Go to scene blocks can refer to it; its `name` is 1 to 40 characters, unique regardless of case, and is
@@ -110,6 +110,16 @@ Rules:
 - A `controllable` item moves with the controller's left stick or D-pad at 600 units per second and
   stays inside the world, or inside the screen when it is `screenFixed`. Without a world the world is the
   screen, so nothing changes for older scenes.
+- `hiddenWhileEditing` is optional. An item with `"hiddenWhileEditing": true` starts hidden on the editing stage, as if its
+  eye in the Layers list were off, which keeps panels that blocks show one at a time from piling up. The game is not affected.
+- `copies` is optional. An item with `"copies": 8` is a template: the game keeps 8 copies of it, all hidden until a
+  `spawnCopy` block brings one out (see [blocks-format.md](blocks-format.md)). A tilemap, a particles item or an item
+  the controller moves cannot be a template. Each copy counts as an item.
+- `follows` is optional: the `id` of another item of the scene. The item then stays at `followX`, `followY` from that
+  item's top left, and shows only while that one shows; hiding it with a block keeps it hidden. An item that follows a
+  template is a template with as many copies, and each copy follows the copy with its number, so a text such as
+  `Lv{level}` can stand under every creature showing its own copy variable. An item with physics cannot follow,
+  and an item cannot follow one that follows something itself.
 - `screenFixed` is optional. An item with `"screenFixed": true` is placed on the screen, for example a
   score, and stays there as the camera moves.
 - `physics` is optional and makes an item a [Static solid or a Moving body](#physics).
@@ -123,6 +133,8 @@ Rules:
 | In `text`  | Shows                                                       |
 | ---------- | ----------------------------------------------------------- |
 | `{score}`  | the value of the variable named `score`, as a whole number  |
+| `{hp@2}`   | player 2's value of the player variable `hp`; `{hp}` is player 1's |
+| `{n0:letter}` | the value as one letter: 1 to 26 as A to Z, 27 to 36 as 0 to 9, anything else as a space, so names can be spelled |
 | `{{`       | a literal `{`                                               |
 | `}}`       | a literal `}`                                               |
 
@@ -133,7 +145,8 @@ shows a variable that does not exist, naming the item and the variable, with an 
 none at all counted as having no variables.
 
 A text item reserves room for the widest number each variable could show, 11 characters for the sign and
-all ten digits of -2147483648. That is its length for the quad budget below. On the stage a variable
+all ten digits of -2147483648, or 1 for a letter. That is its length for the quad budget below. A copy variable
+shows the value of the copy the text item is, or follows. On the stage a variable
 appears with its `initial` value. The game rebuilds the text from the current values each frame with no
 allocation. Text with no variables behaves exactly as it did.
 
@@ -188,6 +201,7 @@ one picture. The Scene tab stays a flat top-down view.
     "frameWidth": 16,
     "frameHeight": 16,
     "animation": "walk",
+    "looks": 1,
     "animations": [
       { "name": "idle", "frames": [0], "fps": 1 },
       { "name": "walk", "frames": [0, 1, 2, 3], "fps": 8 }
@@ -206,6 +220,7 @@ to right and then top to bottom. Without `sheet` it is one plain picture, exactl
 | `flipX`         | `true` or `false`                       | starts mirrored left to right                        |
 | `animations`    | at most 16 named animations            | each `name` is letters, digits and `_`, 1 to 24 long, unique; each has `frames`, 1 to 256 frame numbers, and `fps`, whole number from 1 to 60 |
 | `animation`     | one of the `animations` names          | which one plays when the game starts. Empty means the first. An animation repeats |
+| `looks`         | whole number from 1 to 64, absent for 1 | how many looks the sheet holds, one after another in frame order. Frame numbers belong to the first look; a `setLook` block shows the same frames from another look, such as another skin, color or age |
 
 Frame numbers are checked against the picture when the scene is built: a frame the sheet does not have
 is an error naming it. Frames play one per `1/fps` seconds of game time. The game draws a sheet's frame
@@ -285,6 +300,7 @@ the inspector: None, Static solid (a wall or platform) or Moving body.
 | `moveSpeed`    | whole number from 60 to 3000, body only  | how fast it runs, in units per second                      |
 | `jumpHeight`   | whole number from 16 to 2000, body only  | how high it jumps, in world units                          |
 | `topDown`      | `true`, body only, absent otherwise, not together with `platformer` | walks in every direction on the stick or D-pad at `moveSpeed`, with no gravity. Walls and the edges of the world stop it |
+| `player`       | `2` to `4`, absent for 1; only on a body with `platformer` or `topDown` | whose pad drives the controls, and which player's character it is: blocks call it `@player`. Until that player is here, the body stands still |
 
 A new body has friendly defaults: gravity 100%, speed 600, jump height 260 (about four 64 unit tiles). A
 platformer character gets coyote time (a jump still works for a tenth of a second after running off a
@@ -406,6 +422,7 @@ struct Animation {
 // A sprite sheet's layout, and which of Animations are its own.
 struct Sprite {
     std::uint32_t frameWidth, frameHeight, columns, rows, firstAnimation, animationCount, startAnimation;
+    std::uint32_t lookFrames = 0; // frames in one look, when the sheet holds several looks one under another
 };
 
 // A tilemap. Its cells live in TilemapCells; solid tiles are SolidTiles[firstSolid] onward, solidCount of them.
@@ -420,6 +437,7 @@ struct Body {
     std::int32_t gravityPercent, moveSpeed, jumpHeight;
     bool platformer;
     bool topDown = false;
+    std::int32_t player = 1; // whose pad drives its controls
 };
 
 // One scene of the game: which of Items are its own, its world and where its camera starts.
@@ -428,6 +446,17 @@ struct SceneInfo {
     float worldWidth, worldHeight, cameraStartX, cameraStartY;
     std::array<float, 3> background;
     float tilt = 0.0f; // percent; 0 is the flat 2D camera
+};
+
+// The copies of one template: Items[firstItem] onward, count of them, all hidden until a block spawns one.
+struct CopyGroup {
+    std::uint32_t firstItem, count;
+};
+
+// An item that stays at an offset from another, and is shown only while that one is.
+struct Follow {
+    std::uint32_t item, target;
+    float x, y;
 };
 
 inline constexpr float WorldWidth = 1920.0f;
@@ -453,6 +482,10 @@ extern const std::array<const std::int32_t*, TilemapCount> TilemapCells; // defi
 inline constexpr std::size_t BodyCount = 0;
 inline constexpr std::array<Body, 0> Bodies{};
 inline constexpr std::size_t SolidItemCount = 0;
+inline constexpr std::size_t CopyGroupCount = 0;
+inline constexpr std::array<CopyGroup, 0> CopyGroups{};
+inline constexpr std::size_t FollowCount = 0;
+inline constexpr std::array<Follow, 0> Follows{};
 inline constexpr std::size_t SceneCount = 1;
 inline constexpr std::size_t StartScene = 0;
 inline constexpr std::array<SceneInfo, 1> Scenes{{

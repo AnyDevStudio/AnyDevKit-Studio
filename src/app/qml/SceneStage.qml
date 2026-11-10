@@ -560,52 +560,17 @@ Item {
         }
 
         // Pan and zoom, on the stage's own corner so it never covers the work.
-        Row {
+        ZoomButtons {
             anchors.right: parent.right
             anchors.top: parent.top
             anchors.margins: 8
-            spacing: 4
             z: 1700
-
-            Repeater {
-                model: [
-                    { label: "\u2212", hint: "Zoom out", act: () => area_.zoomBy(1 / 1.25, stage.width / 2, stage.height / 2) },
-                    { label: Math.round(stage.zoom * 100) + "%", hint: "Back to the camera at 100%", act: () => area_.resetView() },
-                    { label: "+", hint: "Zoom in", act: () => area_.zoomBy(1.25, stage.width / 2, stage.height / 2) },
-                    { label: "Fit", hint: "Show the whole world", act: () => area_.fitWorld() }
-                ]
-
-                T.Button {
-                    id: viewButton
-
-                    required property var modelData
-
-                    implicitWidth: Math.max(26, viewLabel.implicitWidth + 12)
-                    implicitHeight: 24
-                    focusPolicy: Qt.TabFocus
-                    Accessible.name: modelData.hint
-                    onClicked: modelData.act()
-
-                    contentItem: Text {
-                        id: viewLabel
-
-                        text: viewButton.modelData.label
-                        color: Theme.paper
-                        horizontalAlignment: Text.AlignHCenter
-                        verticalAlignment: Text.AlignVCenter
-                        font.family: Theme.body
-                        font.pixelSize: 13
-                    }
-
-                    background: Rectangle {
-                        radius: 12
-                        color: viewButton.hovered ? Theme.raised : Theme.panel
-                        border.width: viewButton.visualFocus ? 2 : 1
-                        border.color: viewButton.visualFocus ? Theme.paper : Theme.line
-                        opacity: 0.92
-                    }
-                }
-            }
+            buttons: [
+                { label: "\u2212", hint: "Zoom out", act: () => area_.zoomBy(1 / 1.25, stage.width / 2, stage.height / 2) },
+                { label: Math.round(stage.zoom * 100) + "%", hint: "Back to the camera at 100%", act: () => area_.resetView() },
+                { label: "+", hint: "Zoom in", act: () => area_.zoomBy(1.25, stage.width / 2, stage.height / 2) },
+                { label: "Fit", hint: "Show the whole world", act: () => area_.fitWorld() }
+            ]
         }
 
         Text {

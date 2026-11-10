@@ -5,6 +5,7 @@
 #include "GeneratedScene.hpp"
 #include "GeneratedVariables.hpp"
 #include "Save/SaveData.hpp"
+#include "Scene/Formula.hpp"
 #include "Scene/Particles.hpp"
 #include "Scene/Physics2D.hpp"
 #include "Scene/World2D.hpp"
@@ -26,9 +27,17 @@ public:
     using Color = std::array<float, 3>;
     using Colors = std::array<Color, GeneratedScene::Items.size()>;
     using Visibility = std::array<bool, GeneratedScene::Items.size()>;
-    using SaveMailbox = SaveData::Mailbox<GeneratedVariables::VariableCount>;
+    using SaveMailbox = SaveData::Mailbox<GeneratedVariables::SavedCount>;
+    static constexpr std::size_t PlayerCount = GeneratedVariables::PlayerSlots;
+    struct PlayerInput {
+        Position direction{}; // the stick or D-pad, a unit vector or {0, 0}
+        std::uint32_t buttons = 0; // that player's pad bits from Input/Buttons.hpp
+    };
     SceneState(int width, int height, Audio::Mixer* mixer = nullptr, SaveMailbox* saves = nullptr); // also runs the start scene's "When the game starts" blocks
-    void Update(double seconds, Position direction, std::uint32_t buttons);
+    // One frame. Player 1 drives controllable items and player-1 bodies, player 2 their own bodies; blocks see
+    // player 2's buttons as Buttons::P2...
+    void Update(double seconds, const std::array<PlayerInput, PlayerCount>& players);
+    void Update(double seconds, Position direction, std::uint64_t buttons); // player 1 alone
     std::size_t CurrentScene() const; // an index into GeneratedScene::Scenes
     const GeneratedScene::SceneInfo& CurrentSceneInfo() const;
     const Positions& Current() const;
@@ -50,8 +59,13 @@ public:
     void ChangeVariable(std::size_t variable, std::int32_t amount); // stops at the largest or smallest value instead of overflowing
     std::int32_t Variable(std::size_t variable) const;
     bool Touching(std::size_t first, std::size_t second) const; // hidden items touch nothing
-    bool Held(std::uint32_t button) const;
-    bool Pressed(std::uint32_t button) const; // went down this frame
+    bool Held(std::uint64_t button) const;
+    bool Pressed(std::uint64_t button) const; // went down this frame
+    // While paused, bodies, controllable items, animations and particles stand still; blocks keep running so a
+    // menu can work. Entering a scene resumes.
+    void PauseGame();
+    void ResumeGame();
+    bool Paused() const;
     // Sound and saving: each is safe when audio or save data is unavailable, and does nothing then.
     void PlaySound(std::size_t sound);
     void PlayMusic(std::size_t sound); // loops; playing the music already playing keeps its place
@@ -59,6 +73,54 @@ public:
     void SetVolume(std::int32_t percent);
     void SaveVariables(); // the save happens in the background; only the newest values are kept
     void LoadVariables(); // loaded values replace the variables at the start of a later frame
+    // Players. Blocks run for a current player: their player variables, @player and their buttons. Player 1 is
+    // here from the first frame; another player arrives when their controller presses its first button.
+    static constexpr std::size_t PlayerSlots() { return PlayerCount; }
+    std::size_t CurrentPlayer() const;
+    void SetCurrentPlayer(std::size_t player);
+    bool PlayerHere(std::size_t player) const;
+    bool PlayerJoined(std::size_t player) const; // arrived this frame
+    std::int64_t PlayerNumber() const;          // the current player, counted from 1
+    std::int64_t PlayersHere() const;
+    bool PlayerHeld(std::uint64_t button) const;    // a button of Input/Buttons.hpp on the current player's pad
+    bool PlayerPressed(std::uint64_t button) const; // went down this frame on the current player's pad
+    std::size_t PlayerHero() const;                 // the current player's character in this scene, or NoItem()
+    std::size_t NearestPlayerHero(std::size_t from) const; // the shown character nearest to `from`, or NoItem()
+    std::int32_t PlayerVariable(std::size_t variable) const;
+    void SetPlayerVariable(std::size_t variable, std::int32_t value);
+    void ChangePlayerVariable(std::size_t variable, std::int32_t amount);
+
+    // Templates and their copies. Every item function takes NoItem() and then does nothing, reads as false, or
+    // as far away, so a block for a player or a copy that is not there is harmless.
+    static constexpr std::size_t NoItem() { return GeneratedScene::Items.size(); }
+    std::size_t Self() const; // the copy the blocks run for, or NoItem()
+    void SetSelf(std::size_t item);
+    bool Alive(std::size_t item) const; // an ordinary item always is; a copy from its spawn to its removal
+    // Brings the first free copy in [first, last) to `at` plus x and y, with its copy variables at their start
+    // values, and returns it; NoItem() when every copy is in use.
+    std::size_t SpawnCopy(std::size_t first, std::size_t last, std::size_t at, float x, float y);
+    void RemoveCopy(std::size_t item);
+    std::int32_t CopyVariable(std::size_t variable) const; // Self()'s value
+    void SetCopyVariable(std::size_t variable, std::int32_t value);
+    void ChangeCopyVariable(std::size_t variable, std::int32_t amount);
+    // Behaviors. A moving body gets a velocity; any other item moves directly. Images turn to face where they go.
+    void Wander(std::size_t item, float speed, float radius); // about where it started or was spawned
+    void Flee(std::size_t item, std::size_t from, float speed);
+    // Sets a copy variable for each live copy in [first, last) within `radius` of Self(), Self() included.
+    void AlertNearby(std::size_t first, std::size_t last, std::size_t variable, std::int32_t value, float radius);
+    std::int64_t Random(std::int64_t low, std::int64_t high); // both included
+    // Shows look number `look` of a sprite sheet that holds several looks one under another; others are clamped.
+    void SetLook(std::size_t item, std::int64_t look);
+    // For formulas: middles in whole world units, and distances; 0, or very far, when there is nothing to measure.
+    std::int64_t SelfX() const;
+    std::int64_t SelfY() const;
+    std::int64_t PlayerX() const;
+    std::int64_t PlayerY() const;
+    std::int64_t PlayerDistance() const;        // from Self() to the current player's character
+    std::int64_t NearestPlayerDistance() const; // from Self() to the nearest shown player character
+    std::int64_t SelfVelocityX() const;         // a moving body's speed across and down, in its own units; 0 for anything else
+    std::int64_t SelfVelocityY() const;
+
     // Plays a particles item once, at its current position.
     void BurstParticles(std::size_t item);
     // Keeps a one-shot particles item from playing when the game starts, for a block to start it.
@@ -68,6 +130,8 @@ public:
     void SetFlipped(std::size_t item, bool flipped);
     // The camera keeps this item centered until SetCameraPosition, always inside the world.
     void CameraFollow(std::size_t item);
+    // Keeps both items in view, centered between them; while one is hidden, follows the other.
+    void CameraFollowBoth(std::size_t item, std::size_t other);
     void SetCameraPosition(float x, float y);
     // Physics: only a moving body has any of this; anything else reads as false or does nothing.
     bool Landed(std::size_t item) const;   // landed on the ground this frame
@@ -90,6 +154,17 @@ public:
     std::string_view CurrentText(std::size_t item) const;
 
 private:
+    struct WanderState {
+        Position target{};
+        float timer = 0.0f;
+        bool moving = false;
+    };
+    static constexpr std::size_t ItemCount = GeneratedScene::Items.size();
+    static constexpr bool Valid(std::size_t item) { return item < ItemCount; }
+    void moveToward(std::size_t item, Position target, float speed);
+    void resetItem(std::size_t item);
+    void updateFollowers();
+    void updatePlayers(const std::array<PlayerInput, PlayerCount>& players);
     void clampToBounds(std::size_t item, Position& position) const; // the current scene's world, or the screen for a screen-fixed item
     void limitPosition(std::size_t item, Position& position) const;
     float drawnWidth(std::size_t item) const; // follows the current text of an item that shows variables
@@ -107,7 +182,7 @@ private:
     void resetParticlesOf(std::size_t item);
     void applyLoadedVariables();
     void enterScene(std::size_t scene);
-    void stepPhysics(double seconds, Position direction, std::uint32_t buttons);
+    void stepPhysics(double seconds, const std::array<PlayerInput, PlayerCount>& players);
     void clearBodyEvents();
     Physics2D::Body* bodyOf(std::size_t item);
     const Physics2D::Body* bodyOf(std::size_t item) const;
@@ -122,6 +197,8 @@ private:
     std::array<World2D::AnimationPlayer, GeneratedScene::SpriteCount> animations{};
     World2D::Point camera{0.0f, 0.0f};
     std::int32_t followedItem = -1;
+    std::int32_t secondFollowed = -1;
+    bool paused = false;
     std::size_t currentScene = GeneratedScene::StartScene;
     std::int32_t pendingScene = -1; // a scene to enter after this frame's blocks
     std::array<Physics2D::Body, GeneratedScene::BodyCount> bodies{};
@@ -129,12 +206,32 @@ private:
     std::array<Physics2D::Aabb, GeneratedScene::SolidItemCount> solidBoxes{};
     std::array<Physics2D::TileLayer, GeneratedScene::TilemapCount> tileLayers{};
     Physics2D::FixedClock physicsClock{};
-    bool jumpWasHeld = false;
-    bool jumpPressPending = false;
+    std::array<bool, PlayerCount> jumpWasHeld{};
+    std::array<bool, PlayerCount> jumpPressPending{};
     GeneratedLogic::Memory logicMemory{};
-    std::uint32_t heldButtons = 0;
-    std::uint32_t pressedButtons = 0;
+    std::uint64_t heldButtons = 0;
+    std::uint64_t pressedButtons = 0;
     std::array<std::int32_t, GeneratedVariables::VariableCount> variables = GeneratedVariables::InitialValues;
+    std::array<std::array<std::int32_t, GeneratedVariables::PlayerVariableCount>, PlayerCount> playerVariables = [] {
+        std::array<std::array<std::int32_t, GeneratedVariables::PlayerVariableCount>, PlayerCount> values{};
+        values.fill(GeneratedVariables::PlayerInitialValues);
+        return values;
+    }();
+    std::array<std::array<std::int32_t, GeneratedVariables::CopyVariableCount>, ItemCount> copyVariables{};
+    std::size_t currentPlayer = 0;
+    std::size_t self = ItemCount;
+    std::array<bool, PlayerCount> playerPresent{};
+    std::array<bool, PlayerCount> playerJoinedNow{};
+    bool firstPlayerAnnounced = false;
+    std::array<std::uint32_t, PlayerCount> playerHeld{};
+    std::array<std::uint32_t, PlayerCount> playerPressed{};
+    std::array<bool, ItemCount> alive{};
+    std::array<bool, ItemCount> followerHidden{}; // a follower a block hid, which stays hidden whatever it follows does
+    std::array<Position, ItemCount> home{};
+    std::array<WanderState, ItemCount> wandering{};
+    std::array<std::uint32_t, GeneratedScene::SpriteCount> looks{};
+    std::uint64_t randomState = 0x9E3779B97F4A7C15ull;
+    float frameSeconds = 1.0f / 60.0f;
     // One buffer holding the characters of every text that shows variables, each at a fixed offset and
     // sized for its widest number before the first frame, so rebuilding them never touches the heap.
     static constexpr std::size_t BoundCharacters = [] {

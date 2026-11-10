@@ -609,6 +609,78 @@ Flickable {
             }
         }
 
+        // Templates: one item the game stamps out as many copies of, such as a kind of enemy or a dropped coin.
+        ColumnLayout {
+            Layout.fillWidth: true
+            visible: inspector.hasItem && !inspector.isTilemap && !inspector.isParticles
+            spacing: 10
+
+            Field {
+                Layout.fillWidth: true
+                label: "Copies"
+                value: inspector.hasItem ? String(inspector.item.copies ?? 0) : "0"
+                maximumLength: 3
+                hint: (inspector.item.copies ?? 0) > 0
+                      ? "A template. The game keeps " + inspector.item.copies + " hidden copies, and Spawn a copy brings one out."
+                      : "0 is one ordinary item. Type a number to make it a template that blocks can spawn copies of."
+                onCommitted: (text) => inspector.set("copies", Number(text))
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 10
+
+                Text {
+                    text: "Follows"
+                    color: Theme.muted
+                    font.family: Theme.body
+                    font.pixelSize: 14
+                }
+
+                Item { Layout.fillWidth: true }
+
+                BlockPicker {
+                    objectName: "followsPicker"
+                    preferredWidth: 190
+                    placeholder: "Nothing"
+                    current: inspector.hasItem ? (inspector.item.follows ?? "") : ""
+                    shown: {
+                        const target = inspector.hasItem ? (inspector.item.follows ?? "") : ""
+                        if (target.length === 0) return ""
+                        const found = inspector.scene.itemChoices(-1).find((choice) => choice.id === target)
+                        return found ? found.name : "Missing item"
+                    }
+                    choices: [{ id: "", name: "Nothing" }].concat(inspector.scene.itemChoices(inspector.scene.selectedIndex))
+                    emptyText: "Add another item first."
+                    onChosen: (id) => inspector.set("follows", id)
+                }
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                visible: inspector.hasItem && (inspector.item.follows ?? "").length > 0
+                spacing: 10
+
+                Field {
+                    Layout.fillWidth: true
+                    Layout.preferredWidth: 1
+                    label: "Offset x"
+                    value: inspector.hasItem ? String(inspector.item.followX ?? 0) : "0"
+                    maximumLength: 7
+                    onCommitted: (text) => inspector.set("followX", Number(text))
+                }
+
+                Field {
+                    Layout.fillWidth: true
+                    Layout.preferredWidth: 1
+                    label: "Offset y"
+                    value: inspector.hasItem ? String(inspector.item.followY ?? 0) : "0"
+                    maximumLength: 7
+                    onCommitted: (text) => inspector.set("followY", Number(text))
+                }
+            }
+        }
+
         // Physics: how the item behaves in a platformer. Words a beginner knows, and good defaults.
         ColumnLayout {
             Layout.fillWidth: true
@@ -683,6 +755,20 @@ Flickable {
                 wrapMode: Text.WordWrap
                 font.family: Theme.body
                 font.pixelSize: 13
+            }
+
+            ChoiceRow {
+                Layout.fillWidth: true
+                visible: inspector.isBody && (inspector.item.platformer || inspector.item.topDown)
+                label: "Controlled by"
+                value: inspector.isBody ? String(inspector.item.player) : "1"
+                options: [
+                    { value: "1", label: "Player 1" },
+                    { value: "2", label: "Player 2" },
+                    { value: "3", label: "Player 3" },
+                    { value: "4", label: "Player 4" }
+                ]
+                onPicked: (value) => inspector.set("player", Number(value))
             }
 
             SliderRow {

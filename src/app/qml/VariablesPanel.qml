@@ -156,6 +156,36 @@ ColumnLayout {
                         }
                     }
 
+                    // One value for the game, one per player, or one per copy of a template. A click moves to the next.
+                    T.Button {
+                        id: scopeButton
+
+                        readonly property string scope: row.variable.scope ?? "game"
+                        readonly property string nextScope: scope === "game" ? "player" : scope === "player" ? "copy" : "game"
+
+                        objectName: "variableScope_" + row.index
+                        Layout.preferredWidth: 58
+                        Layout.preferredHeight: panel.rowHeight
+                        Accessible.name: "Variable " + row.variable.name + " has one value for " + (scope === "game" ? "the game" : scope === "player" ? "each player" : "each copy") + ". Change to " + nextScope
+                        onClicked: panel.doc.setVariableScope(row.variable.name, nextScope)
+
+                        contentItem: Text {
+                            text: scopeButton.scope === "game" ? "game" : scopeButton.scope === "player" ? "player" : "copy"
+                            color: scopeButton.scope === "game" ? Theme.muted : Theme.signal
+                            horizontalAlignment: Text.AlignHCenter
+                            verticalAlignment: Text.AlignVCenter
+                            font.family: Theme.mono
+                            font.pixelSize: 12
+                        }
+
+                        background: Rectangle {
+                            radius: 8
+                            color: scopeButton.hovered ? Theme.ink : "transparent"
+                            border.width: scopeButton.visualFocus ? 2 : 1
+                            border.color: scopeButton.visualFocus ? Theme.paper : Theme.line
+                        }
+                    }
+
                     T.Button {
                         id: deleteButton
 

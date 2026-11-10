@@ -117,6 +117,8 @@ public:
     Q_INVOKABLE void nudgeItem(int index, double deltaX, double deltaY);
     Q_INVOKABLE void resizeItem(int index, double width, double height, bool keepAspect = false);
     Q_INVOKABLE bool setItemValue(int index, const QString& property, const QVariant& value);
+    // Every item of the scene but the one at `except`, as [{id, name}], for a list to pick another item from.
+    Q_INVOKABLE QVariantList itemChoices(int except = -1) const;
     Q_INVOKABLE void setBackground(const QString& color);
     Q_INVOKABLE void removeItem(int index);
     // Later items are drawn on top. Each of these is one undo step and false means nothing moved.
@@ -219,6 +221,8 @@ private:
     QString noticeText;
     bool noticeProblem = false;
     QHash<QString, QString> imageProblems; // by source, only images that cannot be used
+    void hideItemsMarkedInTheFile();
+
     QSet<QString> hiddenItems; // by id, so it follows an item through reorders and undo
     QList<LogicVariable> variables;
 };

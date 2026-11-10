@@ -108,10 +108,10 @@ private slots:
         QTemporaryDir directory;
         SceneDocument document;
         openEmpty(directory, document);
-        for (int i = 0; i < 256; ++i) QCOMPARE(document.addItem("rectangle", 100, 100), i);
+        for (int i = 0; i < MaximumSceneItems; ++i) QCOMPARE(document.addItem("rectangle", 100, 100), i);
         QCOMPARE(document.addItem("rectangle", 100, 100), -1);
-        QVERIFY(document.error().contains("256"));
-        QCOMPARE(document.rowCount(), 256);
+        QVERIFY(document.error().contains(QString::number(MaximumSceneItems)));
+        QCOMPARE(document.rowCount(), MaximumSceneItems);
     }
 
     void movingRoundsAndClampsToTheStage() {
@@ -449,10 +449,10 @@ private slots:
         QTemporaryDir directory;
         SceneDocument document;
         openEmpty(directory, document);
-        for (int i = 0; i < 256; ++i) QCOMPARE(document.addImage("assets/a.png", 10, 10, "A", 100, 100), i);
+        for (int i = 0; i < MaximumSceneItems; ++i) QCOMPARE(document.addImage("assets/a.png", 10, 10, "A", 100, 100), i);
         QVERIFY(!document.roomProblem().isEmpty());
         QCOMPARE(document.addImage("assets/a.png", 10, 10, "A", 100, 100), -1);
-        QVERIFY(document.error().contains("256"));
+        QVERIFY(document.error().contains(QString::number(MaximumSceneItems)));
     }
 
     void imagesExposeTheirSourceToTheStage() {
@@ -982,13 +982,13 @@ private slots:
         QTemporaryDir directory;
         SceneDocument document;
         openEmpty(directory, document);
-        for (int i = 0; i < 256; ++i) document.addItem("rectangle", 100, 100);
+        for (int i = 0; i < MaximumSceneItems; ++i) document.addItem("rectangle", 100, 100);
         document.setSelectedIndex(5);
         const auto before = fileBytes(scenePath(directory));
         QCOMPARE(document.duplicateItem(5), -1);
-        QCOMPARE(document.rowCount(), 256);
+        QCOMPARE(document.rowCount(), MaximumSceneItems);
         QVERIFY(document.noticeIsProblem());
-        QVERIFY(document.notice().contains("256"));
+        QVERIFY(document.notice().contains(QString::number(MaximumSceneItems)));
         QCOMPARE(document.selectedIndex(), 5);
         QCOMPARE(fileBytes(scenePath(directory)), before);
     }
@@ -1047,6 +1047,44 @@ private slots:
         // The only undo step is still the add, so one undo empties the scene.
         document.undo();
         QCOMPARE(document.rowCount(), 0);
+    }
+
+    void anItemMarkedHiddenWhileEditingStartsHiddenAndKeepsTheMark() {
+        QTemporaryDir directory;
+        SceneDocument document;
+        openEmpty(directory, document);
+        addRectangles(document, 2);
+        auto root = QJsonDocument::fromJson(fileBytes(scenePath(directory))).object();
+        auto sets = root.value("scenes").toArray();
+        auto scene = sets[0].toObject();
+        auto items = scene.value("items").toArray();
+        auto item = items[0].toObject();
+        item.insert("hiddenWhileEditing", true);
+        items[0] = item;
+        scene.insert("items", items);
+        sets[0] = scene;
+        root.insert("scenes", sets);
+        QFile file(scenePath(directory));
+        QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        file.write(QJsonDocument(root).toJson());
+        file.close();
+
+        SceneDocument reopened;
+        QVERIFY(reopened.open(scenePath(directory)));
+        QVERIFY(reopened.isItemHidden(0));
+        QVERIFY(!reopened.isItemHidden(1));
+
+        // The eye still works for this session and saves nothing; the mark in the file stays.
+        const auto before = fileBytes(scenePath(directory));
+        reopened.setItemHidden(0, false);
+        QVERIFY(!reopened.isItemHidden(0));
+        QCOMPARE(fileBytes(scenePath(directory)), before);
+
+        // Any later save writes the mark back.
+        reopened.addItem("rectangle", 900, 900);
+        const auto saved = QJsonDocument::fromJson(fileBytes(scenePath(directory))).object();
+        QVERIFY(saved.value("scenes").toArray()[0].toObject().value("items").toArray()[0].toObject().value("hiddenWhileEditing").toBool());
+        QVERIFY(!saved.value("scenes").toArray()[0].toObject().value("items").toArray()[1].toObject().contains("hiddenWhileEditing"));
     }
 
     void hidingAlreadyHiddenChangesNothing() {

@@ -388,7 +388,7 @@ void StudioController::resetBuild() {
     logModel.setStringList({});
     stageEntries.clear();
     if (project) {
-        for (const auto& step : exportBuildSteps(*project, selectedFormat, pkgKeys)) stageEntries.append(QVariantMap{{"title", step.title}, {"state", "waiting"}});
+        for (const auto& step : exportBuildSteps(*project, selectedFormat, pkgKeys, desktopContext())) stageEntries.append(QVariantMap{{"title", step.title}, {"state", "waiting"}});
     }
     emit buildChanged();
 }
@@ -407,10 +407,47 @@ void StudioController::build() {
         emit buildFinished(false);
         return;
     }
+    auto environment = withToolDirectories(QProcessEnvironment::systemEnvironment(), hostToolDirectories());
+    if (isDesktopFormat(selectedFormat)) {
+        QString problem;
+        if (!writeDesktopHelpers(*project, problem)) {
+            state = "blocked";
+            message = problem;
+            emit buildChanged();
+            emit buildFinished(false);
+            return;
+        }
+        if (const auto tools = desktopToolPath(*project, selectedFormat, desktopContext().hostIsWindows); !tools.isEmpty()) {
+            environment.insert("PATH", tools + QDir::listSeparator() + environment.value("PATH"));
+        }
+#ifdef Q_OS_MACOS
+        // The SDK builds desktop programs with LLVM's own clang and lld, which Apple's clang does not stand in for.
+        for (const auto* llvm : {"/opt/homebrew/opt/llvm/bin", "/usr/local/opt/llvm/bin"}) {
+            if (QFileInfo(QString(llvm) + "/clang").isExecutable()) {
+                environment.insert("PATH", QString(llvm) + QDir::listSeparator() + environment.value("PATH"));
+                break;
+            }
+        }
+#endif
+    }
     state = "running";
-    plannedSteps = exportBuildSteps(*project, selectedFormat, pkgKeys);
-    runner.start(plannedSteps, project->root, withToolDirectories(QProcessEnvironment::systemEnvironment(), hostToolDirectories()));
+    plannedSteps = exportBuildSteps(*project, selectedFormat, pkgKeys, desktopContext());
+    runner.start(plannedSteps, project->root, environment);
     emit buildChanged();
+}
+
+DesktopBuildContext StudioController::desktopContext() const {
+    DesktopBuildContext context;
+    if (!project || !isDesktopFormat(selectedFormat)) return context;
+    const auto target = desktopTarget(selectedFormat);
+    context.dependencyRoot = savedDependencyRoot;
+    context.cacheDirectory = QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + "/adk-cache";
+    context.needsDependencies = !savedDependencyRoot.isEmpty() && !QFileInfo(savedDependencyRoot + '/' + target).isDir();
+#ifdef Q_OS_WIN
+    context.hostIsWindows = true;
+#endif
+    context.needsWindowsStartup = selectedFormat == ExportFormat::Windows && !QFileInfo::exists(project->sdkRoot + "/lib/libAnyDevKitWindowsStartup.a");
+    return context;
 }
 
 void StudioController::cancelBuild() {

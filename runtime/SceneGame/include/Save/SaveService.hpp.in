@@ -10,7 +10,7 @@
 // "nothing was saved" or "nothing to load": the game keeps running with the values it already has.
 class SaveService final {
 public:
-    using Mailbox = SaveData::Mailbox<GeneratedVariables::VariableCount>;
+    using Mailbox = SaveData::Mailbox<GeneratedVariables::SavedCount>;
 
     SaveService();
     ~SaveService();
@@ -21,7 +21,7 @@ public:
     Mailbox* Mail();
 
 private:
-    using Values = std::array<std::int32_t, GeneratedVariables::VariableCount>;
+    using Values = std::array<std::int32_t, GeneratedVariables::SavedCount>;
 
     static void* APS5_VABI threadEntry(void* argument);
     void runThread();

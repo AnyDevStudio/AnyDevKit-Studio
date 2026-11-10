@@ -34,7 +34,12 @@ constexpr int ParticleSchema = 3;
 constexpr int VariableTextSchema = 4;
 constexpr int WorldSchema = 5;
 constexpr int SceneSetSchema = 6;
-constexpr int MaximumItems = 256;
+// Every copy of a template is an item of its own in the game.
+qsizetype expandedItemCount(const Scene& scene) {
+    qsizetype count = 0;
+    for (const auto& item : scene.items) count += std::max(1, item.copies);
+    return count;
+}
 constexpr int MaximumTextLength = 64;
 constexpr int MaximumScale = 40;
 // Every position and size becomes a float literal in the generated header, so it has to fit one.
@@ -110,7 +115,7 @@ qsizetype textLength(const TextTemplate& parsed) {
 // the number that takes the most characters so that its length is the quads the game must reserve.
 QString widestText(const QString& text) {
     QString widest;
-    for (const auto& part : parseTextTemplate(text).parts) widest += part.variable.isEmpty() ? part.text : QString(MaximumVariableCharacters, '0');
+    for (const auto& part : parseTextTemplate(text).parts) widest += part.variable.isEmpty() ? part.text : part.letter ? QString("W") : QString(MaximumVariableCharacters, '0');
     return widest;
 }
 
@@ -153,6 +158,7 @@ QString validateSheet(const SceneItem& item, qsizetype index) {
     if (const auto problem = sizeProblem("frameWidth", item.frameWidth); !problem.isEmpty()) return problem;
     if (const auto problem = sizeProblem("frameHeight", item.frameHeight); !problem.isEmpty()) return problem;
     if (item.animations.size() > MaximumAnimationsPerSprite) return itemError(item, index, QString("a sprite can have at most %1 animations.").arg(MaximumAnimationsPerSprite));
+    if (item.looks < 1 || item.looks > MaximumLooks) return itemError(item, index, QString("looks must be a whole number from 1 to %1.").arg(MaximumLooks));
 
     QSet<QString> names;
     for (const auto& animation : item.animations) {
@@ -211,6 +217,45 @@ QString validatePhysics(const SceneItem& item, qsizetype index) {
     return {};
 }
 
+// Only a body with controls reads a pad, so only it can belong to the second player.
+QString validatePlayer(const SceneItem& item, qsizetype index) {
+    if (item.player < 1 || item.player > MaximumPlayers) return itemError(item, index, QString("player must be a whole number from 1 to %1.").arg(MaximumPlayers));
+    if (item.player != 1 && !(item.physics == BodyPhysics && (item.platformer || item.topDown))) {
+        return itemError(item, index, QString("only a moving body with Platformer or Top-down controls can belong to player %1.").arg(item.player));
+    }
+    return {};
+}
+
+QString validateCopies(const SceneItem& item, qsizetype index) {
+    if (item.copies < 0 || item.copies > MaximumCopies) return itemError(item, index, QString("copies must be a whole number from 0 to %1.").arg(MaximumCopies));
+    if (item.copies > 0 && (item.type == TilemapType || item.type == ParticlesType)) return itemError(item, index, "a tilemap or a particles item cannot be a template. Make copies of a shape, a text or an image.");
+    if (item.copies > 0 && (item.controllable || item.platformer || item.topDown)) return itemError(item, index, "an item the controller moves cannot be a template. Turn off its controls, or set copies to 0.");
+    if (!item.follows.isEmpty() && (!isUsableNumber(item.followX) || !isUsableNumber(item.followY))) return itemError(item, index, "followX and followY must be numbers.");
+    return {};
+}
+
+// An item follows another item of its scene that follows nothing itself. A template's follower is a template
+// with as many copies, so each copy has its own; an ordinary follower cannot follow a template.
+QString validateFollowing(const Scene& scene) {
+    QHash<QString, const SceneItem*> byId;
+    for (const auto& item : scene.items) byId.insert(item.id, &item);
+    for (qsizetype index = 0; index < scene.items.size(); ++index) {
+        const auto& item = scene.items[index];
+        if (item.follows.isEmpty()) continue;
+        const auto* target = byId.value(item.follows);
+        if (!target) return itemError(item, index, QString("follows \"%1\", which is not in this scene. Choose an item of this scene to follow.").arg(item.follows));
+        if (target == &item) return itemError(item, index, "cannot follow itself. Choose another item to follow.");
+        if (!target->follows.isEmpty()) return itemError(item, index, QString("follows \"%1\", which follows another item itself. Make both follow the same item instead.").arg(item.follows));
+        if (target->screenFixed != item.screenFixed) return itemError(item, index, QString("follows \"%1\", but only one of them stays on the screen. Turn Stays on screen on or off for both.").arg(item.follows));
+        if (item.copies != target->copies) {
+            if (target->copies > 0) return itemError(item, index, QString("follows the template \"%1\", which makes %2 copies. Give this item %2 copies too, so each copy has its own.").arg(item.follows).arg(target->copies));
+            return itemError(item, index, QString("is a template, but follows \"%1\", which is not. Set copies to 0, or follow a template with %2 copies.").arg(item.follows).arg(item.copies));
+        }
+        if (!item.physics.isEmpty()) return itemError(item, index, "an item with physics cannot follow another item. Remove its physics or stop it following.");
+    }
+    return {};
+}
+
 QString validateUpright(const SceneItem& item, qsizetype index) {
     if (!item.upright) return {};
     if (item.type != ImageType) return itemError(item, index, "only an image can stand upright.");
@@ -220,6 +265,8 @@ QString validateUpright(const SceneItem& item, qsizetype index) {
 
 QString validateItem(const SceneItem& item, qsizetype index, QSet<QString>& usedIds) {
     if (const auto problem = validateUpright(item, index); !problem.isEmpty()) return problem;
+    if (const auto problem = validatePlayer(item, index); !problem.isEmpty()) return problem;
+    if (const auto problem = validateCopies(item, index); !problem.isEmpty()) return problem;
     if (item.id.isEmpty()) return itemError(item, index, "id must be a non-empty string.");
     if (usedIds.contains(item.id)) return itemError(item, index, QString("id \"%1\" is already used. Give each item its own id.").arg(item.id));
     usedIds.insert(item.id);
@@ -290,6 +337,7 @@ QString parseSheet(const QJsonObject& sheet, qsizetype index, SceneItem& item) {
     item.frameWidth = wholeNumberOrInvalid(sheet.value("frameWidth"));
     item.frameHeight = wholeNumberOrInvalid(sheet.value("frameHeight"));
     item.animation = sheet.value("animation").toString();
+    if (const auto looks = sheet.value("looks"); !looks.isUndefined()) item.looks = wholeNumberOrInvalid(looks);
     const auto list = sheet.value("animations");
     if (!list.isUndefined() && !list.isArray()) return itemError(item, index, "animations must be a list of animations.");
     for (const auto& entry : list.toArray()) {
@@ -400,7 +448,22 @@ QString parseItem(const QJsonValue& value, qsizetype index, SceneItem& item) {
             if (item.platformer && item.topDown) return itemError(item, index, "a moving body cannot use Platformer controls and Top-down controls together. Turn one of them off.");
         }
     }
+    const auto player = object.value("player");
+    if (!player.isUndefined()) {
+        item.player = wholeNumberOrInvalid(player);
+        if (item.player < 1 || item.player > MaximumPlayers) return itemError(item, index, QString("player must be a whole number from 1 to %1.").arg(MaximumPlayers));
+    }
+    if (const auto copies = object.value("copies"); !copies.isUndefined()) item.copies = wholeNumberOrInvalid(copies);
+    if (const auto follows = object.value("follows"); !follows.isUndefined()) {
+        if (!follows.isString()) return itemError(item, index, "follows must be the id of an item.");
+        item.follows = follows.toString();
+        item.followX = numberOrInvalid(object.value("followX"));
+        item.followY = numberOrInvalid(object.value("followY"));
+    }
 
+    const auto hiddenWhileEditing = object.value("hiddenWhileEditing");
+    if (!hiddenWhileEditing.isUndefined() && !hiddenWhileEditing.isBool()) return itemError(item, index, "hiddenWhileEditing must be true or false.");
+    item.hiddenWhileEditing = hiddenWhileEditing.toBool();
     const auto upright = object.value("upright");
     if (!upright.isUndefined() && !upright.isBool()) return itemError(item, index, "upright must be true or false.");
     item.upright = upright.toBool();
@@ -430,15 +493,23 @@ QJsonObject itemToJson(const SceneItem& item) {
         {"controllable", item.controllable},
     };
     if (item.screenFixed) object.insert("screenFixed", true);
+    if (item.hiddenWhileEditing) object.insert("hiddenWhileEditing", true);
     if (item.upright) object.insert("upright", true);
     if (item.drawWidth > 0) object.insert("drawWidth", item.drawWidth);
     if (item.drawHeight > 0) object.insert("drawHeight", item.drawHeight);
+    if (item.copies > 0) object.insert("copies", item.copies);
+    if (!item.follows.isEmpty()) {
+        object.insert("follows", item.follows);
+        object.insert("followX", item.followX);
+        object.insert("followY", item.followY);
+    }
     if (!item.physics.isEmpty()) {
         object.insert("physics", item.physics);
         if (item.physics == BodyPhysics) {
             object.insert("gravityScale", item.gravityScale);
             object.insert("platformer", item.platformer);
             if (item.topDown) object.insert("topDown", true);
+            if (item.player != 1) object.insert("player", item.player);
             object.insert("moveSpeed", item.moveSpeed);
             object.insert("jumpHeight", item.jumpHeight);
         }
@@ -453,6 +524,7 @@ QJsonObject itemToJson(const SceneItem& item) {
             for (const auto& animation : item.animations) animations.append(animationToJson(animation));
             QJsonObject sheet{{"frameWidth", item.frameWidth}, {"frameHeight", item.frameHeight}, {"animations", animations}};
             if (!item.animation.isEmpty()) sheet.insert("animation", item.animation);
+            if (item.looks > 1) sheet.insert("looks", item.looks);
             object.insert("sheet", sheet);
         }
     }
@@ -599,7 +671,7 @@ QString validateScene(const Scene& scene) {
     if (scene.worldHeight < ScreenHeightUnits || scene.worldHeight > MaximumWorldSide) return QString("The world's height must be a whole number from %1 to %2.").arg(ScreenHeightUnits).arg(MaximumWorldSide);
     const auto inCameraRange = [](double value, int worldSide, int screenSide) { return std::isfinite(value) && value >= 0 && value <= worldSide - screenSide; };
     if (!inCameraRange(scene.cameraX, scene.worldWidth, ScreenWidthUnits) || !inCameraRange(scene.cameraY, scene.worldHeight, ScreenHeightUnits)) return "The camera must start inside the world: from 0 up to the world's size minus the 1920x1080 screen.";
-    if (scene.items.size() > MaximumItems) return QString("The scene has %1 items, but a scene can hold at most %2. Remove some items and try again.").arg(scene.items.size()).arg(MaximumItems);
+    if (const auto count = expandedItemCount(scene); count > MaximumSceneItems) return QString("The scene has %1 items, copies of templates included, but a scene can hold at most %2. Remove some items or lower some templates' copies and try again.").arg(count).arg(MaximumSceneItems);
     QSet<QString> usedIds;
     bool hasParticles = false;
     bool hasTilemap = false;
@@ -614,9 +686,10 @@ QString validateScene(const Scene& scene) {
     qsizetype bodies = 0;
     qsizetype solids = 0;
     for (const auto& item : scene.items) {
-        if (item.physics == BodyPhysics) ++bodies;
-        if (item.physics == SolidPhysics) ++solids;
+        if (item.physics == BodyPhysics) bodies += std::max(1, item.copies);
+        if (item.physics == SolidPhysics) solids += std::max(1, item.copies);
     }
+    if (const auto problem = validateFollowing(scene); !problem.isEmpty()) return problem;
     if (bodies > MaximumSceneBodies) return QString("This scene has %1 moving bodies, but a scene can have at most %2. Turn physics off on some items and try again.").arg(bodies).arg(MaximumSceneBodies);
     if (solids > MaximumSceneSolidItems) return QString("This scene has %1 solid items, but a scene can have at most %2. Paint walls on a tilemap instead, or turn physics off on some items.").arg(solids).arg(MaximumSceneSolidItems);
     if (const auto cells = sceneTileCells(scene); cells > MaximumSceneTileCells) {
@@ -802,7 +875,22 @@ TextTemplate parseTextTemplate(const QString& text) {
                 result.problem = "text has a { with no matching }. To show a brace, type it twice: {{.";
                 return result;
             }
-            const auto name = text.mid(index + 1, end - index - 1);
+            auto name = text.mid(index + 1, end - index - 1);
+            bool letter = false;
+            if (name.endsWith(QLatin1String(":letter"))) {
+                letter = true;
+                name.chop(7);
+            }
+            int player = 0;
+            if (const auto at = name.indexOf('@'); at >= 0) {
+                bool ok = false;
+                player = name.mid(at + 1).toInt(&ok);
+                if (!ok || player < 1 || player > MaximumPlayers) {
+                    result.problem = QString("text uses {%1}, but after @ comes a player number from 1 to %2, as in {hp@2}.").arg(name).arg(MaximumPlayers);
+                    return result;
+                }
+                name = name.left(at);
+            }
             if (name.isEmpty()) {
                 result.problem = "text has {} with no variable name in it. To show braces, type each one twice: {{ and }}.";
                 return result;
@@ -812,7 +900,7 @@ TextTemplate parseTextTemplate(const QString& text) {
                 return result;
             }
             flush();
-            result.parts.append({{}, name});
+            result.parts.append({{}, name, player, letter});
             index = end + 1;
         } else if (character == '}') {
             result.problem = "text has a } with no matching {. To show a brace, type it twice: }}.";
@@ -848,7 +936,9 @@ QString displayedText(const QString& text, const QList<LogicVariable>& variables
             continue;
         }
         const auto known = std::ranges::find(variables, part.variable, &LogicVariable::name);
-        shown += known == variables.end() ? '{' + part.variable + '}' : QString::number(known->initial);
+        if (known == variables.end()) shown += '{' + part.variable + '}';
+        else if (part.letter) shown += known->initial >= 1 && known->initial <= 26 ? QChar('A' + known->initial - 1) : known->initial >= 27 && known->initial <= 36 ? QChar('0' + known->initial - 27) : QChar(' ');
+        else shown += QString::number(known->initial);
     }
     return shown;
 }
@@ -974,6 +1064,29 @@ QJsonObject sceneToJson(const Scene& scene) {
     return object;
 }
 
+}
+
+SceneSet expandCopies(const SceneSet& set) {
+    auto expanded = set;
+    for (auto& scene : expanded.scenes) {
+        if (std::ranges::none_of(scene.items, [](const SceneItem& item) { return item.copies > 0; })) continue;
+        QList<SceneItem> items;
+        for (const auto& item : scene.items) {
+            if (item.copies <= 0) {
+                items.append(item);
+                continue;
+            }
+            for (int number = 0; number < item.copies; ++number) {
+                auto copy = item;
+                copy.copyNumber = number;
+                if (number > 0) copy.id = item.id + "~" + QString::number(number + 1);
+                if (!copy.follows.isEmpty() && number > 0) copy.follows = item.follows + "~" + QString::number(number + 1);
+                items.append(copy);
+            }
+        }
+        scene.items = items;
+    }
+    return expanded;
 }
 
 QString validateSceneSet(const SceneSet& set) {
@@ -1138,17 +1251,19 @@ QByteArray generateImageSource(const QList<SceneImageData>& images, int tilemapC
     if (!images.isEmpty()) {
         // Pixels are raw files pulled in by the assembler, so the compiler never parses them.
         source += "// SCENE_IMAGE_DIRECTORY comes from CMakeLists.txt and points at src/GeneratedImages.\n";
+        source += "// Raw data pulled in by the assembler. Windows objects have no .hidden and keep read-only data in .rdata.\n#ifndef STUDIO_EMBED\n#if defined(_WIN32)\n#define STUDIO_EMBED(symbol) \".pushsection .rdata,\\\"dr\\\"\\n.balign 16\\n\" #symbol \":\\n\"\n#else\n#define STUDIO_EMBED(symbol) \".pushsection .rodata\\n.balign 16\\n.hidden \" #symbol \"\\n\" #symbol \":\\n\"\n#endif\n#endif\n";
     }
     for (qsizetype index = 0; index < images.size(); ++index) {
         const auto number = QByteArray::number(index);
         const auto symbol = "StudioSceneImage" + number;
-        source += "__asm__(\".pushsection .rodata\\n.balign 16\\n.hidden " + symbol + "\\n" + symbol + ":\\n.incbin \\\"\" SCENE_IMAGE_DIRECTORY \"/image-" + number + ".rgba\\\"\\n.popsection\\n\");\n";
+        source += "__asm__(STUDIO_EMBED(" + symbol + ") \".incbin \\\"\" SCENE_IMAGE_DIRECTORY \"/image-" + number + ".rgba\\\"\\n.popsection\\n\");\n";
         source += "extern \"C\" const std::uint8_t " + symbol + "[];\n";
     }
+    if (images.isEmpty() && tilemapCount > 0) source += "// Raw data pulled in by the assembler. Windows objects have no .hidden and keep read-only data in .rdata.\n#ifndef STUDIO_EMBED\n#if defined(_WIN32)\n#define STUDIO_EMBED(symbol) \".pushsection .rdata,\\\"dr\\\"\\n.balign 16\\n\" #symbol \":\\n\"\n#else\n#define STUDIO_EMBED(symbol) \".pushsection .rodata\\n.balign 16\\n.hidden \" #symbol \"\\n\" #symbol \":\\n\"\n#endif\n#endif\n";
     for (int index = 0; index < tilemapCount; ++index) {
         const auto number = QByteArray::number(index);
         const auto symbol = "StudioSceneTiles" + number;
-        source += "__asm__(\".pushsection .rodata\\n.balign 16\\n.hidden " + symbol + "\\n" + symbol + ":\\n.incbin \\\"\" SCENE_IMAGE_DIRECTORY \"/tilemap-" + number + ".tiles\\\"\\n.popsection\\n\");\n";
+        source += "__asm__(STUDIO_EMBED(" + symbol + ") \".incbin \\\"\" SCENE_IMAGE_DIRECTORY \"/tilemap-" + number + ".tiles\\\"\\n.popsection\\n\");\n";
         source += "extern \"C\" const std::int32_t " + symbol + "[];\n";
     }
     source += "\nnamespace GeneratedScene {\n\n";
@@ -1203,7 +1318,8 @@ QByteArray spriteTables(const Scene& scene, const QList<SceneImageData>& images)
         sprites += "    {" + QByteArray::number(item.frameWidth) + ", " + QByteArray::number(item.frameHeight)
             + ", " + QByteArray::number(image.width / item.frameWidth) + ", " + QByteArray::number(image.height / item.frameHeight)
             + ", " + QByteArray::number(animationCount) + ", " + QByteArray::number(item.animations.size())
-            + ", " + QByteArray::number(startIndex) + "},\n";
+            + ", " + QByteArray::number(startIndex)
+            + (item.looks > 1 ? ", " + QByteArray::number((image.width / item.frameWidth) * (image.height / item.frameHeight) / item.looks) : QByteArray()) + "},\n";
         for (const auto& animation : item.animations) {
             animations += "    {" + QByteArray::number(frameCount) + ", " + QByteArray::number(animation.frames.size()) + ", " + QByteArray::number(animation.fps) + "},\n";
             for (const auto frame : animation.frames) frames += (frameCount++ == 0 ? "" : ", ") + QByteArray::number(frame);
@@ -1323,6 +1439,7 @@ struct Animation {
 // A sprite sheet's layout, and which of Animations are its own.
 struct Sprite {
     std::uint32_t frameWidth, frameHeight, columns, rows, firstAnimation, animationCount, startAnimation;
+    std::uint32_t lookFrames = 0; // frames in one look, when the sheet holds several looks one under another
 };
 
 // A tilemap. Its cells live in TilemapCells; solid tiles are SolidTiles[firstSolid] onward, solidCount of them.
@@ -1337,6 +1454,7 @@ struct Body {
     std::int32_t gravityPercent, moveSpeed, jumpHeight;
     bool platformer;
     bool topDown = false;
+    std::int32_t player = 1; // whose pad drives its controls
 };
 
 // One scene of the game: which of Items are its own, its world and where its camera starts.
@@ -1345,6 +1463,17 @@ struct SceneInfo {
     float worldWidth, worldHeight, cameraStartX, cameraStartY;
     std::array<float, 3> background;
     float tilt = 0.0f; // percent; 0 is the flat 2D camera
+};
+
+// The copies of one template: Items[firstItem] onward, count of them, all hidden until a block spawns one.
+struct CopyGroup {
+    std::uint32_t firstItem, count;
+};
+
+// An item that stays at an offset from another, and is shown only while that one is.
+struct Follow {
+    std::uint32_t item, target;
+    float x, y;
 };
 
 )cpp";
@@ -1381,7 +1510,7 @@ struct SceneInfo {
         if (item.physics == SolidPhysics) ++solidCount;
         if (item.physics != BodyPhysics) continue;
         ++bodyCount;
-        bodies += "    {" + QByteArray::number(item.gravityScale) + ", " + QByteArray::number(item.moveSpeed) + ", " + QByteArray::number(item.jumpHeight) + (item.platformer ? ", true" : ", false") + (item.topDown ? ", true" : "") + "},\n";
+        bodies += "    {" + QByteArray::number(item.gravityScale) + ", " + QByteArray::number(item.moveSpeed) + ", " + QByteArray::number(item.jumpHeight) + (item.platformer ? ", true" : ", false") + (item.topDown || item.player != 1 ? (item.topDown ? ", true" : ", false") : "") + (item.player != 1 ? ", " + QByteArray::number(item.player) : QByteArray()) + "},\n";
     }
     header += "inline constexpr std::size_t BodyCount = " + QByteArray::number(bodyCount) + ";\n";
     header += bodyCount == 0 ? QByteArray("inline constexpr std::array<Body, 0> Bodies{};\n") : "inline constexpr std::array<Body, " + QByteArray::number(bodyCount) + "> Bodies{{\n" + bodies + "}};\n";
@@ -1396,6 +1525,35 @@ struct SceneInfo {
         sceneLines += "    {" + QByteArray::number(firstItem) + ", " + QByteArray::number(oneScene.items.size()) + ", " + floatLiteral(oneScene.worldWidth) + ", " + floatLiteral(oneScene.worldHeight) + ", " + floatLiteral(oneScene.cameraX) + ", " + floatLiteral(oneScene.cameraY) + ", {" + colorLiterals(oneScene.background) + "}" + (oneScene.tilt > 0 ? ", " + floatLiteral(oneScene.tilt) : QByteArray()) + "},\n";
         firstItem += static_cast<int>(oneScene.items.size());
     }
+    QByteArray groupLines;
+    int groupCount = 0;
+    QByteArray followLines;
+    int followCount = 0;
+    {
+        // Ids are unique within a scene only, so what an item follows is looked up in its own scene.
+        qsizetype first = 0;
+        for (const auto& oneScene : set.scenes) {
+            QHash<QString, int> indexOf;
+            for (qsizetype index = 0; index < oneScene.items.size(); ++index) indexOf.insert(oneScene.items[index].id, static_cast<int>(first + index));
+            for (qsizetype index = 0; index < oneScene.items.size(); ++index) {
+                const auto& item = oneScene.items[index];
+                const auto global = first + index;
+                if (item.copyNumber == 0 && item.copies > 0 && item.follows.isEmpty()) {
+                    groupLines += "    {" + QByteArray::number(global) + ", " + QByteArray::number(item.copies) + "},\n";
+                    ++groupCount;
+                }
+                if (!item.follows.isEmpty() && indexOf.contains(item.follows)) {
+                    followLines += "    {" + QByteArray::number(global) + ", " + QByteArray::number(indexOf.value(item.follows)) + ", " + floatLiteral(item.followX) + ", " + floatLiteral(item.followY) + "},\n";
+                    ++followCount;
+                }
+            }
+            first += oneScene.items.size();
+        }
+    }
+    header += "inline constexpr std::size_t CopyGroupCount = " + QByteArray::number(groupCount) + ";\n";
+    header += groupCount == 0 ? QByteArray("inline constexpr std::array<CopyGroup, 0> CopyGroups{};\n") : "inline constexpr std::array<CopyGroup, " + QByteArray::number(groupCount) + "> CopyGroups{{\n" + groupLines + "}};\n";
+    header += "inline constexpr std::size_t FollowCount = " + QByteArray::number(followCount) + ";\n";
+    header += followCount == 0 ? QByteArray("inline constexpr std::array<Follow, 0> Follows{};\n") : "inline constexpr std::array<Follow, " + QByteArray::number(followCount) + "> Follows{{\n" + followLines + "}};\n";
     header += "inline constexpr std::size_t SceneCount = " + QByteArray::number(set.scenes.size()) + ";\n";
     header += "inline constexpr std::size_t StartScene = " + QByteArray::number(startIndex) + ";\n";
     header += "inline constexpr std::array<SceneInfo, " + QByteArray::number(set.scenes.size()) + "> Scenes{{\n" + sceneLines + "}};\n";
@@ -1427,7 +1585,8 @@ struct SceneInfo {
 
 QByteArray generateSceneHeader(const SceneSet& set, const QList<SceneImageData>& images) {
     if (!validateSceneSet(set).isEmpty()) return {};
-    return flatSceneHeader(flattened(set), set, images);
+    const auto expanded = expandCopies(set);
+    return flatSceneHeader(flattened(expanded), expanded, images);
 }
 
 QByteArray generateSceneHeader(const Scene& scene, const QList<SceneImageData>& images) {
@@ -1605,7 +1764,7 @@ bool sceneRuntimeLacksPhysics(const QString& projectRoot) {
     const auto contents = file.readAll();
     QFile world(QDir::cleanPath(QDir(projectRoot).absolutePath()) + "/include/Scene/World2D.hpp");
     const auto worldCode = world.open(QIODevice::ReadOnly) ? world.readAll() : QByteArray();
-    return !contents.contains("Scene/Physics2D.hpp") || !contents.contains("Pressed(") || !worldCode.contains("TiltProject"); // older physics runtimes have no top-down blocks or tilted camera
+    return !contents.contains("Scene/Physics2D.hpp") || !contents.contains("Pressed(") || !contents.contains("PauseGame(") || !contents.contains("SpawnCopy(") || !worldCode.contains("TiltProject"); // older physics runtimes have no top-down blocks, tilted camera, pause, players or copies
 }
 
 bool sceneSetUsesPhysics(const SceneSet& set) {

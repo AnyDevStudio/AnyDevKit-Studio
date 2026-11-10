@@ -26,6 +26,9 @@ Item {
     property real carryOriginX: 0
     property real carryOriginY: 0
     property bool ready: false
+    property real zoom: 1
+    readonly property real minimumZoom: 0.3
+    readonly property real maximumZoom: 1.5
 
     Timer {
         // Blocks loaded with the project appear at once; only ones added later animate in.
@@ -54,9 +57,30 @@ Item {
         ensureVisible(target)
     }
 
+    function scrollCanvasTo(contentX, contentY) {
+        canvas.contentX = Math.max(0, Math.min(canvas.contentWidth - canvas.width, contentX))
+        canvas.contentY = Math.max(0, Math.min(canvas.contentHeight - canvas.height, contentY))
+    }
+
+    // Zooms around a point on the canvas. A new zoom can change how many columns fit and move every block,
+    // so what stays under the point is the block that was there, not the empty spot it left.
+    function zoomAt(factor, anchorX, anchorY) {
+        let next = Math.min(maximumZoom, Math.max(minimumZoom, zoom * factor))
+        if (Math.abs(next - 1) < 0.02) next = 1
+        if (next === zoom) return
+        const boardX = (anchorX + canvas.contentX) / zoom
+        const boardY = (anchorY + canvas.contentY) / zoom
+        const under = board.childAt(boardX, boardY)
+        const held = under && under.blockId !== undefined ? under : null
+        const offsetX = held ? boardX - held.blockX : 0
+        const offsetY = held ? boardY - held.blockY : 0
+        zoom = next
+        scrollCanvasTo((held ? held.blockX + offsetX : boardX) * zoom - anchorX, (held ? held.blockY + offsetY : boardY) * zoom - anchorY)
+    }
+
     function ensureVisible(target) {
-        const top = target.blockY - 24
-        const bottom = target.blockY + target.blockHeight + 40
+        const top = (target.blockY - 24) * zoom
+        const bottom = (target.blockY + target.blockHeight + 40) * zoom
         if (top < canvas.contentY) canvas.contentY = Math.max(0, top)
         else if (bottom > canvas.contentY + canvas.height) canvas.contentY = Math.max(0, Math.min(bottom - canvas.height, canvas.contentHeight - canvas.height))
     }
@@ -103,9 +127,9 @@ Item {
 
     function pushCarry() {
         if (!carrying) return
-        const canvasPoint = view.mapToItem(canvas, pointerX, pointerY)
-        carryX = canvasPoint.x + canvas.contentX - gripX
-        carryY = canvasPoint.y + canvas.contentY - gripY
+        const boardPoint = view.mapToItem(board, pointerX, pointerY)
+        carryX = boardPoint.x - gripX
+        carryY = boardPoint.y - gripY
         overPalette = pointerX < paletteFrame.width
         doc.dragTo(carryX, carryY)
     }
@@ -426,64 +450,96 @@ Item {
                     objectName: "logicCanvas"
                     anchors.fill: parent
                     anchors.topMargin: banner.visible ? banner.height + 18 : 0
-                    contentWidth: Math.max(view.doc.contentWidth, width)
-                    contentHeight: Math.max(view.doc.contentHeight, height)
+                    contentWidth: Math.max(view.doc.contentWidth * view.zoom, width)
+                    contentHeight: Math.max(view.doc.contentHeight * view.zoom, height)
                     boundsBehavior: Flickable.StopAtBounds
                     interactive: !view.carrying
 
                     Binding {
                         target: view.doc
                         property: "canvasWidth"
-                        value: canvas.width
+                        value: canvas.width / view.zoom
                     }
 
-                    MouseArea {
-                        // A click on the board clears the selection and takes the keyboard away from a field.
-                        width: canvas.contentWidth
-                        height: canvas.contentHeight
-                        onClicked: {
-                            view.doc.selectedId = ""
-                            view.focusCanvas()
+                    Item {
+                        id: board
+
+                        objectName: "logicBoard"
+                        width: canvas.contentWidth / view.zoom
+                        height: canvas.contentHeight / view.zoom
+                        scale: view.zoom
+                        transformOrigin: Item.TopLeft
+
+                        WheelHandler {
+                            acceptedModifiers: Qt.ControlModifier | Qt.MetaModifier
+                            acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+                            enabled: !view.carrying
+                            onWheel: (event) => {
+                                const point_ = board.mapToItem(canvas, point.position.x, point.position.y)
+                                view.zoomAt(Math.pow(1.0015, event.angleDelta.y), point_.x, point_.y)
+                            }
+                        }
+
+                        MouseArea {
+                            // A click on the board clears the selection and takes the keyboard away from a field.
+                            anchors.fill: parent
+                            onClicked: {
+                                view.doc.selectedId = ""
+                                view.focusCanvas()
+                            }
+                        }
+
+                        BlockOutline {
+                            id: landing
+
+                            objectName: "landingSpot"
+                            readonly property var spot: view.doc.landing
+
+                            z: 900
+                            x: spot.valid ? spot.x : x
+                            y: spot.valid ? spot.y : y
+                            visible: view.carrying && spot.valid === true
+                            blockWidth: spot.valid ? spot.width : 440
+                            headerHeight: spot.valid ? spot.height : 64
+                            socket: !(spot.valid && spot.isEvent)
+                            fill: Qt.rgba(1, 0.82, 0.25, 0.22)
+                            stroke: Theme.signal
+                            strokeWidth: 2.5
+                            strokeStyle: ShapePath.DashLine
+
+                            Behavior on x {
+                                enabled: !Theme.reducedMotion
+                                SpringAnimation { spring: 5; damping: 0.4; epsilon: 0.3; duration: Theme.ms(180) }
+                            }
+                            Behavior on y {
+                                enabled: !Theme.reducedMotion
+                                SpringAnimation { spring: 5; damping: 0.4; epsilon: 0.3; duration: Theme.ms(180) }
+                            }
+                        }
+
+                        Repeater {
+                            id: blocks
+                            model: view.doc
+
+                            delegate: LogicBlock {
+                                doc: view.doc
+                                logicView: view
+                            }
                         }
                     }
+                }
 
-                    BlockOutline {
-                        id: landing
-
-                        objectName: "landingSpot"
-                        readonly property var spot: view.doc.landing
-
-                        z: 900
-                        x: spot.valid ? spot.x : x
-                        y: spot.valid ? spot.y : y
-                        visible: view.carrying && spot.valid === true
-                        blockWidth: spot.valid ? spot.width : 440
-                        headerHeight: spot.valid ? spot.height : 64
-                        socket: !(spot.valid && spot.isEvent)
-                        fill: Qt.rgba(1, 0.82, 0.25, 0.22)
-                        stroke: Theme.signal
-                        strokeWidth: 2.5
-                        strokeStyle: ShapePath.DashLine
-
-                        Behavior on x {
-                            enabled: !Theme.reducedMotion
-                            SpringAnimation { spring: 5; damping: 0.4; epsilon: 0.3; duration: Theme.ms(180) }
-                        }
-                        Behavior on y {
-                            enabled: !Theme.reducedMotion
-                            SpringAnimation { spring: 5; damping: 0.4; epsilon: 0.3; duration: Theme.ms(180) }
-                        }
-                    }
-
-                    Repeater {
-                        id: blocks
-                        model: view.doc
-
-                        delegate: LogicBlock {
-                            doc: view.doc
-                            logicView: view
-                        }
-                    }
+                ZoomButtons {
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    anchors.margins: 14
+                    z: 1400
+                    visible: !view.doc.empty
+                    buttons: [
+                        { label: "\u2212", hint: "Zoom out", act: () => view.zoomAt(1 / 1.25, canvas.width / 2, canvas.height / 2) },
+                        { label: Math.round(view.zoom * 100) + "%", hint: "Back to 100%", act: () => view.zoomAt(1 / view.zoom, canvas.width / 2, canvas.height / 2) },
+                        { label: "+", hint: "Zoom in", act: () => view.zoomAt(1.25, canvas.width / 2, canvas.height / 2) }
+                    ]
                 }
 
                 // The first step on an empty canvas.
@@ -635,9 +691,10 @@ Item {
         // A palette block on its way to the canvas. It floats above both panels.
         BlockOutline {
             visible: view.carrying && view.carryingNew
-            x: view.pointerX - view.gripX
-            y: view.pointerY - view.gripY
+            x: view.pointerX - view.gripX * view.zoom
+            y: view.pointerY - view.gripY * view.zoom
             z: 3000
+            transformOrigin: Item.TopLeft
             blockWidth: 440
             headerHeight: 64
             cavityHeight: view.carriedPalette.holdsActions && !view.carriedPalette.isEvent ? 60 : 0
@@ -646,7 +703,7 @@ Item {
             fill: view.carriedPalette.isEvent ? Theme.signal : Theme.raised
             stroke: Theme.signal
             strokeWidth: 2
-            scale: 1.02
+            scale: 1.02 * view.zoom
 
             Text {
                 x: 22

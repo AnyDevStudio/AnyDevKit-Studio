@@ -176,7 +176,7 @@ HarnessResult runHarness(const SceneSet& set, const LogicProgram& program, const
     QTemporaryDir directory;
     const auto root = directory.path();
     const QString runtime = QString(STUDIO_TEST_SOURCE_DIR) + "/runtime/SceneGame";
-    for (const auto& relative : {QString("include/Scene/SceneState.hpp"), QString("include/Scene/Particles.hpp"), QString("include/Scene/Physics2D.hpp"), QString("src/Scene/SceneState.cpp"), QString("include/Input/Buttons.hpp"), QString("include/Audio/Mixer.hpp"), QString("include/Save/SaveData.hpp"), QString("include/Scene/World2D.hpp")}) {
+    for (const auto& relative : {QString("include/Scene/SceneState.hpp"), QString("include/Scene/Particles.hpp"), QString("include/Scene/Formula.hpp"), QString("include/Scene/Physics2D.hpp"), QString("src/Scene/SceneState.cpp"), QString("include/Input/Buttons.hpp"), QString("include/Audio/Mixer.hpp"), QString("include/Save/SaveData.hpp"), QString("include/Scene/World2D.hpp")}) {
         auto contents = readBytes(runtime + '/' + relative + ".in");
         writeBytes(root + '/' + relative, contents.replace("@NAME@", "Harness"));
     }
@@ -251,7 +251,7 @@ private slots:
         QString error;
         QVERIFY2(saveLogic(path, twoScenePlatformer(), error), qPrintable(error));
         const auto root = QJsonDocument::fromJson(readBytes(path)).object();
-        QCOMPARE(root.value("schemaVersion").toInt(), 4);
+        QCOMPARE(root.value("schemaVersion").toInt(), 5);
         QVERIFY(!root.contains("events"));
         const auto scenes = root.value("scenes").toArray();
         QCOMPARE(scenes.size(), 2);
@@ -847,6 +847,162 @@ private slots:
         QCOMPARE(result.lines.value(2), QString("closer=1"));
         QCOMPARE(result.lines.value(3), QString("caught=1"));
         QCOMPARE(result.lines.value(4), QString("settled=1"));
+    }
+
+    void theCoopAndPauseBlocksAndButtonsAreInTheCatalog() {
+        for (const auto* name : {"pauseGame", "resumeGame", "cameraFollowBoth"}) QVERIFY2(findBlock(name), name);
+        QVERIFY(!findBlock("pauseGame")->isEvent);
+        QVERIFY(findBlock("cameraFollowBoth")->usesItem);
+        QVERIFY(findBlock("cameraFollowBoth")->usesOtherItem);
+        QStringList buttons;
+        for (const auto& button : buttonCatalog()) buttons << button.jsonName;
+        for (const auto* name : {"options", "p2Cross", "p2Circle", "p2Square", "p2Triangle", "p2Options", "p2DpadUp", "p2DpadDown", "p2DpadLeft", "p2DpadRight", "p2MoveUp", "p2MoveDown", "p2MoveLeft", "p2MoveRight"}) {
+            QVERIFY2(buttons.contains(name), name);
+        }
+    }
+
+    void playerTwosButtonsAndBlocksRoundTripThroughLogicJson() {
+        LogicProgram program;
+        program.scene = "field";
+        auto press = eventBlock("press", BlockType::WhenButtonPressed, {}, {action("pause", BlockType::PauseGame), action("resume", BlockType::ResumeGame)});
+        press.button = ControllerButton::P2Options;
+        auto both = action("both", BlockType::CameraFollowBoth, "hero");
+        both.otherItem = "hero2";
+        program.events = {press, eventBlock("start", BlockType::WhenGameStarts, {}, {both})};
+        QTemporaryDir directory;
+        const auto path = directory.path() + "/logic.json";
+        QString error;
+        QVERIFY2(saveLogic(path, program, error), qPrintable(error));
+        const auto loaded = loadLogic(path);
+        QVERIFY2(loaded.program.has_value(), qPrintable(loaded.error));
+        QCOMPARE(loaded.program->events[0].button, ControllerButton::P2Options);
+        QCOMPARE(loaded.program->events[0].children[0].type, BlockType::PauseGame);
+        QCOMPARE(loaded.program->events[0].children[1].type, BlockType::ResumeGame);
+        QCOMPARE(loaded.program->events[1].children[0].otherItem, QString("hero2"));
+    }
+
+    void onlyABodyWithControlsCanBelongToPlayerTwo() {
+        auto second = topDownHero();
+        second.id = "hero2";
+        second.player = 2;
+        QVERIFY2(validateScene(sceneNamed("field", "Field", {topDownHero(), second})).isEmpty(), "a top-down body can be player 2's");
+        auto sign = rectangle("sign", 0, 0, 10, 10);
+        sign.player = 2;
+        QVERIFY2(!validateScene(sceneNamed("field", "Field", {sign})).isEmpty(), "a rectangle with no controls cannot belong to a player");
+        auto fourth = topDownHero();
+        fourth.player = 4;
+        QVERIFY2(validateScene(sceneNamed("field", "Field", {fourth})).isEmpty(), "there are four players");
+        auto fifth = topDownHero();
+        fifth.player = 5;
+        QVERIFY2(!validateScene(sceneNamed("field", "Field", {fifth})).isEmpty(), "there are four players");
+    }
+
+    void eachPlayerDrivesTheirOwnBodyAndButtons() {
+        if (!hasPosixCompiler()) QSKIP("This compiles the runtime with a GCC style compiler.");
+        auto second = topDownHero();
+        second.id = "hero2";
+        second.x = 600;
+        second.player = 2;
+        auto one = eventBlock("one", BlockType::WhenButtonPressed, {}, {changeVariable("a", "oneCross", 1)});
+        one.button = ControllerButton::Cross;
+        auto two = eventBlock("two", BlockType::WhenButtonPressed, {}, {changeVariable("b", "twoCross", 1)});
+        two.button = ControllerButton::P2Cross;
+        auto walk = eventBlock("walk", BlockType::WhileButtonHeld, {}, {changeVariable("c", "twoRight", 1)});
+        walk.button = ControllerButton::P2MoveRight;
+        LogicProgram program;
+        program.variables = {{"oneCross", 0}, {"twoCross", 0}, {"twoRight", 0}};
+        program.scene = "field";
+        program.events = {one, two, walk};
+        const auto set = setOf({sceneNamed("field", "Field", {topDownHero(), second})}, "field");
+        const QByteArray body =
+            "    for (int frame = 0; frame < 30; ++frame) scene.Update(1.0 / 60.0, {SceneState::PlayerInput{{0.0f, 0.0f}, 0}, SceneState::PlayerInput{{1.0f, 0.0f}, Buttons::Cross}});\n"
+            "    std::printf(\"heroes=%.0f,%d\\n\", static_cast<double>(scene.Current()[0][0]), scene.Current()[1][0] > 650.0f ? 1 : 0);\n"
+            "    std::printf(\"vars=%d,%d,%d\\n\", static_cast<int>(scene.Variable(0)), static_cast<int>(scene.Variable(1)), static_cast<int>(scene.Variable(2)));\n"
+            "    const float second = scene.Current()[1][0];\n"
+            "    for (int frame = 0; frame < 30; ++frame) scene.Update(1.0 / 60.0, {0.0f, 1.0f}, Buttons::Cross);\n"
+            "    std::printf(\"one=%d,%d,%d\\n\", scene.Current()[0][1] > 150.0f ? 1 : 0, scene.Current()[1][0] == second ? 1 : 0, static_cast<int>(scene.Variable(0)));\n"
+            "    std::size_t before = allocations;\n"
+            "    for (int frame = 0; frame < 60; ++frame) scene.Update(1.0 / 60.0, {SceneState::PlayerInput{{1.0f, 0.0f}, Buttons::Square}, SceneState::PlayerInput{{-1.0f, 0.0f}, Buttons::Cross}});\n"
+            "    std::printf(\"allocations=%zu\\n\", allocations - before);\n";
+        const auto result = runHarness(set, program, body);
+        QVERIFY2(result.built, qPrintable(result.output));
+        QCOMPARE(result.lines.value(0), QString("heroes=100,1"));
+        QCOMPARE(result.lines.value(1), QString("vars=0,1,30"));
+        QCOMPARE(result.lines.value(2), QString("one=1,1,1"));
+        QCOMPARE(result.lines.value(3), QString("allocations=0"));
+    }
+
+    void pausingFreezesTheWorldWhileBlocksKeepRunning() {
+        if (!hasPosixCompiler()) QSKIP("This compiles the runtime with a GCC style compiler.");
+        auto mob = rectangle("mob", 1200, 100, 64, 64);
+        mob.physics = "body";
+        mob.gravityScale = 0;
+        auto toggle = eventBlock("toggle", BlockType::WhenButtonPressed);
+        toggle.button = ControllerButton::Options;
+        auto ifRunning = eventBlock("running", BlockType::IfVariable, {}, {action("p", BlockType::PauseGame), setVariable("s", "paused", 2)});
+        ifRunning.type = BlockType::IfVariable;
+        ifRunning.variable = "paused";
+        ifRunning.comparison = VariableComparison::Equal;
+        ifRunning.value = 0;
+        auto ifPaused = ifRunning;
+        ifPaused.id = "stopped";
+        ifPaused.value = 1;
+        ifPaused.children = {action("r", BlockType::ResumeGame), setVariable("u", "paused", 0)};
+        auto settle = ifRunning;
+        settle.id = "settle";
+        settle.value = 2;
+        settle.children = {setVariable("v", "paused", 1)};
+        toggle.children = {ifRunning, ifPaused, settle};
+        LogicProgram program;
+        program.variables = {{"paused", 0}, {"frames", 0}};
+        program.scene = "field";
+        program.events = {toggle, eventBlock("count", BlockType::EveryFrame, {}, {changeVariable("f", "frames", 1), between("c", BlockType::ChaseItem, "mob", "hero", 300)})};
+        const auto set = setOf({sceneNamed("field", "Field", {topDownHero(), mob})}, "field");
+        const QByteArray body =
+            "    for (int frame = 0; frame < 10; ++frame) scene.Update(1.0 / 60.0, {1.0f, 0.0f}, 0);\n"
+            "    scene.Update(1.0 / 60.0, {0.0f, 0.0f}, Buttons::Options);\n"
+            "    const float hero = scene.Current()[0][0];\n"
+            "    const float mob = scene.Current()[1][0];\n"
+            "    for (int frame = 0; frame < 30; ++frame) scene.Update(1.0 / 60.0, {1.0f, 0.0f}, 0);\n"
+            "    std::printf(\"paused=%d,%d,%d,%d\\n\", scene.Current()[0][0] == hero ? 1 : 0, scene.Current()[1][0] == mob ? 1 : 0, static_cast<int>(scene.Variable(1)), static_cast<int>(scene.Variable(0)));\n"
+            "    scene.Update(1.0 / 60.0, {0.0f, 0.0f}, Buttons::Options);\n"
+            "    for (int frame = 0; frame < 30; ++frame) scene.Update(1.0 / 60.0, {1.0f, 0.0f}, 0);\n"
+            "    std::printf(\"resumed=%d,%d,%d\\n\", scene.Current()[0][0] > hero ? 1 : 0, scene.Current()[1][0] < mob ? 1 : 0, static_cast<int>(scene.Variable(0)));\n";
+        const auto result = runHarness(set, program, body);
+        QVERIFY2(result.built, qPrintable(result.output));
+        QCOMPARE(result.lines.value(0), QString("paused=1,1,41,1"));
+        QCOMPARE(result.lines.value(1), QString("resumed=1,1,0"));
+    }
+
+    void theCameraKeepsBothPlayersInViewAndFollowsTheOneLeft() {
+        if (!hasPosixCompiler()) QSKIP("This compiles the runtime with a GCC style compiler.");
+        auto first = topDownHero();
+        first.x = 1000;
+        auto second = topDownHero();
+        second.id = "hero2";
+        second.x = 2000;
+        second.player = 2;
+        auto field = sceneNamed("field", "Field", {first, second});
+        field.worldWidth = 4000;
+        field.worldHeight = 1080;
+        auto both = action("both", BlockType::CameraFollowBoth, "hero");
+        both.otherItem = "hero2";
+        auto hide = action("h", BlockType::Hide, "hero2");
+        auto press = eventBlock("press", BlockType::WhenButtonPressed, {}, {hide});
+        press.button = ControllerButton::Square;
+        LogicProgram program;
+        program.scene = "field";
+        program.events = {eventBlock("start", BlockType::WhenGameStarts, {}, {both}), press};
+        const auto set = setOf({field}, "field");
+        const QByteArray body =
+            "    scene.Update(1.0 / 60.0, {0.0f, 0.0f}, 0);\n"
+            "    std::printf(\"both=%.0f\\n\", static_cast<double>(scene.Camera().x));\n"
+            "    scene.Update(1.0 / 60.0, {0.0f, 0.0f}, Buttons::Square);\n"
+            "    std::printf(\"one=%.0f\\n\", static_cast<double>(scene.Camera().x));\n";
+        const auto result = runHarness(set, program, body);
+        QVERIFY2(result.built, qPrintable(result.output));
+        QCOMPARE(result.lines.value(0), QString("both=572")); // the middle of 1000 and 2064 is 1532, less half the 1920 wide screen
+        QCOMPARE(result.lines.value(1), QString("one=72"));   // only the first hero: 1032 - 960
     }
 };
 

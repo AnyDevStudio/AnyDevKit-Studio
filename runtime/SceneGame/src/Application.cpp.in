@@ -24,8 +24,9 @@ void Application::Run() {
 
     for (;;) {
         const auto now = sceKernelGetProcessTime();
-        const auto input = controller.Read();
-        scene.Update(static_cast<double>(now - previous) / 1000000.0, input.Direction, input.Buttons);
+        const auto first = controller.Read(0);
+        const auto second = controller.Read(1);
+        scene.Update(static_cast<double>(now - previous) / 1000000.0, {SceneState::PlayerInput{first.Direction, first.Buttons}, SceneState::PlayerInput{second.Direction, second.Buttons}});
         previous = now;
         renderer.Draw(display, scene);
         const auto beforeSuspend = sceKernelGetProcessTime();

@@ -262,18 +262,18 @@ private slots:
         QVERIFY2(validateScene(scene).contains("jump height"), qPrintable(validateScene(scene)));
     }
 
-    void aSceneHasAtMost64MovingBodiesAnd128Solids() {
+    void aSceneHasAtMost128MovingBodiesAnd256Solids() {
         Scene scene;
-        for (int index = 0; index < 65; ++index) scene.items.append(body(QString("b%1").arg(index)));
-        QVERIFY2(validateScene(scene).contains("at most 64"), qPrintable(validateScene(scene)));
-
-        scene.items.clear();
-        for (int index = 0; index < 129; ++index) scene.items.append(solid(QString("s%1").arg(index), index * 10, 0, 8, 8));
+        for (int index = 0; index < 129; ++index) scene.items.append(body(QString("b%1").arg(index)));
         QVERIFY2(validateScene(scene).contains("at most 128"), qPrintable(validateScene(scene)));
 
         scene.items.clear();
-        for (int index = 0; index < 64; ++index) scene.items.append(body(QString("b%1").arg(index)));
-        for (int index = 0; index < 128; ++index) scene.items.append(solid(QString("s%1").arg(index), index * 10, 0, 8, 8));
+        for (int index = 0; index < 257; ++index) scene.items.append(solid(QString("s%1").arg(index), index * 10, 0, 8, 8));
+        QVERIFY2(validateScene(scene).contains("at most 256"), qPrintable(validateScene(scene)));
+
+        scene.items.clear();
+        for (int index = 0; index < 128; ++index) scene.items.append(body(QString("b%1").arg(index)));
+        for (int index = 0; index < 256; ++index) scene.items.append(solid(QString("s%1").arg(index), index * 10, 0, 8, 8));
         QCOMPARE(validateScene(scene), QString());
     }
 
@@ -387,6 +387,10 @@ private slots:
         writeBytes(directory.path() + "/include/Scene/SceneState.hpp", "#include \"Scene/Physics2D.hpp\"\nbool Pressed(unsigned button) const;");
         QVERIFY2(sceneRuntimeLacksPhysics(directory.path()), "a runtime from before the tilted camera needs replacing");
         writeBytes(directory.path() + "/include/Scene/World2D.hpp", "constexpr Point TiltProject();");
+        QVERIFY2(sceneRuntimeLacksPhysics(directory.path()), "a runtime from before pausing and the second player needs replacing");
+        writeBytes(directory.path() + "/include/Scene/SceneState.hpp", "#include \"Scene/Physics2D.hpp\"\nbool Pressed(unsigned button) const;\nvoid PauseGame();");
+        QVERIFY2(sceneRuntimeLacksPhysics(directory.path()), "a runtime from before players and copies needs replacing");
+        writeBytes(directory.path() + "/include/Scene/SceneState.hpp", "#include \"Scene/Physics2D.hpp\"\nbool Pressed(unsigned button) const;\nvoid PauseGame();\nstd::size_t SpawnCopy();");
         QVERIFY(!sceneRuntimeLacksPhysics(directory.path()));
     }
 

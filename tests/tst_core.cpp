@@ -703,13 +703,46 @@ private slots:
     }
 
     void exportFormatIdsRoundTrip() {
-        QCOMPARE(exportFormats().size(), 3);
+        QCOMPARE(exportFormats().size(), 5);
         QVERIFY(exportFormats().first().format == ExportFormat::Ffpfsc);
         for (const auto& info : exportFormats()) QVERIFY(exportFormatFromId(info.id) == info.format);
         QVERIFY(!exportFormatFromId("rar"));
         QCOMPARE(exportFormatInfo(ExportFormat::Ffpfsc).buildLabel, QString("Build PS5 package"));
         QCOMPARE(exportFormatInfo(ExportFormat::Zip).buildLabel, QString("Export ZIP"));
         QCOMPARE(exportFormatInfo(ExportFormat::Pkg).buildLabel, QString("Build PKG"));
+    }
+
+    void desktopBuildsConfigureBuildAndPack() {
+        QTemporaryDir directory;
+        writeProject(directory.path());
+        const auto project = *loadProject(directory.path()).project;
+        QCOMPARE(exportFormatInfo(ExportFormat::Windows).buildLabel, QString("Build for Windows"));
+        // with everything installed: configure, compile and pack, with the resource compiler wrapped away from Windows
+        const auto ready = exportBuildSteps(project, ExportFormat::Windows, {}, DesktopBuildContext{"/deps", {}, false, false, false});
+        QStringList ids;
+        for (const auto& step : ready) ids << step.id;
+        QCOMPARE(ids, (QStringList{"configure", "compile", "pack"}));
+        QCOMPARE(ready[0].arguments, (QStringList{"--preset", "windows"}));
+        QCOMPARE(desktopToolPath(project, ExportFormat::Windows, false), project.root + "/build/.studio");
+        QVERIFY(ready[2].arguments.contains("-DOUTPUT=" + project.root + "/dist/" + project.name + "-windows-x64.zip"));
+        // on Windows itself, and for Linux, the resource compiler needs no wrapper
+        QCOMPARE(desktopToolPath(project, ExportFormat::Windows, true), QString());
+        QCOMPARE(desktopToolPath(project, ExportFormat::Linux, false), QString());
+        // missing libraries and a missing startup library come first
+        const auto fresh = exportBuildSteps(project, ExportFormat::Windows, {}, DesktopBuildContext{"/deps", "/cache", true, true, false});
+        ids.clear();
+        for (const auto& step : fresh) ids << step.id;
+        QCOMPARE(ids, (QStringList{"libraries", "place", "startup", "configure", "compile", "pack"}));
+        QCOMPARE(fresh[0].arguments, (QStringList{"setup", project.root + "/build/.adk-windows", "--target", "windows", "--cache", "/cache"}));
+        QCOMPARE(fresh[0].removeFirst, QStringList{project.root + "/build/.adk-windows"});
+        // Linux never needs the Windows startup library, and packs a tarball
+        const auto linux = exportBuildSteps(project, ExportFormat::Linux, {}, DesktopBuildContext{"/deps", {}, false, true, false});
+        QCOMPARE(linux.size(), 3);
+        QCOMPARE(linux[0].arguments, (QStringList{"--preset", "linux"}));
+        QCOMPARE(exportOutputPath(project, ExportFormat::Linux), project.root + "/dist/" + project.name + "-linux-x64.tar.gz");
+        QString error;
+        QVERIFY2(writeDesktopHelpers(project, error), qPrintable(error));
+        for (const auto* name : {"place-dependencies.cmake", "windows-startup.cmake", "package-desktop.cmake", "llvm-rc"}) QVERIFY2(QFileInfo::exists(project.root + "/build/.studio/" + name), name);
     }
 
     void ffpfscExportIsTodaysBuild() {
