@@ -26,6 +26,7 @@ Drag shapes and text onto the stage, press one button, and the same scene runs a
 |---|---|---|
 | Project workspace | Start a 2D game, an app or a code-only project, or open an `adk init` project | Working |
 | One button build | Configure, compile and create a PS5 package with a live log | Working |
+| Windows and Linux builds | The same game as a Windows `.zip` or a Linux `.tar.gz`, on AnyPS5's desktop libraries | Builds from a Mac; not yet run on Windows or Linux by us |
 | Your code editor | Open code in VS Code, Visual Studio, Cursor, Xcode, CLion, Sublime Text, Zed or Qt Creator | Working |
 | Game page | Set the name, icon and home screen background | Working |
 | Drag and drop scene | Place shapes, text and images on a 16:9 stage, resize, reorder and duplicate in a layers list, hide while editing, undo, autosave | Working |
@@ -36,6 +37,7 @@ Drag shapes and text onto the stage, press one button, and the same scene runs a
 | World and camera | A world larger than the screen, pan and zoom on the stage, camera blocks and screen-fixed items | Working in Studio, builds for PS5, not yet seen running |
 | Platformer physics | Static solids and moving bodies, platformer controls with coyote time, jump buffering and variable jump height, physics blocks | Tested on the host under sanitizers, builds for PS5, not yet played on a console or emulator |
 | Scenes | Add, rename, duplicate and delete scenes, pick the starting scene, Go to scene and Restart blocks | Working in Studio, builds for PS5, not yet seen running |
+| Bigger games | Formulas, up to four players, templates and copies with their own variables, wander and pack behaviors, sprite looks, pause | Played through by a scripted test on the real runtime under sanitizers; not yet seen on a console |
 | Game runtime | Draws the scene on AGC, the PS5 graphics API, with controller movement | Shapes and text run in AnyPS5, not yet on a console |
 | Image drawing | Textured images in the game | Runs in AnyPS5 with a pending engine change (the StarHopper background), not yet on a console |
 | Sound | Import WAV (MP3 and OGG too when Studio is built with Qt Multimedia), then play effects and music from blocks | Builds for PS5, not yet heard on a console |
