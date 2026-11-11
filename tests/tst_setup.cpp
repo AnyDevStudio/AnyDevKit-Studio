@@ -500,8 +500,8 @@ private slots:
     void macUsesTheTaggedReleaseOfTheFork() {
         const auto source = releaseSourceFor(macArm());
         QVERIFY(source);
-        QCOMPARE(source->repository, QString("utkuhalis/AnyDevKit"));
-        QVERIFY(releaseQueryPath(*source).startsWith("/repos/utkuhalis/AnyDevKit/releases"));
+        QCOMPARE(source->repository, QString("AnyDevStudio/AnyDevKit"));
+        QVERIFY(releaseQueryPath(*source).startsWith("/repos/AnyDevStudio/AnyDevKit/releases"));
         const QJsonArray releases{
             releaseJson("v9.9.9", {assetJson("AnyDevKit-9.9.9-macos-arm64.tar.gz")}, "2026-11-08T20:05:51Z"),
             releaseJson("mac-arm64-0.1.7", {assetJson("AnyDevKit-0.1.7-macos-arm64.tar.gz")}, "2026-11-07T10:00:00Z"),
@@ -991,7 +991,7 @@ private slots:
 
     void flowExplainsTheMissingMacRelease() {
         FlowFixture fixture;
-        fixture.http.replies["https://api.github.com/repos/utkuhalis/AnyDevKit/releases?per_page=100"] = {FakeReply{200, json(QJsonArray{})}};
+        fixture.http.replies["https://api.github.com/repos/AnyDevStudio/AnyDevKit/releases?per_page=100"] = {FakeReply{200, json(QJsonArray{})}};
         SetupFlow flow(fixture.config(macArm()));
         flow.checkTools();
         QTRY_COMPARE(flow.phase(), QString("ready"));

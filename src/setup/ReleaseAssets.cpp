@@ -36,7 +36,7 @@ bool isLoopbackHost(const QString& host) {
 std::optional<ReleaseSource> releaseSourceFor(const HostPlatform& platform) {
     if (platform.os == HostOs::Windows && platform.architecture == "x86_64") return ReleaseSource{"boykopovar/AnyDevKit", {}, "AnyDevKit-", "-windows-x86_64.zip"};
     if (platform.os == HostOs::Linux && platform.architecture == "x86_64") return ReleaseSource{"boykopovar/AnyDevKit", {}, "AnyDevKit-", "-linux-x86_64.tar.gz"};
-    if (platform.os == HostOs::MacOs && platform.architecture == "arm64") return ReleaseSource{"utkuhalis/AnyDevKit", "mac-arm64-", "AnyDevKit-", "-macos-arm64.tar.gz"};
+    if (platform.os == HostOs::MacOs && platform.architecture == "arm64") return ReleaseSource{"AnyDevStudio/AnyDevKit", "mac-arm64-", "AnyDevKit-", "-macos-arm64.tar.gz"};
     return std::nullopt;
 }
 
