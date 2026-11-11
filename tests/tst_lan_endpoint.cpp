@@ -55,8 +55,9 @@ int main() {
     CHECK(received && received->Address == Lan::Loopback && received->Port == sender.LocalPort());
 
     std::printf("to 255.255.255.255 on this machine\n");
-    CHECK(sender.Broadcast(receiver.LocalPort(), hello));
-    received = waitFor(receiver, buffer);
+    // A build machine may have no interface that can broadcast: then the send fails, and that is not this code's fault.
+    const bool broadcastSent = sender.Broadcast(receiver.LocalPort(), hello);
+    received = broadcastSent ? waitFor(receiver, buffer) : std::nullopt;
     if (received) {
         std::printf("  arrived from %s:%u (the interface broadcasts leave by, not 127.0.0.1)\n", text(received->Address).c_str(), received->Port);
     } else {
