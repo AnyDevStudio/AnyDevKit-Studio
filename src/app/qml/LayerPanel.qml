@@ -250,8 +250,8 @@ Rectangle {
             }
 
             Text {
-                text: panel.count + "/256"
-                color: panel.count >= 256 ? Theme.bad : Theme.muted
+                text: panel.count + "/1024"
+                color: panel.count >= 1024 ? Theme.bad : Theme.muted
                 font.family: Theme.mono
                 font.pixelSize: 13
             }
