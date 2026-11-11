@@ -1,29 +1,27 @@
 > **Alpha.** Expect rough edges. Scenes with images, text, shapes, tilemaps, sprite sheets, controller movement
-> and logic blocks have run in AnyPS5 on a Mac. The new blocks of this version have been played through by
-> a scripted test on the real game runtime, not yet on a PS5 or in AnyPS5. Windows and Linux builds of games
-> are new: they build, but have not been run on Windows or Linux by us. Nothing has been run on a real PS5, and sound and saving build
-> for PS5 but have not yet been confirmed working there.
+> and logic blocks have run in AnyPS5 on a Mac. Playing online, new in this version, has been played by a scripted
+> test over one computer's network and by hand between two windows of a game on one Mac; it has not been tried
+> between two machines or consoles. Windows and Linux builds of games build, but have not been run on Windows or
+> Linux by us. Nothing has been run on a real PS5, and sound and saving build for PS5 but have not yet been
+> confirmed working there.
 
 New in this version:
 
-- **Build for Windows and Linux.** Next to the PS5 package, the build menu makes a Windows `.zip` and a Linux
-  `.tar.gz` of your game. Studio installs the Windows or Linux libraries the first time. On a Mac this needs
-  LLVM from Homebrew (`brew install llvm lld`). These builds run on AnyPS5's desktop libraries; Studio cannot make
-  a macOS build of a game yet.
-- **Formulas.** Set variable to a formula and If take expressions such as `hp - max(1, atk * 2 - def)`,
-  with `rand`, `min`, `max`, `abs` and `clamp`, and Otherwise runs when an If did not.
-- **Up to four players.** Player events, For each player, player variables and `@player`. A body can belong to
-  players 1 to 4.
-- **Templates and copies.** Give an item a number of copies, then spawn, remove and go through them. Each copy
-  has its own copy variables, and an item can follow a template so every copy carries its own label.
-- **Behaviors.** Wander, Run away from and Tell nearby copies, for calm, skittish and pack creatures.
-- **Looks, pause and more.** Set look picks one of several looks on a sprite sheet. Pause and Resume freeze the
-  world while blocks keep running. Camera follows two items. Texts can spell names from variables.
-- **Editor.** Zoom the Logic canvas with Ctrl or Cmd and the wheel, and keep panels hidden while editing.
-- **Bigger games.** A scene can hold 1024 items and 16384 blocks, and a program 512 variables.
+- **Play online.** Friends on the same network play one game, each on their own console. Three blocks: Let friends
+  join online, Join a friend's game online, and Stop playing online. The console that hosts runs the game; a
+  friend's console shows the screen the host makes for it.
+- **A screen for each friend.** Every friend has their own scene, camera, screen-fixed items, music and screen
+  variables, so they can open a menu or walk to another scene without touching anyone else's screen. The world of
+  a scene is the same for everyone in it.
+- **Screen variables.** A fourth kind next to game, player and copy: one value for each screen. Formulas can
+  read `seat`, `online` and `guest`.
+- A project saved with this version uses `schemaVersion` 6 in `logic.json`; older Studio versions cannot open it.
 
-[Greenhollow](https://github.com/AnyDevStudio/Greenhollow) uses all of it: a small RPG with three classes, four
-places, five quests, creature packs, pets and two players.
+From 0.1.0-alpha.4: builds for Windows and Linux, formulas, up to four players, templates and copies, behaviors,
+looks and pause.
+
+[Greenhollow](https://github.com/AnyDevStudio/Greenhollow) uses all of it: a small RPG with three classes, six
+places, five quests, creature packs, pets, two players on one screen and friends online.
 
 Packages for macOS, Windows and Linux. Qt is included, so there is nothing else to install to open
 Studio. To build PS5 packages you also need the AnyDevKit SDK and its tools: the Set up PS5 tools
