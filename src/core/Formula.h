@@ -24,7 +24,10 @@
 // in the scene), and where things are, in world units: selfX and selfY (the middle of the copy the block runs
 // for), playerX and playerY (the middle of the current player's character), dist (between those two) and
 // nearestDist (from the copy to the nearest player's character); selfVX and selfVY are how fast the copy, a moving
-// body, is going across and down (0 when still), for picking which way it should look.
+// body, is going across and down (0 when still), for picking which way it should look. "seat" is the current
+// player's place on their own screen, 1 or 2, and "online" is 0 when not playing online, 1 when friends can join
+// this game, 2 while looking for a friend's game and 3 while playing in one. "guest" is 1 when the current
+// player is a friend playing on their own screen, and 0 for a player on this console.
 namespace Studio {
 
 inline constexpr int MaximumFormulaLength = 400;
@@ -50,7 +53,7 @@ struct FormulaResult {
 // checked and no code is made.
 FormulaResult compileFormula(const QString& formula, const FormulaResolver& resolver = {});
 
-// True for selfX, selfY, playerX, playerY, dist and nearestDist, which a variable cannot be named.
+// True for selfX, selfY, playerX, playerY, dist, nearestDist, seat, online and the like, which a variable cannot be named.
 bool isFormulaPlaceName(const QString& name);
 
 // The formula with every whole-word use of a variable renamed, for when the user renames the variable.

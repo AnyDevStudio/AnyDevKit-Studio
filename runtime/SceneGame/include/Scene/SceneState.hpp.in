@@ -20,6 +20,11 @@
 // GeneratedScene::Items holds every scene's items in one list; only the scene that is showing runs and is
 // drawn, and its slice is given by CurrentSceneInfo(). The block logic in GeneratedLogic.hpp changes it
 // through the Logic section below.
+//
+// Screens. A game on one console has one screen, number 0, shared by its players. Online, every friend who
+// joins gets a screen of their own on the host: its own scene, camera, screen-fixed items and screen
+// variables. The world of a scene is one and the same for everyone in it, and a scene runs while any
+// screen shows it. The friend's console only shows that screen (ShowScreen) and sends its pad.
 class SceneState final {
 public:
     using Position = std::array<float, 2>;
@@ -29,6 +34,14 @@ public:
     using Visibility = std::array<bool, GeneratedScene::Items.size()>;
     using SaveMailbox = SaveData::Mailbox<GeneratedVariables::SavedCount>;
     static constexpr std::size_t PlayerCount = GeneratedVariables::PlayerSlots;
+    static constexpr std::size_t ScreenCount = PlayerCount;
+    static constexpr std::size_t NoScreen = ScreenCount;
+    static constexpr std::size_t ScreenBytes = 16384; // the most WriteScreen writes
+    struct ScreenEvent {
+        enum class Kind : std::uint8_t { Sound = 1, Burst = 2 };
+        Kind kind = Kind::Sound;
+        std::uint16_t value = 0; // the sound's number, or the particles item
+    };
     struct PlayerInput {
         Position direction{}; // the stick or D-pad, a unit vector or {0, 0}
         std::uint32_t buttons = 0; // that player's pad bits from Input/Buttons.hpp
@@ -86,9 +99,43 @@ public:
     bool PlayerPressed(std::uint64_t button) const; // went down this frame on the current player's pad
     std::size_t PlayerHero() const;                 // the current player's character in this scene, or NoItem()
     std::size_t NearestPlayerHero(std::size_t from) const; // the shown character nearest to `from`, or NoItem()
+    std::int64_t Seat() const;                      // the current player's place on their screen, counted from 1
+    bool PlayerScoped() const;                      // blocks are running for one player, inside "for each player"
+    void RestorePlayer(std::size_t player, bool scoped); // ends a "for each player"
     std::int32_t PlayerVariable(std::size_t variable) const;
     void SetPlayerVariable(std::size_t variable, std::int32_t value);
     void ChangePlayerVariable(std::size_t variable, std::int32_t amount);
+
+    // Screens, for playing online. See the top of this file.
+    std::size_t OpenScreen();               // a screen for a friend, with a new player, where screen 0 is; NoScreen when full
+    void CloseScreen(std::size_t screen);   // its player leaves
+    bool ScreenOpen(std::size_t screen) const;
+    std::size_t ScreensOpen() const;
+    std::size_t ScreenScene(std::size_t screen) const;
+    std::size_t ScreenPlayer(std::size_t screen) const; // the first player on it, or PlayerCount
+    // What a friend's pad holds, for the next Update. `pressed` are buttons that went down since the last call, so a
+    // quick tap is not lost between two frames.
+    void SetRemoteInput(std::size_t screen, const PlayerInput& input, std::uint32_t pressed);
+    // Everything a friend's console needs to draw their screen this frame, at most ScreenBytes; 0 when it does not fit.
+    std::size_t WriteScreen(std::size_t screen, std::span<std::uint8_t> out);
+    std::span<const ScreenEvent> ScreenEvents(std::size_t screen) const; // sounds and bursts since ClearScreenEvents
+    void ClearScreenEvents(std::size_t screen);
+    // On the friend's console: shows what the host sent instead of running the game here. False for bytes that are
+    // not a screen of this game.
+    bool ShowScreen(std::span<const std::uint8_t> bytes);
+    void ApplyScreenEvent(ScreenEvent event);
+    bool Mirroring() const;
+    void StopMirroring(); // back to the start scene, running here again
+    // Blocks ask to host, join or stop; whoever owns the network takes the request and reports the state back.
+    enum class OnlineRequest : std::uint8_t { None, Host, Join, Stop };
+    void HostOnline();
+    void JoinOnline();
+    void StopOnline(); // on a friend's screen, asks only that friend to leave
+    bool ScreenLeaving(std::size_t screen) const;
+    std::int64_t OnFriendScreen() const; // 1 when the current player plays on a friend's screen
+    OnlineRequest TakeOnlineRequest();
+    void SetOnlineState(std::int32_t state); // 0 off, 1 hosting, 2 looking for a game, 3 playing in a friend's game
+    std::int64_t OnlineState() const;
 
     // Templates and their copies. Every item function takes NoItem() and then does nothing, reads as false, or
     // as far away, so a block for a player or a copy that is not there is harmless.
@@ -181,7 +228,7 @@ private:
     void startParticles();
     void resetParticlesOf(std::size_t item);
     void applyLoadedVariables();
-    void enterScene(std::size_t scene);
+    void enterScene(std::size_t scene, std::size_t screen);
     void stepPhysics(double seconds, const std::array<PlayerInput, PlayerCount>& players);
     void clearBodyEvents();
     Physics2D::Body* bodyOf(std::size_t item);
@@ -189,26 +236,86 @@ private:
     Audio::Mixer* audioMixer = nullptr;
     SaveMailbox* saveMailbox = nullptr;
     Particles::Emitter* emitterFor(std::size_t item);
-    void updateCamera();
+    void updateCamera(std::size_t screen);
+    struct Screen {
+        bool open = false;
+        std::size_t scene = GeneratedScene::StartScene;
+        std::int32_t pendingScene = -1; // a scene to enter after this frame's blocks
+        World2D::Point camera{0.0f, 0.0f};
+        std::int32_t followedItem = -1;
+        std::int32_t secondFollowed = -1;
+        bool paused = false;
+        std::int32_t music = -1; // what plays on it, for a screen shown on another console
+        std::int32_t volume = 100;
+        bool leaving = false; // a block asked this friend to leave
+    };
+    // What a screen-fixed item looks like on one screen while another screen's items are the live ones.
+    struct ScreenItem {
+        Position position{};
+        Color color{};
+        bool visible = true;
+        bool flipped = false;
+        bool followerHidden = false;
+        World2D::AnimationPlayer animation{};
+        std::uint32_t look = 0;
+    };
+    static constexpr std::size_t ScreenItemCount = [] {
+        std::size_t count = 0;
+        for (const auto& item : GeneratedScene::Items) count += item.screenFixed ? 1 : 0;
+        return count;
+    }();
+    using ScreenLayer = std::array<ScreenItem, ScreenItemCount>;
+    struct EventQueue {
+        std::array<ScreenEvent, 64> list{};
+        std::size_t count = 0;
+    };
+    bool worldPaused() const; // only a game on one screen stands still while paused
+    bool screenIn(std::size_t screen, std::size_t scene) const;
+    bool othersIn(std::size_t scene, std::size_t except) const;
+    std::size_t firstPlayerIn(std::size_t scene) const;
+    std::size_t seatPlayer(std::size_t screen, std::size_t seat) const;
+    void defaultContext();
+    void showLayer(std::size_t screen);
+    void storeLayer(std::size_t scene, std::size_t screen);
+    void loadLayer(std::size_t scene, std::size_t screen);
+    void resetLayer(std::size_t scene, std::size_t screen);
+    void runScene(std::size_t scene, double seconds, const std::array<PlayerInput, PlayerCount>& players);
+    void settleScene(std::size_t scene, double seconds);
+    void moveScreen(std::size_t screen, std::size_t target);
+    void pushEvent(std::size_t screen, ScreenEvent event);
+    template <typename Each> void forEachListener(Each&& each);
+    std::int32_t& variableSlot(std::size_t variable);
+    std::array<Screen, ScreenCount> screens{};
+    std::array<std::size_t, PlayerCount> playerScreen{}; // the screen each player plays on
+    std::size_t currentScreen = 0;
+    bool playerScoped = false;
+    std::unique_ptr<std::array<ScreenLayer, ScreenCount>> layers; // made when a second screen first opens
+    std::array<std::uint8_t, GeneratedScene::SceneCount> liveScreen{}; // per scene, whose screen-fixed items the item arrays hold
+    std::array<std::array<std::int32_t, GeneratedVariables::VariableCount>, ScreenCount - 1> screenVariables{};
+    std::array<EventQueue, ScreenCount> screenEvents{};
+    std::array<PlayerInput, PlayerCount> remoteInputs{};
+    std::array<std::uint32_t, PlayerCount> remotePressed{};
+    std::array<bool, PlayerCount> joinPending{};
+    OnlineRequest onlineRequest = OnlineRequest::None;
+    std::int32_t onlineState = 0;
+    bool mirroring = false;
+    std::array<std::uint16_t, GeneratedScene::SpriteCount> mirrorFrames{};
+    std::int32_t mirrorMusic = -1;
+    std::int32_t mirrorVolume = -1;
     Positions positions{};
     Colors colors{};
     Visibility visible{};
     Visibility flipped{};
     std::array<World2D::AnimationPlayer, GeneratedScene::SpriteCount> animations{};
-    World2D::Point camera{0.0f, 0.0f};
-    std::int32_t followedItem = -1;
-    std::int32_t secondFollowed = -1;
-    bool paused = false;
-    std::size_t currentScene = GeneratedScene::StartScene;
-    std::int32_t pendingScene = -1; // a scene to enter after this frame's blocks
+    std::size_t currentScene = GeneratedScene::StartScene; // the scene whose blocks run; screen 0's between frames
     std::array<Physics2D::Body, GeneratedScene::BodyCount> bodies{};
     std::array<Position, GeneratedScene::BodyCount> syncedPositions{}; // where the physics last put each body
     std::array<Physics2D::Aabb, GeneratedScene::SolidItemCount> solidBoxes{};
     std::array<Physics2D::TileLayer, GeneratedScene::TilemapCount> tileLayers{};
-    Physics2D::FixedClock physicsClock{};
+    std::array<Physics2D::FixedClock, GeneratedScene::SceneCount> physicsClocks{};
     std::array<bool, PlayerCount> jumpWasHeld{};
     std::array<bool, PlayerCount> jumpPressPending{};
-    GeneratedLogic::Memory logicMemory{};
+    std::array<GeneratedLogic::Memory, GeneratedScene::SceneCount> logicMemories{};
     std::uint64_t heldButtons = 0;
     std::uint64_t pressedButtons = 0;
     std::array<std::int32_t, GeneratedVariables::VariableCount> variables = GeneratedVariables::InitialValues;

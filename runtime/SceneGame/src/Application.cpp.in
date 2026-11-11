@@ -3,12 +3,15 @@
 #include "Graphics/Display.hpp"
 #include "Graphics/Renderer.hpp"
 #include "Input/Controller.hpp"
+#include "Online/OnlinePlay.hpp"
 #include "Save/SaveService.hpp"
 #include "Scene/SceneState.hpp"
 #include "Error.hpp"
 #include "prx/libkernel/Time/include/Time.hpp"
 #include "prx/libkernel/include/Api.hpp"
 #include "prx/libSceAgc/libSceAgc.hpp"
+#include <cstdint>
+#include <string_view>
 
 void Application::Run() {
     constexpr int Width = 1920;
@@ -21,12 +24,24 @@ void Application::Run() {
     SaveService saves;
     SceneState scene(Width, Height, audio.Mixer(), saves.Mail());
     auto previous = sceKernelGetProcessTime();
+    // Which game this is on the network, and a number for this console that differs from run to run.
+    std::uint32_t gameId = 2166136261u;
+    for (const char letter : std::string_view("@NAME@")) gameId = (gameId ^ static_cast<unsigned char>(letter)) * 16777619u;
+    // A host also announces itself to this machine, so two copies of the game on one computer find each other
+    // even where the system keeps an app from broadcasting to the local network.
+    OnlinePlay::Settings onlineSettings;
+    onlineSettings.gameId = gameId;
+    onlineSettings.localId = static_cast<std::uint64_t>(previous) * 0x9E3779B97F4A7C15ull + 1;
+    onlineSettings.extraAnnounceAddress = Lan::Loopback;
+    OnlinePlay online(onlineSettings);
 
     for (;;) {
         const auto now = sceKernelGetProcessTime();
         const auto first = controller.Read(0);
         const auto second = controller.Read(1);
+        online.BeforeFrame(scene, static_cast<std::uint64_t>(now) / 1000, {first.Direction, first.Buttons});
         scene.Update(static_cast<double>(now - previous) / 1000000.0, {SceneState::PlayerInput{first.Direction, first.Buttons}, SceneState::PlayerInput{second.Direction, second.Buttons}});
+        online.AfterFrame(scene);
         previous = now;
         renderer.Draw(display, scene);
         const auto beforeSuspend = sceKernelGetProcessTime();

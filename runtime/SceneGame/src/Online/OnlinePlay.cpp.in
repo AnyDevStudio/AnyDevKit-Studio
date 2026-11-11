@@ -1,0 +1,252 @@
+#include "Online/OnlinePlay.hpp"
+#include "GeneratedScene.hpp"
+#include "GeneratedVariables.hpp"
+#include "Input/Buttons.hpp"
+#include <algorithm>
+#include <cmath>
+#include <cstring>
+
+namespace {
+
+// What a friend's console sends every frame, on the channel where only the newest counts:
+// 'I', the held buttons, the direction as two whole numbers of ten-thousandths, the count of presses so far,
+// then the buttons of the last eight presses, newest first.
+constexpr std::uint8_t InputTag = 'I';
+constexpr std::size_t PressHistory = 8;
+constexpr std::size_t InputBytes = 1 + 4 + 2 + 2 + 4 + PressHistory * 4;
+// What a host sends reliably: 'E' and three bytes for each sound or burst, or 'B' to say goodbye.
+constexpr std::uint8_t EventsTag = 'E';
+constexpr std::uint8_t ByeTag = 'B';
+
+void put16(std::uint8_t* out, std::uint32_t value) {
+    out[0] = static_cast<std::uint8_t>(value);
+    out[1] = static_cast<std::uint8_t>(value >> 8);
+}
+void put32(std::uint8_t* out, std::uint32_t value) {
+    put16(out, value & 0xFFFF);
+    put16(out + 2, value >> 16);
+}
+std::uint32_t get16(const std::uint8_t* in) { return static_cast<std::uint32_t>(in[0]) | (static_cast<std::uint32_t>(in[1]) << 8); }
+std::uint32_t get32(const std::uint8_t* in) { return get16(in) | (get16(in + 2) << 16); }
+float direction(const std::uint8_t* in) { return static_cast<float>(static_cast<std::int16_t>(static_cast<std::uint16_t>(get16(in)))) / 10000.0f; }
+
+// The stick or D-pad as the buttons blocks know: the same threshold SceneState uses.
+std::uint32_t directionButtons(const SceneState::PlayerInput& pad) {
+    constexpr float Threshold = 0.25f;
+    std::uint32_t buttons = 0;
+    if (pad.direction[1] < -Threshold) buttons |= static_cast<std::uint32_t>(Buttons::MoveUp);
+    if (pad.direction[1] > Threshold) buttons |= static_cast<std::uint32_t>(Buttons::MoveDown);
+    if (pad.direction[0] < -Threshold) buttons |= static_cast<std::uint32_t>(Buttons::MoveLeft);
+    if (pad.direction[0] > Threshold) buttons |= static_cast<std::uint32_t>(Buttons::MoveRight);
+    return buttons;
+}
+
+void mix(std::uint32_t& hash, std::uint32_t value) {
+    for (int shift = 0; shift < 32; shift += 8) hash = (hash ^ ((value >> shift) & 0xFF)) * 16777619u;
+}
+
+}
+
+struct OnlinePlay::Net {
+    Lan::Endpoint socket;
+    Lan::EndpointTransport transport{socket};
+    Lan::Session session{transport};
+    std::array<std::uint8_t, SceneState::ScreenBytes> screen{};
+};
+
+OnlinePlay::OnlinePlay(const Settings& settings) : settings(settings) { slotScreen.fill(SceneState::NoScreen); }
+OnlinePlay::~OnlinePlay() = default;
+
+std::uint32_t OnlinePlay::BuildNumber() {
+    std::uint32_t hash = 2166136261u;
+    mix(hash, static_cast<std::uint32_t>(GeneratedScene::SceneCount));
+    for (const auto& scene : GeneratedScene::Scenes) mix(hash, static_cast<std::uint32_t>(scene.itemCount));
+    for (const auto& item : GeneratedScene::Items) {
+        mix(hash, static_cast<std::uint32_t>(item.kind));
+        mix(hash, static_cast<std::uint32_t>(item.sprite + 1));
+        mix(hash, static_cast<std::uint32_t>(std::lround(item.width)));
+        mix(hash, static_cast<std::uint32_t>(std::lround(item.height)));
+        mix(hash, item.screenFixed ? 1u : 0u);
+    }
+    for (const auto& text : GeneratedVariables::BoundTexts) mix(hash, static_cast<std::uint32_t>(text.quads));
+    return hash;
+}
+
+Lan::Config OnlinePlay::config(std::string_view name) const {
+    Lan::Config result;
+    result.GameId = settings.gameId;
+    result.GameBuild = BuildNumber();
+    result.LocalName = name;
+    result.LocalId = settings.localId;
+    result.DiscoveryPort = settings.discoveryPort;
+    result.ExtraAnnounceAddress = settings.extraAnnounceAddress;
+    return result;
+}
+
+void OnlinePlay::handleRequest(SceneState& scene) {
+    const auto request = scene.TakeOnlineRequest();
+    if (request == SceneState::OnlineRequest::None) return;
+    if (request == SceneState::OnlineRequest::Stop) {
+        stop(scene);
+        return;
+    }
+    if (!net) net = std::make_unique<Net>();
+    if (net->session.CurrentRole() != Lan::Session::Role::Idle) return; // already hosting, looking or playing
+    const bool host = request == SceneState::OnlineRequest::Host;
+    if (!net->socket.Open(host ? settings.gamePort : settings.discoveryPort)) {
+        scene.SetOnlineState(0);
+        return;
+    }
+    const bool started = host ? net->session.Host(config("Host")) : net->session.Browse(config("Friend"));
+    if (!started) {
+        net->socket.Close();
+        scene.SetOnlineState(0);
+        return;
+    }
+    slotScreen.fill(SceneState::NoScreen);
+    heardFrom = {};
+    presses = {};
+    pressCount = 0;
+    scene.SetOnlineState(host ? 1 : 2);
+}
+
+void OnlinePlay::stop(SceneState& scene) {
+    if (net) {
+        net->session.Leave();
+        net->socket.Close();
+    }
+    for (auto& screen : slotScreen) {
+        if (screen != SceneState::NoScreen) scene.CloseScreen(screen);
+        screen = SceneState::NoScreen;
+    }
+    scene.StopMirroring();
+    scene.SetOnlineState(0);
+}
+
+void OnlinePlay::BeforeFrame(SceneState& scene, std::uint64_t nowMs, const SceneState::PlayerInput& pad) {
+    handleRequest(scene);
+    if (!net || net->session.CurrentRole() == Lan::Session::Role::Idle) return;
+    auto& session = net->session;
+    session.Update(nowMs);
+    if (session.CurrentRole() == Lan::Session::Role::Browsing && !session.Hosts().empty()) {
+        const auto& found = session.Hosts().front();
+        session.Join(found.Address, found.Port);
+    }
+    const bool hosting = session.CurrentRole() == Lan::Session::Role::Host;
+    bool ended = false;
+    while (const auto* notice = session.PollNotice()) {
+        const auto slot = static_cast<std::size_t>(notice->Slot);
+        switch (notice->Type) {
+        case Lan::Notice::Kind::Joined:
+            if (!hosting) {
+                scene.SetOnlineState(3);
+            } else if (slot < slotScreen.size()) {
+                slotScreen[slot] = scene.OpenScreen(); // NoScreen when every player is taken: the friend is told to go below
+                heardFrom[slot] = false;
+            }
+            break;
+        case Lan::Notice::Kind::Left:
+            if (!hosting) {
+                ended = true;
+            } else if (slot < slotScreen.size() && slotScreen[slot] != SceneState::NoScreen) {
+                scene.CloseScreen(slotScreen[slot]);
+                slotScreen[slot] = SceneState::NoScreen;
+            }
+            break;
+        case Lan::Notice::Kind::Refused:
+        case Lan::Notice::Kind::JoinTimedOut:
+            ended = true;
+            break;
+        case Lan::Notice::Kind::Event: {
+            if (hosting) break;
+            const auto bytes = notice->Bytes();
+            if (bytes.empty()) break;
+            if (bytes[0] == ByeTag) ended = true;
+            if (bytes[0] != EventsTag) break;
+            for (std::size_t at = 1; at + 3 <= bytes.size(); at += 3) {
+                scene.ApplyScreenEvent({static_cast<SceneState::ScreenEvent::Kind>(bytes[at]), static_cast<std::uint16_t>(get16(bytes.data() + at + 1))});
+            }
+            break;
+        }
+        }
+    }
+    if (ended) {
+        stop(scene);
+        return;
+    }
+    if (hosting) receiveAsHost(scene);
+    else if (session.CurrentRole() == Lan::Session::Role::Guest) receiveAsFriend(scene, pad);
+}
+
+void OnlinePlay::receiveAsHost(SceneState& scene) {
+    auto& session = net->session;
+    for (std::size_t slot = 1; slot < slotScreen.size(); ++slot) {
+        if (!session.Peer(static_cast<int>(slot))) continue;
+        const auto screen = slotScreen[slot];
+        if (screen == SceneState::NoScreen || scene.ScreenLeaving(screen)) {
+            const std::uint8_t bye[1] = {ByeTag}; // no room, or a block sent this friend home; said again until they go
+            session.SendEventTo(static_cast<int>(slot), bye);
+            continue;
+        }
+        const auto state = session.TakeState(static_cast<int>(slot));
+        if (!state || state->Bytes.size() != InputBytes || state->Bytes[0] != InputTag) continue;
+        const auto* in = state->Bytes.data();
+        SceneState::PlayerInput input{{std::clamp(direction(in + 5), -1.0f, 1.0f), std::clamp(direction(in + 7), -1.0f, 1.0f)}, get32(in + 1)};
+        const auto count = get32(in + 9);
+        std::uint32_t pressed = 0;
+        if (heardFrom[slot]) {
+            const auto fresh = std::min<std::uint32_t>(count - seenPress[slot], PressHistory);
+            for (std::uint32_t index = 0; index < fresh; ++index) pressed |= get32(in + 13 + index * 4);
+        }
+        heardFrom[slot] = true;
+        seenPress[slot] = count;
+        scene.SetRemoteInput(screen, input, pressed);
+    }
+}
+
+void OnlinePlay::receiveAsFriend(SceneState& scene, const SceneState::PlayerInput& pad) {
+    auto& session = net->session;
+    if (const auto state = session.TakeState(0)) scene.ShowScreen(state->Bytes);
+    // A flick of the stick counts as a press too, so a quick step through a menu is not lost either.
+    const auto held = pad.buttons | directionButtons(pad);
+    const auto pressed = held & ~lastButtons;
+    lastButtons = held;
+    if (pressed != 0) {
+        std::copy_backward(presses.begin(), presses.end() - 1, presses.end());
+        presses[0] = pressed;
+        ++pressCount;
+    }
+    std::array<std::uint8_t, InputBytes> out{};
+    out[0] = InputTag;
+    put32(out.data() + 1, pad.buttons);
+    put16(out.data() + 5, static_cast<std::uint16_t>(static_cast<std::int16_t>(std::lround(std::clamp(pad.direction[0], -1.0f, 1.0f) * 10000.0f))));
+    put16(out.data() + 7, static_cast<std::uint16_t>(static_cast<std::int16_t>(std::lround(std::clamp(pad.direction[1], -1.0f, 1.0f) * 10000.0f))));
+    put32(out.data() + 9, pressCount);
+    for (std::size_t index = 0; index < PressHistory; ++index) put32(out.data() + 13 + index * 4, presses[index]);
+    session.SendState(out);
+}
+
+void OnlinePlay::AfterFrame(SceneState& scene) {
+    if (!net || net->session.CurrentRole() != Lan::Session::Role::Host) return;
+    auto& session = net->session;
+    for (std::size_t slot = 1; slot < slotScreen.size(); ++slot) {
+        const auto screen = slotScreen[slot];
+        if (screen == SceneState::NoScreen || !session.Peer(static_cast<int>(slot))) continue;
+        const auto size = scene.WriteScreen(screen, net->screen);
+        if (size != 0) session.SendStateTo(static_cast<int>(slot), std::span<const std::uint8_t>(net->screen).first(size));
+        const auto events = scene.ScreenEvents(screen);
+        if (!events.empty()) {
+            std::array<std::uint8_t, Lan::MaxEventBytes> out{};
+            out[0] = EventsTag;
+            std::size_t used = 1;
+            for (const auto& event : events) {
+                if (used + 3 > out.size()) break;
+                out[used] = static_cast<std::uint8_t>(event.kind);
+                put16(out.data() + used + 1, event.value);
+                used += 3;
+            }
+            session.SendEventTo(static_cast<int>(slot), std::span<const std::uint8_t>(out).first(used)); // a sound that finds the window full is skipped
+        }
+        scene.ClearScreenEvents(screen);
+    }
+}

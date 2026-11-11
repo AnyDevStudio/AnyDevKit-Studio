@@ -436,7 +436,7 @@ QVariantList LogicDocument::sounds() const {
 QVariantList LogicDocument::variables() const {
     QVariantList list;
     for (const auto& variable : document.variables) {
-        const auto scope = variable.scope == VariableScope::Player ? "player" : variable.scope == VariableScope::Copy ? "copy" : "game";
+        const auto scope = variable.scope == VariableScope::Player ? "player" : variable.scope == VariableScope::Copy ? "copy" : variable.scope == VariableScope::Screen ? "screen" : "game";
         list.append(QVariantMap{{"id", variable.name}, {"name", variable.name}, {"initial", variable.initial}, {"scope", scope}});
     }
     return list;
@@ -910,10 +910,10 @@ bool LogicDocument::setVariableScope(const QString& name, const QString& scope) 
     auto candidate = document;
     const auto entry = std::ranges::find(candidate.variables, name, &LogicVariable::name);
     if (entry == candidate.variables.end()) return false;
-    const auto chosen = scope == "player" ? VariableScope::Player : scope == "copy" ? VariableScope::Copy : scope == "game" ? VariableScope::Game : entry->scope;
+    const auto chosen = scope == "player" ? VariableScope::Player : scope == "copy" ? VariableScope::Copy : scope == "screen" ? VariableScope::Screen : scope == "game" ? VariableScope::Game : entry->scope;
     if (chosen == entry->scope) {
         setError({});
-        return scope == "player" || scope == "copy" || scope == "game";
+        return scope == "player" || scope == "copy" || scope == "screen" || scope == "game";
     }
     entry->scope = chosen;
     return commit(candidate);

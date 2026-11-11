@@ -1764,7 +1764,7 @@ bool sceneRuntimeLacksPhysics(const QString& projectRoot) {
     const auto contents = file.readAll();
     QFile world(QDir::cleanPath(QDir(projectRoot).absolutePath()) + "/include/Scene/World2D.hpp");
     const auto worldCode = world.open(QIODevice::ReadOnly) ? world.readAll() : QByteArray();
-    return !contents.contains("Scene/Physics2D.hpp") || !contents.contains("Pressed(") || !contents.contains("PauseGame(") || !contents.contains("SpawnCopy(") || !worldCode.contains("TiltProject"); // older physics runtimes have no top-down blocks, tilted camera, pause, players or copies
+    return !contents.contains("Scene/Physics2D.hpp") || !contents.contains("Pressed(") || !contents.contains("PauseGame(") || !contents.contains("SpawnCopy(") || !contents.contains("OpenScreen(") || !worldCode.contains("TiltProject"); // older physics runtimes have no top-down blocks, tilted camera, pause, players or copies
 }
 
 bool sceneSetUsesPhysics(const SceneSet& set) {

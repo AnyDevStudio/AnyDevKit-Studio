@@ -28,8 +28,9 @@ namespace {
 // version 2 has no sounds, version 3 adds sounds, saving, animation, flip and camera blocks, and in
 // version 4 logic is per scene, in a "scenes" list, and there are physics and Go to scene blocks. Version 5 adds
 // formulas, players, templates and their copies, behaviors, and player and copy variables.
-constexpr int CurrentSchema = 5;
+constexpr int CurrentSchema = 6;
 constexpr int LanguageSchema = 5;
+constexpr int OnlineSchema = 6; // online blocks and screen variables
 constexpr int OldestLoadableSchema = 1;
 constexpr int VariableSchema = 2;
 constexpr int SoundSchema = 3; // sounds and the blocks that play them, set the volume, save or load
@@ -113,7 +114,7 @@ bool isPlayerButtonEvent(BlockType type) {
 }
 
 QString scopeName(VariableScope scope) {
-    return scope == VariableScope::Player ? QStringLiteral("player") : scope == VariableScope::Copy ? QStringLiteral("copy") : QStringLiteral("game");
+    return scope == VariableScope::Player ? QStringLiteral("player") : scope == VariableScope::Copy ? QStringLiteral("copy") : scope == VariableScope::Screen ? QStringLiteral("screen") : QStringLiteral("game");
 }
 
 // One walk over the tree, so problems come out in the order the blocks appear. With no scene, only
@@ -495,6 +496,9 @@ QString parseBlock(const QJsonValue& value, qsizetype index, int depth, Parsing&
     if (info.usesVariable && parsing.schema < VariableSchema && !legacyScore) {
         return QString("%1 uses a variable, which needs schemaVersion %2. Change schemaVersion to %2 and add a \"variables\" list.").arg(label).arg(VariableSchema);
     }
+    if ((info.type == BlockType::HostOnline || info.type == BlockType::JoinOnline || info.type == BlockType::StopOnline) && parsing.schema < OnlineSchema) {
+        return QString("%1 needs schemaVersion %2. Change schemaVersion to %2 and try again.").arg(label).arg(OnlineSchema);
+    }
     if (isLanguageBlock(info.type) && parsing.schema < LanguageSchema) {
         return QString("%1 needs schemaVersion %2. Change schemaVersion to %2 and try again.").arg(label).arg(LanguageSchema);
     }
@@ -587,7 +591,9 @@ QString parseVariables(const QJsonArray& list, QList<LogicVariable>& variables, 
             const auto text = value.toString();
             if (text == "player") scope = VariableScope::Player;
             else if (text == "copy") scope = VariableScope::Copy;
-            else if (text != "game") return QString("The variable \"%1\" has the scope \"%2\". A scope is game, player or copy.").arg(name, text);
+            else if (text == "screen") scope = VariableScope::Screen;
+            else if (text != "game") return QString("The variable \"%1\" has the scope \"%2\". A scope is game, screen, player or copy.").arg(name, text);
+            if (scope == VariableScope::Screen && schema < OnlineSchema) return QString("The variable \"%1\" is a screen variable, which needs schemaVersion %2.").arg(name).arg(OnlineSchema);
             if (scope != VariableScope::Game && schema < LanguageSchema) return QString("The variable \"%1\" is a %2 variable, which needs schemaVersion %3.").arg(name, text).arg(LanguageSchema);
         }
         variables.append({name, static_cast<int>(number), scope});
@@ -725,7 +731,7 @@ public:
         for (qsizetype index = 0; index < scene.items.size(); ++index) itemIndexes.insert(scene.items[index].id, index);
         std::array<qsizetype, 3> counts{};
         for (const auto& variable : program.variables) {
-            auto& count = counts[static_cast<std::size_t>(variable.scope)];
+            auto& count = counts[static_cast<std::size_t>(storedScope(variable.scope))];
             variableIndexes.insert(variable.name, count++);
             variableScopes.insert(variable.name, variable.scope);
         }
@@ -796,6 +802,7 @@ public:
         const auto pad = indentation(level);
         code += pad + "{\n";
         code += pad + "    const auto outerPlayer = world.CurrentPlayer();\n";
+        code += pad + "    const auto outerScoped = world.PlayerScoped();\n";
         code += pad + "    for (std::size_t player = 0; player < world.PlayerSlots(); ++player) {\n";
         code += pad + "        if (!world.PlayerHere(player)) continue;\n";
         code += pad + "        world.SetCurrentPlayer(player);\n";
@@ -807,7 +814,7 @@ public:
             code += pad + "        }\n";
         }
         code += pad + "    }\n";
-        code += pad + "    world.SetCurrentPlayer(outerPlayer);\n";
+        code += pad + "    world.RestorePlayer(outerPlayer, outerScoped);\n";
         code += pad + "}\n";
     }
 
@@ -970,6 +977,15 @@ public:
             return;
         case BlockType::ResumeGame:
             code += pad + "world.ResumeGame();" + comment;
+            return;
+        case BlockType::HostOnline:
+            code += pad + "world.HostOnline();" + comment;
+            return;
+        case BlockType::JoinOnline:
+            code += pad + "world.JoinOnline();" + comment;
+            return;
+        case BlockType::StopOnline:
+            code += pad + "world.StopOnline();" + comment;
             return;
         case BlockType::CameraFollowBoth:
             code += pad + "world.CameraFollowBoth(" + item(block.item) + ", " + item(block.otherItem) + ");" + comment;
@@ -1239,6 +1255,9 @@ const QList<BlockInfo>& blockCatalog() {
         {BlockType::Flee, "flee", "Run away from",                                    false, false, false, true,  true,  false, false, true,  false, false, false},
         {BlockType::AlertNearby, "alertNearby", "Tell nearby copies",                 false, false, false, true,  false, false, false, true,  false, true,  false, false, false, false, false, true},
         {BlockType::SetLook, "setLook", "Set look",                                   false, false, false, true,  false, false, false, false, false, false, false, false, false, false, true,  false},
+        {BlockType::HostOnline, "hostOnline", "Let friends join online",             false, false, false, false, false, false, false, false, false, false, false},
+        {BlockType::JoinOnline, "joinOnline", "Join a friend's game online",         false, false, false, false, false, false, false, false, false, false, false},
+        {BlockType::StopOnline, "stopOnline", "Stop playing online",                 false, false, false, false, false, false, false, false, false, false, false},
     };
     return catalog;
 }
@@ -1565,14 +1584,16 @@ QByteArray generateVariablesHeader(const LogicProgram& program, const SceneSet& 
     std::array<QByteArrayList, 3> initialValues;
     std::array<QByteArrayList, 3> names;
     QByteArrayList gameHashes;
+    QByteArrayList screenScoped;
     QStringList playerNames;
     for (const auto& variable : program.variables) {
-        const auto scope = static_cast<std::size_t>(variable.scope);
+        const auto scope = static_cast<std::size_t>(storedScope(variable.scope));
+        if (scope == 0) screenScoped << (variable.scope == VariableScope::Screen ? "true" : "false");
         variableIndexes.insert(variable.name, initialValues[scope].size());
         scopes.insert(variable.name, variable.scope);
         initialValues[scope] << QByteArray::number(variable.initial);
         names[scope] << variable.name.toLatin1(); // names are letters, digits and _, safe in a comment
-        if (variable.scope == VariableScope::Game) gameHashes << nameHash(variable.name);
+        if (storedScope(variable.scope) == VariableScope::Game) gameHashes << nameHash(variable.name);
         if (variable.scope == VariableScope::Player) playerNames << variable.name;
     }
     // A save keeps the game variables first, as older games did, then each player's variables in turn.
@@ -1599,7 +1620,7 @@ QByteArray generateVariablesHeader(const LogicProgram& program, const SceneSet& 
                 parts += "    {\"" + textLiteral(part.text) + "\", -1},\n";
                 quads += part.text.size();
             } else {
-                const auto scope = static_cast<int>(scopes.value(part.variable));
+                const auto scope = static_cast<int>(storedScope(scopes.value(part.variable)));
                 auto extra = scope != 0 || part.player > 0 || part.letter ? ", " + QByteArray::number(scope) + ", " + QByteArray::number(part.player - 1) : QByteArray();
                 if (part.letter) extra += ", true";
                 parts += "    {\"\", " + QByteArray::number(variableIndexes.value(part.variable)) + extra + "},\n";
@@ -1622,6 +1643,7 @@ QByteArray generateVariablesHeader(const LogicProgram& program, const SceneSet& 
     header += "inline constexpr std::size_t VariableCount = " + QByteArray::number(initialValues[0].size()) + ";\n";
     header += list("std::int32_t", "InitialValues", initialValues[0], names[0].join(", "));
     header += list("std::uint32_t", "NameHashes", gameHashes, "how a saved value finds its variable");
+    header += list("bool", "ScreenScoped", screenScoped, "true for a screen variable, which has a value for each screen");
     header += "// Each player has their own value of these, and each copy of a template its own value of the copy variables.\n";
     header += "inline constexpr std::size_t PlayerSlots = " + QByteArray::number(MaximumPlayers) + ";\n";
     header += "inline constexpr std::size_t PlayerVariableCount = " + QByteArray::number(initialValues[1].size()) + ";\n";

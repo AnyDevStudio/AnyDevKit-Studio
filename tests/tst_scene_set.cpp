@@ -391,6 +391,8 @@ private slots:
         writeBytes(directory.path() + "/include/Scene/SceneState.hpp", "#include \"Scene/Physics2D.hpp\"\nbool Pressed(unsigned button) const;\nvoid PauseGame();");
         QVERIFY2(sceneRuntimeLacksPhysics(directory.path()), "a runtime from before players and copies needs replacing");
         writeBytes(directory.path() + "/include/Scene/SceneState.hpp", "#include \"Scene/Physics2D.hpp\"\nbool Pressed(unsigned button) const;\nvoid PauseGame();\nstd::size_t SpawnCopy();");
+        QVERIFY2(sceneRuntimeLacksPhysics(directory.path()), "a runtime from before playing online needs replacing");
+        writeBytes(directory.path() + "/include/Scene/SceneState.hpp", "#include \"Scene/Physics2D.hpp\"\nbool Pressed(unsigned button) const;\nvoid PauseGame();\nstd::size_t SpawnCopy();\nstd::size_t OpenScreen();");
         QVERIFY(!sceneRuntimeLacksPhysics(directory.path()));
     }
 

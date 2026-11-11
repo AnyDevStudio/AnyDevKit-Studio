@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <span>
 #include <utility>
@@ -144,6 +145,59 @@ constexpr auto HeroOf = [] {
     return heroes;
 }();
 
+// For each item, its place among the items that stay on the screen, or -1.
+constexpr auto ScreenIndexOf = [] {
+    std::array<std::int32_t, GeneratedScene::Items.size()> indexes{};
+    indexes.fill(-1);
+    std::int32_t next = 0;
+    for (std::size_t item = 0; item < indexes.size(); ++item) {
+        if (GeneratedScene::Items[item].screenFixed) indexes[item] = next++;
+    }
+    return indexes;
+}();
+
+// A screen sent to another console starts with these two bytes.
+constexpr std::uint8_t ScreenFormat = 1;
+constexpr std::uint8_t ScreenMagic = 0xA5;
+
+// Writes little-endian numbers into a buffer, and remembers when it ran out of room.
+struct ByteWriter {
+    std::span<std::uint8_t> out;
+    std::size_t size = 0;
+    bool full = false;
+    void U8(std::uint32_t value) {
+        if (size >= out.size()) { full = true; return; }
+        out[size++] = static_cast<std::uint8_t>(value);
+    }
+    void U16(std::uint32_t value) { U8(value & 0xFF); U8((value >> 8) & 0xFF); }
+    void I16(float value) { U16(static_cast<std::uint16_t>(static_cast<std::int16_t>(std::clamp(std::lround(value), -32767l, 32767l)))); }
+    void Float(float value) {
+        std::uint32_t bits = 0;
+        std::memcpy(&bits, &value, sizeof(bits));
+        U16(bits & 0xFFFF);
+        U16(bits >> 16);
+    }
+};
+
+struct ByteReader {
+    std::span<const std::uint8_t> in;
+    std::size_t at = 0;
+    bool short_ = false;
+    std::uint32_t U8() {
+        if (at >= in.size()) { short_ = true; return 0; }
+        return in[at++];
+    }
+    std::uint32_t U16() { const auto low = U8(); return low | (U8() << 8); }
+    float I16() { return static_cast<float>(static_cast<std::int16_t>(static_cast<std::uint16_t>(U16()))); }
+    float Float() {
+        const auto low = U16();
+        const std::uint32_t bits = low | (U16() << 16);
+        float value = 0.0f;
+        std::memcpy(&value, &bits, sizeof(value));
+        return value;
+    }
+};
+
 // An item larger than the stage cannot fit, so it may only slide while still covering the stage.
 float clampAxis(float value, float stage, float size) {
     const float limit = stage - size;
@@ -156,7 +210,9 @@ SceneState::SceneState(int width, int height, Audio::Mixer* mixer, SaveMailbox* 
     startParticles();
     visible.fill(true);
     playerPresent[0] = true; // player 1 is here from the start; their "joins" event runs on the first frame
-    enterScene(GeneratedScene::StartScene);
+    screens[0].open = true;
+    for (auto& values : screenVariables) values = GeneratedVariables::InitialValues;
+    enterScene(GeneratedScene::StartScene, 0);
     rebuildText();
 }
 
@@ -185,9 +241,13 @@ std::size_t SceneState::CurrentScene() const { return currentScene; }
 const GeneratedScene::SceneInfo& SceneState::CurrentSceneInfo() const { return GeneratedScene::Scenes[currentScene]; }
 
 // Puts a scene back the way it starts, and runs its "When the game starts" blocks. Variables are not touched.
-void SceneState::enterScene(std::size_t scene) {
+void SceneState::enterScene(std::size_t scene, std::size_t screen) {
     currentScene = scene;
-    pendingScene = -1;
+    currentScreen = screen;
+    liveScreen[scene] = static_cast<std::uint8_t>(screen); // the items start as the scene has them, which is this screen's view
+    auto& entering = screens[screen];
+    entering.scene = scene;
+    entering.pendingScene = -1;
     const auto& info = GeneratedScene::Scenes[scene];
     rebuildText(); // so a controllable text is kept on the stage at its starting width
     for (std::size_t index = info.firstItem; index < info.firstItem + info.itemCount; ++index) {
@@ -221,19 +281,275 @@ void SceneState::enterScene(std::size_t scene) {
             }
         }
     }
-    camera = World2D::ClampCamera({info.cameraStartX, info.cameraStartY}, info.worldWidth, info.worldHeight);
-    followedItem = -1;
-    secondFollowed = -1;
-    paused = false;
-    logicMemory = {};
-    physicsClock = {};
+    entering.camera = World2D::ClampCamera({info.cameraStartX, info.cameraStartY}, info.worldWidth, info.worldHeight);
+    entering.followedItem = -1;
+    entering.secondFollowed = -1;
+    entering.paused = false;
+    logicMemories[scene] = {};
+    physicsClocks[scene] = {};
     jumpPressPending = {};
-    self = NoItemIndex;
-    currentPlayer = 0;
+    defaultContext();
     GeneratedLogic::OnSceneStart(*this, scene);
-    self = NoItemIndex;
-    currentPlayer = 0;
+    defaultContext();
     updateFollowers();
+}
+
+bool SceneState::worldPaused() const { return ScreensOpen() == 1 && screens[0].paused; }
+bool SceneState::screenIn(std::size_t screen, std::size_t scene) const { return screens[screen].open && screens[screen].scene == scene; }
+
+bool SceneState::othersIn(std::size_t scene, std::size_t except) const {
+    for (std::size_t screen = 0; screen < ScreenCount; ++screen) {
+        if (screen != except && screenIn(screen, scene)) return true;
+    }
+    return false;
+}
+
+std::size_t SceneState::firstPlayerIn(std::size_t scene) const {
+    for (std::size_t player = 0; player < PlayerCount; ++player) {
+        if (playerPresent[player] && screenIn(playerScreen[player], scene)) return player;
+    }
+    return 0;
+}
+
+// The player in place `seat` (from 0) on a screen, or PlayerCount when that place is empty.
+std::size_t SceneState::seatPlayer(std::size_t screen, std::size_t seat) const {
+    for (std::size_t player = 0; player < PlayerCount; ++player) {
+        if (!playerPresent[player] || playerScreen[player] != screen) continue;
+        if (seat == 0) return player;
+        --seat;
+    }
+    return PlayerCount;
+}
+
+// Blocks outside "for each player" run for the first player in the scene, on that player's screen.
+void SceneState::defaultContext() {
+    self = NoItemIndex;
+    currentPlayer = firstPlayerIn(currentScene);
+    playerScoped = false;
+    const auto screen = playerScreen[currentPlayer];
+    if (screenIn(screen, currentScene)) {
+        currentScreen = screen;
+        showLayer(screen);
+    }
+}
+
+void SceneState::storeLayer(std::size_t scene, std::size_t screen) {
+    const auto& info = GeneratedScene::Scenes[scene];
+    for (std::size_t item = info.firstItem; item < info.firstItem + info.itemCount; ++item) {
+        if (ScreenIndexOf[item] < 0) continue;
+        auto& kept = (*layers)[screen][static_cast<std::size_t>(ScreenIndexOf[item])];
+        kept.position = positions[item];
+        kept.color = colors[item];
+        kept.visible = visible[item];
+        kept.flipped = flipped[item];
+        kept.followerHidden = followerHidden[item];
+        if constexpr (GeneratedScene::SpriteCount != 0) {
+            if (const auto sprite = GeneratedScene::Items[item].sprite; sprite >= 0) {
+                kept.animation = animations[static_cast<std::size_t>(sprite)];
+                kept.look = looks[static_cast<std::size_t>(sprite)];
+            }
+        }
+    }
+}
+
+void SceneState::loadLayer(std::size_t scene, std::size_t screen) {
+    const auto& info = GeneratedScene::Scenes[scene];
+    for (std::size_t item = info.firstItem; item < info.firstItem + info.itemCount; ++item) {
+        if (ScreenIndexOf[item] < 0) continue;
+        const auto& kept = (*layers)[screen][static_cast<std::size_t>(ScreenIndexOf[item])];
+        positions[item] = kept.position;
+        colors[item] = kept.color;
+        visible[item] = kept.visible;
+        flipped[item] = kept.flipped;
+        followerHidden[item] = kept.followerHidden;
+        if constexpr (GeneratedScene::SpriteCount != 0) {
+            if (const auto sprite = GeneratedScene::Items[item].sprite; sprite >= 0) {
+                animations[static_cast<std::size_t>(sprite)] = kept.animation;
+                looks[static_cast<std::size_t>(sprite)] = kept.look;
+            }
+        }
+    }
+}
+
+// A screen's own copy of a scene's screen-fixed items, as the scene starts them.
+void SceneState::resetLayer(std::size_t scene, std::size_t screen) {
+    const auto& info = GeneratedScene::Scenes[scene];
+    for (std::size_t index = info.firstItem; index < info.firstItem + info.itemCount; ++index) {
+        if (ScreenIndexOf[index] < 0) continue;
+        const auto& item = GeneratedScene::Items[index];
+        auto& kept = (*layers)[screen][static_cast<std::size_t>(ScreenIndexOf[index])];
+        kept = {};
+        kept.position = {item.x, item.y};
+        kept.color = {item.red, item.green, item.blue};
+        kept.flipped = item.flipped;
+        kept.visible = CopyGroupOf[index] < 0;
+        if constexpr (GeneratedScene::SpriteCount != 0) {
+            if (item.sprite >= 0) {
+                const auto& sprite = GeneratedScene::Sprites[static_cast<std::size_t>(item.sprite)];
+                if (sprite.animationCount != 0) kept.animation.Play(ClipOf(sprite, sprite.startAnimation));
+            }
+        }
+    }
+}
+
+// Makes one screen's screen-fixed items the live ones in the scene whose blocks run.
+void SceneState::showLayer(std::size_t screen) {
+    if (!layers) return;
+    auto& live = liveScreen[currentScene];
+    if (live == screen) return;
+    storeLayer(currentScene, live);
+    loadLayer(currentScene, screen);
+    live = static_cast<std::uint8_t>(screen);
+}
+
+std::size_t SceneState::OpenScreen() {
+    if (mirroring) return NoScreen;
+    std::size_t screen = 1;
+    while (screen < ScreenCount && screens[screen].open) ++screen;
+    if (screen == ScreenCount) return NoScreen;
+    // The last free player, so a second controller on this console can still be player 2.
+    std::size_t player = PlayerCount;
+    for (std::size_t candidate = PlayerCount; candidate-- > 1;) {
+        if (!playerPresent[candidate]) {
+            player = candidate;
+            break;
+        }
+    }
+    if (player == PlayerCount) return NoScreen;
+    if (!layers) layers = std::make_unique<std::array<ScreenLayer, ScreenCount>>();
+    auto& opened = screens[screen];
+    opened = Screen{};
+    opened.open = true;
+    opened.scene = screens[0].scene;
+    opened.camera = screens[0].camera;
+    playerScreen[player] = screen;
+    playerPresent[player] = true;
+    joinPending[player] = true;
+    playerHeld[player] = 0;
+    playerPressed[player] = 0;
+    remoteInputs[player] = {};
+    remotePressed[player] = 0;
+    screenVariables[screen - 1] = GeneratedVariables::InitialValues;
+    screenEvents[screen].count = 0;
+    resetLayer(opened.scene, screen);
+    return screen;
+}
+
+void SceneState::CloseScreen(std::size_t screen) {
+    if (screen == 0 || screen >= ScreenCount || !screens[screen].open) return;
+    const auto scene = screens[screen].scene;
+    for (std::size_t player = 0; player < PlayerCount; ++player) {
+        if (!playerPresent[player] || playerScreen[player] != screen) continue;
+        if (const auto hero = HeroOf[scene][player]; hero != NoItemIndex) visible[hero] = false;
+        playerPresent[player] = false;
+        playerScreen[player] = 0;
+        joinPending[player] = false;
+    }
+    screens[screen].open = false;
+    if (layers && liveScreen[scene] == screen) {
+        for (std::size_t other = 0; other < ScreenCount; ++other) {
+            if (!screenIn(other, scene)) continue;
+            const auto running = currentScene;
+            currentScene = scene;
+            showLayer(other);
+            currentScene = running;
+            break;
+        }
+    }
+    updateFollowers();
+}
+
+bool SceneState::ScreenOpen(std::size_t screen) const { return screen < ScreenCount && screens[screen].open; }
+std::size_t SceneState::ScreensOpen() const { return static_cast<std::size_t>(std::count_if(screens.begin(), screens.end(), [](const Screen& screen) { return screen.open; })); }
+std::size_t SceneState::ScreenScene(std::size_t screen) const { return screen < ScreenCount ? screens[screen].scene : GeneratedScene::StartScene; }
+std::size_t SceneState::ScreenPlayer(std::size_t screen) const { return seatPlayer(screen, 0); }
+
+void SceneState::SetRemoteInput(std::size_t screen, const PlayerInput& input, std::uint32_t pressed) {
+    const auto player = ScreenPlayer(screen);
+    if (screen == 0 || player == PlayerCount) return;
+    remoteInputs[player] = input;
+    remotePressed[player] |= pressed;
+}
+
+void SceneState::pushEvent(std::size_t screen, ScreenEvent event) {
+    auto& events = screenEvents[screen];
+    if (events.count < events.list.size()) events.list[events.count++] = event;
+}
+
+std::span<const SceneState::ScreenEvent> SceneState::ScreenEvents(std::size_t screen) const {
+    if (screen >= ScreenCount) return {};
+    return std::span(screenEvents[screen].list).first(screenEvents[screen].count);
+}
+
+void SceneState::ClearScreenEvents(std::size_t screen) {
+    if (screen < ScreenCount) screenEvents[screen].count = 0;
+}
+
+// Who hears a sound: the player's own screen inside "for each player", otherwise every screen in the scene.
+template <typename Each>
+void SceneState::forEachListener(Each&& each) {
+    if (playerScoped) {
+        each(currentScreen);
+        return;
+    }
+    for (std::size_t screen = 0; screen < ScreenCount; ++screen) {
+        if (screenIn(screen, currentScene)) each(screen);
+    }
+}
+
+void SceneState::HostOnline() { onlineRequest = OnlineRequest::Host; }
+void SceneState::JoinOnline() { onlineRequest = OnlineRequest::Join; }
+void SceneState::StopOnline() {
+    if (currentScreen != 0) screens[currentScreen].leaving = true;
+    else onlineRequest = OnlineRequest::Stop;
+}
+bool SceneState::ScreenLeaving(std::size_t screen) const { return screen < ScreenCount && screens[screen].open && screens[screen].leaving; }
+std::int64_t SceneState::OnFriendScreen() const { return currentScreen != 0 ? 1 : 0; }
+SceneState::OnlineRequest SceneState::TakeOnlineRequest() { return std::exchange(onlineRequest, OnlineRequest::None); }
+void SceneState::SetOnlineState(std::int32_t state) { onlineState = state; }
+std::int64_t SceneState::OnlineState() const { return onlineState; }
+
+// A screen moves to a scene. An empty scene starts afresh and runs its "When the game starts" blocks; in a scene
+// with someone in it, the world stays as it is and the screen's players arrive, which runs "When a player joins".
+void SceneState::moveScreen(std::size_t screen, std::size_t target) {
+    auto& moving = screens[screen];
+    moving.pendingScene = -1;
+    const auto old = moving.scene;
+    const auto arrive = [&] {
+        for (std::size_t player = 0; player < PlayerCount; ++player) {
+            if (playerPresent[player] && playerScreen[player] == screen) joinPending[player] = true;
+        }
+    };
+    if (target == old && othersIn(old, screen)) {
+        arrive();
+        return;
+    }
+    if (othersIn(old, screen)) {
+        for (std::size_t player = 0; player < PlayerCount; ++player) {
+            if (!playerPresent[player] || playerScreen[player] != screen) continue;
+            if (const auto hero = HeroOf[old][player]; hero != NoItemIndex) visible[hero] = false;
+        }
+        if (layers && liveScreen[old] == screen) {
+            for (std::size_t other = 0; other < ScreenCount; ++other) {
+                if (other == screen || !screenIn(other, old)) continue;
+                currentScene = old;
+                showLayer(other);
+                break;
+            }
+        }
+    }
+    if (!othersIn(target, screen)) {
+        enterScene(target, screen);
+        return;
+    }
+    const auto& info = GeneratedScene::Scenes[target];
+    moving.scene = target;
+    moving.camera = World2D::ClampCamera({info.cameraStartX, info.cameraStartY}, info.worldWidth, info.worldHeight);
+    moving.followedItem = -1;
+    moving.secondFollowed = -1;
+    moving.paused = false;
+    resetLayer(target, screen);
+    arrive();
 }
 
 // Puts one item back as the scene starts it: its place, color, facing, animation and body.
@@ -274,9 +590,9 @@ void SceneState::updatePlayers(const std::array<PlayerInput, PlayerCount>& playe
     for (std::size_t player = 0; player < PlayerCount; ++player) {
         const auto& input = players[player];
         const auto held = static_cast<std::uint32_t>(input.buttons | DirectionButtons(input.direction[0], input.direction[1]));
-        playerPressed[player] = held & ~playerHeld[player];
+        playerPressed[player] = (held & ~playerHeld[player]) | std::exchange(remotePressed[player], 0u);
         playerHeld[player] = held;
-        playerJoinedNow[player] = player == 0 && !firstPlayerAnnounced;
+        playerJoinedNow[player] = (player == 0 && !firstPlayerAnnounced) || std::exchange(joinPending[player], false);
         if (!playerPresent[player] && held != 0) {
             playerPresent[player] = true;
             playerJoinedNow[player] = true;
@@ -297,20 +613,25 @@ void SceneState::Update(double seconds, Position direction, std::uint64_t button
     Update(seconds, {PlayerInput{direction, static_cast<std::uint32_t>(buttons)}, PlayerInput{}});
 }
 
-void SceneState::Update(double seconds, const std::array<PlayerInput, PlayerCount>& players) {
+void SceneState::Update(double seconds, const std::array<PlayerInput, PlayerCount>& local) {
+    if (mirroring) {
+        // Another console runs the game; here only the particles of the scene it shows move.
+        const auto& shown = GeneratedScene::Scenes[currentScene];
+        for (std::size_t index = shown.firstItem; index < shown.firstItem + shown.itemCount; ++index) {
+            if (auto* emitter = emitterFor(index)) {
+                emitter->SetPosition(positions[index][0], positions[index][1]);
+                emitter->Update(seconds);
+            }
+        }
+        return;
+    }
     applyLoadedVariables();
     frameSeconds = static_cast<float>(seconds);
-    updatePlayers(players);
-    const auto distance = static_cast<float>(UnitsPerSecond * seconds);
-    const auto& info = GeneratedScene::Scenes[currentScene];
-    const auto direction = players[0].direction;
-    for (std::size_t index = info.firstItem; index < info.firstItem + info.itemCount && !paused; ++index) {
-        if (GeneratedScene::Items[index].controllable) {
-            positions[index][0] += direction[0] * distance;
-            positions[index][1] += direction[1] * distance;
-            clampToBounds(index, positions[index]);
-        }
+    auto players = local;
+    for (std::size_t player = 0; player < PlayerCount; ++player) {
+        if (playerPresent[player] && playerScreen[player] != 0) players[player] = remoteInputs[player];
     }
+    updatePlayers(players);
     std::uint64_t allButtons = 0;
     for (std::size_t player = 0; player < 2; ++player) { // the older Buttons::P2 bits name only the first two players
         const auto& input = players[player];
@@ -318,22 +639,85 @@ void SceneState::Update(double seconds, const std::array<PlayerInput, PlayerCoun
     }
     pressedButtons = allButtons & ~heldButtons;
     heldButtons = allButtons;
-    if (!paused) stepPhysics(seconds, players);
-    self = NoItemIndex;
+
+    // Every scene with a screen in it runs once, however many screens show it.
+    std::array<bool, GeneratedScene::SceneCount> ran{};
+    for (std::size_t screen = 0; screen < ScreenCount; ++screen) {
+        if (!screens[screen].open || ran[screens[screen].scene]) continue;
+        ran[screens[screen].scene] = true;
+        runScene(screens[screen].scene, seconds, players);
+    }
+    for (std::size_t screen = 0; screen < ScreenCount; ++screen) {
+        if (screens[screen].open && screens[screen].pendingScene >= 0) moveScreen(screen, static_cast<std::size_t>(screens[screen].pendingScene));
+    }
+    ran = {};
+    for (std::size_t screen = 0; screen < ScreenCount; ++screen) {
+        if (!screens[screen].open || ran[screens[screen].scene]) continue;
+        ran[screens[screen].scene] = true;
+        settleScene(screens[screen].scene, seconds);
+    }
+    // Between frames the items are screen 0's, for drawing.
+    currentScene = screens[0].scene;
+    currentScreen = 0;
     currentPlayer = 0;
-    GeneratedLogic::OnSceneFrame(*this, logicMemory, currentScene);
+    playerScoped = false;
     self = NoItemIndex;
-    currentPlayer = 0;
-    clearBodyEvents();
-    if (pendingScene >= 0) enterScene(static_cast<std::size_t>(pendingScene));
-    updateFollowers();
+    showLayer(0);
     rebuildText();
-    updateCamera();
-    if (paused) return;
-    const auto& shown = GeneratedScene::Scenes[currentScene];
-    for (std::size_t index = shown.firstItem; index < shown.firstItem + shown.itemCount; ++index) {
+}
+
+// Physics and blocks of one scene, for the players in it.
+void SceneState::runScene(std::size_t scene, double seconds, const std::array<PlayerInput, PlayerCount>& players) {
+    currentScene = scene;
+    const bool frozen = worldPaused();
+    const auto& info = GeneratedScene::Scenes[scene];
+    if (!frozen && screens[0].scene == scene) {
+        const auto distance = static_cast<float>(UnitsPerSecond * seconds);
+        const auto direction = players[0].direction;
+        for (std::size_t index = info.firstItem; index < info.firstItem + info.itemCount; ++index) {
+            if (!GeneratedScene::Items[index].controllable) continue;
+            if (ScreenIndexOf[index] >= 0) showLayer(0);
+            positions[index][0] += direction[0] * distance;
+            positions[index][1] += direction[1] * distance;
+            clampToBounds(index, positions[index]);
+        }
+    }
+    if (!frozen) {
+        auto here = players;
+        for (std::size_t player = 0; player < PlayerCount; ++player) {
+            if (!playerPresent[player] || !screenIn(playerScreen[player], scene)) here[player] = {};
+        }
+        stepPhysics(seconds, here);
+    }
+    defaultContext();
+    GeneratedLogic::OnSceneFrame(*this, logicMemories[scene], scene);
+    defaultContext();
+    clearBodyEvents();
+}
+
+// After the blocks and any scene change: followers, cameras and animations of one scene.
+void SceneState::settleScene(std::size_t scene, double seconds) {
+    currentScene = scene;
+    const bool frozen = worldPaused();
+    const auto& info = GeneratedScene::Scenes[scene];
+    for (std::size_t screen = 0; screen < ScreenCount; ++screen) {
+        if (!screenIn(screen, scene)) continue;
+        currentScreen = screen;
+        showLayer(screen);
+        updateFollowers();
+        rebuildText();
+        updateCamera(screen);
+        if (frozen) continue;
         if constexpr (GeneratedScene::SpriteCount != 0) {
-            if (GeneratedScene::Items[index].sprite >= 0) animations[static_cast<std::size_t>(GeneratedScene::Items[index].sprite)].Advance(seconds);
+            for (std::size_t index = info.firstItem; index < info.firstItem + info.itemCount; ++index) {
+                if (ScreenIndexOf[index] >= 0 && GeneratedScene::Items[index].sprite >= 0) animations[static_cast<std::size_t>(GeneratedScene::Items[index].sprite)].Advance(seconds);
+            }
+        }
+    }
+    if (frozen) return;
+    for (std::size_t index = info.firstItem; index < info.firstItem + info.itemCount; ++index) {
+        if constexpr (GeneratedScene::SpriteCount != 0) {
+            if (ScreenIndexOf[index] < 0 && GeneratedScene::Items[index].sprite >= 0) animations[static_cast<std::size_t>(GeneratedScene::Items[index].sprite)].Advance(seconds);
         }
         if (auto* emitter = emitterFor(index)) {
             emitter->SetPosition(positions[index][0], positions[index][1]);
@@ -395,8 +779,8 @@ void SceneState::Jump(std::size_t item) {
     if (auto* body = bodyOf(item)) Physics2D::Jump(*body);
 }
 
-void SceneState::GoToScene(std::size_t scene) { pendingScene = static_cast<std::int32_t>(scene); }
-void SceneState::RestartScene() { pendingScene = static_cast<std::int32_t>(currentScene); }
+void SceneState::GoToScene(std::size_t scene) { screens[currentScreen].pendingScene = static_cast<std::int32_t>(scene); }
+void SceneState::RestartScene() { screens[currentScreen].pendingScene = static_cast<std::int32_t>(currentScene); }
 
 void SceneState::clearBodyEvents() {
     for (auto& body : bodies) {
@@ -455,7 +839,7 @@ void SceneState::stepPhysics([[maybe_unused]] double seconds, [[maybe_unused]] c
         }
 
         const Physics2D::WorldView view{std::span(bodies).subspan(firstBody, bodyCount), std::span(solidBoxes).first(solidCount), std::span(tileLayers).first(layerCount), FixedOf(info.worldWidth), FixedOf(info.worldHeight)};
-        const auto steps = physicsClock.StepsFor(seconds);
+        const auto steps = physicsClocks[scene].StepsFor(seconds);
         for (int step = 0; step < steps; ++step) {
             for (std::size_t player = 0; player < PlayerCount; ++player) inputs[player].jumpPressed = jumpPressPending[player];
             Physics2D::StepPlayers(view, std::span<const Physics2D::Input>(inputs));
@@ -475,13 +859,14 @@ void SceneState::stepPhysics([[maybe_unused]] double seconds, [[maybe_unused]] c
 const SceneState::Positions& SceneState::Current() const { return positions; }
 const SceneState::Colors& SceneState::CurrentColors() const { return colors; }
 const SceneState::Visibility& SceneState::CurrentVisibility() const { return visible; }
-World2D::Point SceneState::Camera() const { return camera; }
+World2D::Point SceneState::Camera() const { return screens[0].camera; }
 bool SceneState::Flipped(std::size_t item) const { return Valid(item) && flipped[item]; }
 
 std::uint32_t SceneState::SpriteFrame(std::size_t item) const {
     if (!Valid(item)) return 0;
     if constexpr (GeneratedScene::SpriteCount != 0) {
         const auto sprite = GeneratedScene::Items[item].sprite;
+        if (sprite >= 0 && mirroring) return mirrorFrames[static_cast<std::size_t>(sprite)];
         if (sprite >= 0) {
             const auto& entry = GeneratedScene::Sprites[static_cast<std::size_t>(sprite)];
             const auto look = looks[static_cast<std::size_t>(sprite)] * entry.lookFrames;
@@ -509,47 +894,59 @@ void SceneState::SetFlipped(std::size_t item, bool value) {
 
 void SceneState::CameraFollow(std::size_t item) {
     if (!Valid(item)) return;
-    followedItem = static_cast<std::int32_t>(item);
-    secondFollowed = -1;
+    screens[currentScreen].followedItem = static_cast<std::int32_t>(item);
+    screens[currentScreen].secondFollowed = -1;
 }
 
 void SceneState::CameraFollowBoth(std::size_t item, std::size_t other) {
     if (!Valid(item) || !Valid(other)) return;
-    followedItem = static_cast<std::int32_t>(item);
-    secondFollowed = static_cast<std::int32_t>(other);
+    screens[currentScreen].followedItem = static_cast<std::int32_t>(item);
+    screens[currentScreen].secondFollowed = static_cast<std::int32_t>(other);
 }
 
-void SceneState::PauseGame() { paused = true; }
-void SceneState::ResumeGame() { paused = false; }
-bool SceneState::Paused() const { return paused; }
+void SceneState::PauseGame() { screens[currentScreen].paused = true; }
+void SceneState::ResumeGame() { screens[currentScreen].paused = false; }
+bool SceneState::Paused() const { return screens[currentScreen].paused; }
 
 void SceneState::SetCameraPosition(float x, float y) {
-    followedItem = -1;
-    secondFollowed = -1;
+    auto& screen = screens[currentScreen];
+    screen.followedItem = -1;
+    screen.secondFollowed = -1;
     const auto& info = CurrentSceneInfo();
-    camera = World2D::ClampCamera({x, y}, info.worldWidth, info.worldHeight);
+    screen.camera = World2D::ClampCamera({x, y}, info.worldWidth, info.worldHeight);
 }
 
-void SceneState::updateCamera() {
-    if (followedItem < 0) return;
+void SceneState::updateCamera(std::size_t index) {
+    auto& screen = screens[index];
+    if (screen.followedItem < 0) return;
     const auto boxOf = [&](std::size_t item) { return World2D::FollowRect{positions[item][0], positions[item][1], drawnWidth(item), GeneratedScene::Items[item].height}; };
-    const auto first = static_cast<std::size_t>(followedItem);
+    const auto join = [](World2D::FollowRect box, World2D::FollowRect other) {
+        const float left = std::min(box.x, other.x);
+        const float top = std::min(box.y, other.y);
+        const float right = std::max(box.x + box.width, other.x + other.width);
+        const float bottom = std::max(box.y + box.height, other.y + other.height);
+        return World2D::FollowRect{left, top, right - left, bottom - top};
+    };
+    const auto first = static_cast<std::size_t>(screen.followedItem);
     auto box = boxOf(first);
-    if (secondFollowed >= 0) {
-        const auto second = static_cast<std::size_t>(secondFollowed);
-        const auto other = boxOf(second);
-        if (!visible[first] && visible[second]) {
-            box = other;
-        } else if (visible[first] && visible[second]) {
-            const float left = std::min(box.x, other.x);
-            const float top = std::min(box.y, other.y);
-            const float right = std::max(box.x + box.width, other.x + other.width);
-            const float bottom = std::max(box.y + box.height, other.y + other.height);
-            box = {left, top, right - left, bottom - top};
+    const auto& heroes = HeroOf[screen.scene];
+    if (ScreensOpen() > 1 && std::find(heroes.begin(), heroes.end(), first) != heroes.end()) {
+        // Online, a camera that follows a player's character follows the characters of its own screen.
+        bool any = false;
+        for (std::size_t player = 0; player < PlayerCount; ++player) {
+            const auto hero = heroes[player];
+            if (!playerPresent[player] || playerScreen[player] != index || hero == NoItemIndex || !visible[hero]) continue;
+            box = any ? join(box, boxOf(hero)) : boxOf(hero);
+            any = true;
         }
+        if (!any) return;
+    } else if (screen.secondFollowed >= 0) {
+        const auto second = static_cast<std::size_t>(screen.secondFollowed);
+        if (!visible[first] && visible[second]) box = boxOf(second);
+        else if (visible[first] && visible[second]) box = join(box, boxOf(second));
     }
-    const auto& info = CurrentSceneInfo();
-    camera = World2D::FollowCamera(box, info.worldWidth, info.worldHeight);
+    const auto& info = GeneratedScene::Scenes[screen.scene];
+    screen.camera = World2D::FollowCamera(box, info.worldWidth, info.worldHeight);
 }
 
 void SceneState::MoveBy(std::size_t item, float x, float y) {
@@ -587,7 +984,12 @@ void SceneState::SetColor(std::size_t item, float red, float green, float blue) 
 
 void SceneState::BurstParticles(std::size_t item) {
     if (!Valid(item)) return;
-    if (auto* emitter = emitterFor(item)) emitter->Burst();
+    auto* emitter = emitterFor(item);
+    if (!emitter) return;
+    emitter->Burst();
+    for (std::size_t screen = 1; screen < ScreenCount; ++screen) {
+        if (screenIn(screen, currentScene)) pushEvent(screen, {ScreenEvent::Kind::Burst, static_cast<std::uint16_t>(item)});
+    }
 }
 
 void SceneState::AwaitBurst(std::size_t item) {
@@ -604,12 +1006,38 @@ std::span<const Particles::Quad> SceneState::ParticleQuads(std::size_t item) con
     return {};
 }
 
-void SceneState::SetVariable(std::size_t variable, std::int32_t value) { variables[variable] = value; }
+// A screen variable has one value per screen; screen 0's lives with the game's variables, and is the one saved.
+std::int32_t& SceneState::variableSlot(std::size_t variable) {
+    if (currentScreen != 0 && GeneratedVariables::ScreenScoped[variable]) return screenVariables[currentScreen - 1][variable];
+    return variables[variable];
+}
 
-void SceneState::PlaySound(std::size_t sound) { if (audioMixer) audioMixer->PlaySound(sound); }
-void SceneState::PlayMusic(std::size_t sound) { if (audioMixer) audioMixer->PlayMusic(sound); }
-void SceneState::StopMusic() { if (audioMixer) audioMixer->StopMusic(); }
-void SceneState::SetVolume(std::int32_t percent) { if (audioMixer) audioMixer->SetVolume(percent); }
+void SceneState::SetVariable(std::size_t variable, std::int32_t value) { variableSlot(variable) = value; }
+
+void SceneState::PlaySound(std::size_t sound) {
+    forEachListener([&](std::size_t screen) {
+        if (screen != 0) pushEvent(screen, {ScreenEvent::Kind::Sound, static_cast<std::uint16_t>(sound)});
+        else if (audioMixer) audioMixer->PlaySound(sound);
+    });
+}
+void SceneState::PlayMusic(std::size_t sound) {
+    forEachListener([&](std::size_t screen) {
+        screens[screen].music = static_cast<std::int32_t>(sound);
+        if (screen == 0 && audioMixer) audioMixer->PlayMusic(sound);
+    });
+}
+void SceneState::StopMusic() {
+    forEachListener([&](std::size_t screen) {
+        screens[screen].music = -1;
+        if (screen == 0 && audioMixer) audioMixer->StopMusic();
+    });
+}
+void SceneState::SetVolume(std::int32_t percent) {
+    forEachListener([&](std::size_t screen) {
+        screens[screen].volume = std::clamp(percent, 0, 100);
+        if (screen == 0 && audioMixer) audioMixer->SetVolume(percent);
+    });
+}
 void SceneState::SaveVariables() {
     if (!saveMailbox) return;
     std::array<std::int32_t, GeneratedVariables::SavedCount> saved{};
@@ -633,20 +1061,47 @@ void SceneState::applyLoadedVariables() {
 }
 
 void SceneState::ChangeVariable(std::size_t variable, std::int32_t amount) {
-    const auto total = static_cast<std::int64_t>(variables[variable]) + amount;
+    auto& slot = variableSlot(variable);
+    const auto total = static_cast<std::int64_t>(slot) + amount;
     const auto lowest = static_cast<std::int64_t>(std::numeric_limits<std::int32_t>::min());
     const auto highest = static_cast<std::int64_t>(std::numeric_limits<std::int32_t>::max());
-    variables[variable] = static_cast<std::int32_t>(std::clamp(total, lowest, highest));
+    slot = static_cast<std::int32_t>(std::clamp(total, lowest, highest));
 }
 
-std::int32_t SceneState::Variable(std::size_t variable) const { return variables[variable]; }
+std::int32_t SceneState::Variable(std::size_t variable) const { return const_cast<SceneState*>(this)->variableSlot(variable); }
 
 std::size_t SceneState::CurrentPlayer() const { return currentPlayer; }
-void SceneState::SetCurrentPlayer(std::size_t player) { currentPlayer = player < PlayerCount ? player : 0; }
-bool SceneState::PlayerHere(std::size_t player) const { return player < PlayerCount && playerPresent[player]; }
+// Blocks inside "for each player" run for that player, on that player's screen.
+void SceneState::SetCurrentPlayer(std::size_t player) {
+    currentPlayer = player < PlayerCount ? player : 0;
+    playerScoped = true;
+    const auto screen = playerScreen[currentPlayer];
+    if (playerPresent[currentPlayer] && screenIn(screen, currentScene)) {
+        currentScreen = screen;
+        showLayer(screen);
+    }
+}
+bool SceneState::PlayerScoped() const { return playerScoped; }
+void SceneState::RestorePlayer(std::size_t player, bool scoped) {
+    SetCurrentPlayer(player);
+    playerScoped = scoped;
+}
+std::int64_t SceneState::Seat() const {
+    std::int64_t seat = 1;
+    for (std::size_t player = 0; player < currentPlayer; ++player) {
+        if (playerPresent[player] && playerScreen[player] == playerScreen[currentPlayer]) ++seat;
+    }
+    return seat;
+}
+// A player is here while they play and their screen shows the scene whose blocks run.
+bool SceneState::PlayerHere(std::size_t player) const { return player < PlayerCount && playerPresent[player] && screenIn(playerScreen[player], currentScene); }
 bool SceneState::PlayerJoined(std::size_t player) const { return player < PlayerCount && playerJoinedNow[player]; }
 std::int64_t SceneState::PlayerNumber() const { return static_cast<std::int64_t>(currentPlayer) + 1; }
-std::int64_t SceneState::PlayersHere() const { return std::count(playerPresent.begin(), playerPresent.end(), true); }
+std::int64_t SceneState::PlayersHere() const {
+    std::int64_t count = 0;
+    for (std::size_t player = 0; player < PlayerCount; ++player) count += PlayerHere(player) ? 1 : 0;
+    return count;
+}
 bool SceneState::PlayerHeld(std::uint64_t button) const { return (playerHeld[currentPlayer] & button) != 0; }
 bool SceneState::PlayerPressed(std::uint64_t button) const { return (playerPressed[currentPlayer] & button) != 0; }
 std::size_t SceneState::PlayerHero() const { return HeroOf[currentScene][currentPlayer]; }
@@ -657,7 +1112,7 @@ std::size_t SceneState::NearestPlayerHero(std::size_t from) const {
     float best = 0.0f;
     for (std::size_t player = 0; player < PlayerCount; ++player) {
         const auto hero = HeroOf[currentScene][player];
-        if (!playerPresent[player] || hero == NoItemIndex || !visible[hero]) continue;
+        if (!PlayerHere(player) || hero == NoItemIndex || !visible[hero]) continue;
         const auto distance = Distance(from, hero);
         if (nearest == NoItemIndex || distance < best) {
             nearest = hero;
@@ -762,7 +1217,7 @@ void SceneState::moveToward(std::size_t item, Position target, float speed) {
 }
 
 void SceneState::Wander(std::size_t item, float speed, float radius) {
-    if (!Valid(item) || !alive[item] || paused) return;
+    if (!Valid(item) || !alive[item] || worldPaused()) return;
     auto& state = wandering[item];
     state.timer -= frameSeconds;
     const auto center = centerOf(item);
@@ -783,7 +1238,7 @@ void SceneState::Wander(std::size_t item, float speed, float radius) {
 }
 
 void SceneState::Flee(std::size_t item, std::size_t from, float speed) {
-    if (!Valid(item) || !Valid(from) || paused) return;
+    if (!Valid(item) || !Valid(from) || worldPaused()) return;
     const auto center = centerOf(item);
     const auto other = centerOf(from);
     auto dx = center[0] - other[0];
@@ -835,9 +1290,19 @@ void SceneState::rebuildText() {
             const auto variable = static_cast<std::size_t>(part.variable);
             std::int32_t value = 0;
             if (part.scope == 0) {
-                value = variables[variable];
+                value = Variable(variable);
             } else if (part.scope == 1) {
-                if constexpr (GeneratedVariables::PlayerVariableCount != 0) value = playerVariables[part.player > 0 ? static_cast<std::size_t>(part.player) : 0][variable];
+                if constexpr (GeneratedVariables::PlayerVariableCount != 0) {
+                    // On a screen-fixed text a player number is a place on the screen that shows it, so each
+                    // screen shows its own players; anywhere else it is that player.
+                    auto player = part.player > 0 ? static_cast<std::size_t>(part.player) : 0;
+                    if (GeneratedScene::Items[text.item].screenFixed) {
+                        const auto seated = seatPlayer(currentScreen, player);
+                        if (seated != PlayerCount) player = seated;
+                        else if (currentScreen != 0) player = PlayerCount;
+                    }
+                    if (player < PlayerCount) value = playerVariables[player][variable];
+                }
             } else {
                 if constexpr (GeneratedVariables::CopyVariableCount != 0) {
                     const auto context = CopyContextOf[text.item];
@@ -895,4 +1360,147 @@ void SceneState::limitPosition(std::size_t item, Position& position) const {
     }
     position[0] = std::clamp(position[0], -LogicWorldLimit, LogicWorldLimit);
     position[1] = std::clamp(position[1], -LogicWorldLimit, LogicWorldLimit);
+}
+
+// The screen as another console draws it: the scene, camera and music, then each item of the scene, then its texts.
+std::size_t SceneState::WriteScreen(std::size_t index, std::span<std::uint8_t> out) {
+    if (index >= ScreenCount || !screens[index].open || mirroring) return 0;
+    const auto& screen = screens[index];
+    currentScene = screen.scene;
+    currentScreen = index;
+    showLayer(index);
+    updateFollowers();
+    rebuildText();
+
+    ByteWriter writer{out.first(std::min(out.size(), ScreenBytes))};
+    const auto& info = GeneratedScene::Scenes[screen.scene];
+    writer.U8(ScreenMagic);
+    writer.U8(ScreenFormat);
+    writer.U8(static_cast<std::uint32_t>(screen.scene));
+    writer.U8(static_cast<std::uint32_t>(screen.volume));
+    writer.U16(static_cast<std::uint16_t>(screen.music));
+    writer.Float(screen.camera.x);
+    writer.Float(screen.camera.y);
+    writer.U16(static_cast<std::uint32_t>(info.itemCount));
+    for (std::size_t item = info.firstItem; item < info.firstItem + info.itemCount; ++item) {
+        const auto& scene = GeneratedScene::Items[item];
+        const Color start{scene.red, scene.green, scene.blue};
+        const bool colored = colors[item] != start;
+        writer.U8((visible[item] ? 1u : 0u) | (flipped[item] ? 2u : 0u) | (colored ? 4u : 0u));
+        if (!visible[item]) continue;
+        writer.I16(positions[item][0]);
+        writer.I16(positions[item][1]);
+        if (scene.sprite >= 0) writer.U16(SpriteFrame(item));
+        if (colored) {
+            for (const auto part : colors[item]) writer.U8(static_cast<std::uint32_t>(std::clamp(part, 0.0f, 1.0f) * 255.0f + 0.5f));
+        }
+    }
+    for (const auto& text : GeneratedVariables::BoundTexts) {
+        if (text.item < info.firstItem || text.item >= info.firstItem + info.itemCount) continue;
+        const auto shown = CurrentText(text.item);
+        writer.U8(static_cast<std::uint32_t>(std::min<std::size_t>(shown.size(), 255)));
+        for (std::size_t at = 0; at < std::min<std::size_t>(shown.size(), 255); ++at) writer.U8(static_cast<std::uint8_t>(shown[at]));
+    }
+
+    currentScene = screens[0].scene;
+    currentScreen = 0;
+    showLayer(0);
+    updateFollowers();
+    rebuildText();
+    return writer.full ? 0 : writer.size;
+}
+
+bool SceneState::ShowScreen(std::span<const std::uint8_t> bytes) {
+    ByteReader reader{bytes};
+    if (reader.U8() != ScreenMagic || reader.U8() != ScreenFormat) return false;
+    const auto scene = static_cast<std::size_t>(reader.U8());
+    const auto volume = static_cast<std::int32_t>(reader.U8());
+    const auto music = static_cast<std::int32_t>(static_cast<std::int16_t>(static_cast<std::uint16_t>(reader.U16())));
+    const auto cameraX = reader.Float();
+    const auto cameraY = reader.Float();
+    if (reader.short_ || scene >= GeneratedScene::SceneCount) return false;
+    const auto& info = GeneratedScene::Scenes[scene];
+    if (reader.U16() != info.itemCount) return false;
+
+    if (!mirroring) {
+        mirroring = true;
+        mirrorMusic = -2; // whatever plays here is not what the host plays
+        mirrorVolume = -1;
+        screens[0].paused = false;
+    }
+    if (currentScene != scene || screens[0].scene != scene) {
+        currentScene = scene;
+        screens[0].scene = scene;
+        for (std::size_t item = info.firstItem; item < info.firstItem + info.itemCount; ++item) resetParticlesOf(item);
+    }
+    screens[0].camera = {cameraX, cameraY};
+    if (volume != mirrorVolume) {
+        mirrorVolume = volume;
+        if (audioMixer) audioMixer->SetVolume(volume);
+    }
+    if (music != mirrorMusic) {
+        mirrorMusic = music;
+        if (audioMixer) {
+            if (music >= 0) audioMixer->PlayMusic(static_cast<std::size_t>(music));
+            else audioMixer->StopMusic();
+        }
+    }
+    for (std::size_t item = info.firstItem; item < info.firstItem + info.itemCount; ++item) {
+        const auto& start = GeneratedScene::Items[item];
+        const auto flags = reader.U8();
+        const bool shown = (flags & 1u) != 0;
+        if (visible[item] != shown) {
+            visible[item] = shown;
+            if (auto* emitter = emitterFor(item)) emitter->SetVisible(shown);
+        }
+        flipped[item] = (flags & 2u) != 0;
+        if (!shown) continue;
+        positions[item][0] = reader.I16();
+        positions[item][1] = reader.I16();
+        if constexpr (GeneratedScene::SpriteCount != 0) {
+            if (start.sprite >= 0) mirrorFrames[static_cast<std::size_t>(start.sprite)] = static_cast<std::uint16_t>(reader.U16());
+        }
+        Color color{start.red, start.green, start.blue};
+        if ((flags & 4u) != 0) {
+            for (auto& part : color) part = static_cast<float>(reader.U8()) / 255.0f;
+        }
+        if (colors[item] != color) {
+            colors[item] = color;
+            if (auto* emitter = emitterFor(item)) emitter->SetBaseColor({color[0], color[1], color[2]});
+        }
+    }
+    std::size_t binding = 0;
+    for (const auto& text : GeneratedVariables::BoundTexts) {
+        const auto index = binding++;
+        if (text.item < info.firstItem || text.item >= info.firstItem + info.itemCount) continue;
+        const auto length = static_cast<std::size_t>(reader.U8());
+        const auto kept = std::min<std::size_t>(length, text.quads);
+        for (std::size_t at = 0; at < length; ++at) {
+            const auto letter = static_cast<char>(reader.U8());
+            if (at < kept) boundCharacters[BoundOffsets[index] + at] = letter;
+        }
+        boundLengths[index] = kept;
+    }
+    return !reader.short_;
+}
+
+void SceneState::ApplyScreenEvent(ScreenEvent event) {
+    if (!mirroring) return;
+    if (event.kind == ScreenEvent::Kind::Sound) {
+        if (audioMixer) audioMixer->PlaySound(event.value);
+    } else if (event.kind == ScreenEvent::Kind::Burst) {
+        if (Valid(event.value)) {
+            if (auto* emitter = emitterFor(event.value)) emitter->Burst();
+        }
+    }
+}
+
+bool SceneState::Mirroring() const { return mirroring; }
+
+void SceneState::StopMirroring() {
+    if (!mirroring) return;
+    mirroring = false;
+    if (audioMixer) audioMixer->StopMusic();
+    enterScene(GeneratedScene::StartScene, 0);
+    rebuildText();
 }

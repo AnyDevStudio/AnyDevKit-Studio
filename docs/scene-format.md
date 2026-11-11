@@ -133,7 +133,7 @@ Rules:
 | In `text`  | Shows                                                       |
 | ---------- | ----------------------------------------------------------- |
 | `{score}`  | the value of the variable named `score`, as a whole number  |
-| `{hp@2}`   | player 2's value of the player variable `hp`; `{hp}` is player 1's |
+| `{hp@2}`   | player 2's value of the player variable `hp`; `{hp}` is player 1's. On a text that stays on the screen, the number is a place on the screen showing it, so online each friend's screen shows its own players |
 | `{n0:letter}` | the value as one letter: 1 to 26 as A to Z, 27 to 36 as 0 to 9, anything else as a space, so names can be spelled |
 | `{{`       | a literal `{`                                               |
 | `}}`       | a literal `}`                                               |

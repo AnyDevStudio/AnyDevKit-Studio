@@ -1,0 +1,753 @@
+#include "Online/Session.hpp"
+#include <algorithm>
+#include <bit>
+#include <cstring>
+
+namespace Lan {
+
+namespace {
+
+constexpr std::array<std::uint8_t, 4> Magic{'A', 'D', 'K', 'L'};
+constexpr std::size_t HeaderBytes = 6;
+constexpr std::size_t ReliableHeaderBytes = HeaderBytes + 9; // ack next, ack bits, count
+constexpr std::size_t EventRecordBytes = 6;                  // sequence, size
+constexpr int MaxReceivesPerUpdate = 512;
+// Room kept for joins, leaves and refusals when events fill the notices because the game is not polling.
+constexpr std::size_t ControlNoticeReserve = 8;
+constexpr std::uint32_t DefaultResendMs = 200;
+
+static_assert(ReliableHeaderBytes + EventRecordBytes + MaxEventBytes <= MaxDatagramBytes);
+static_assert(StateHeaderBytes == HeaderBytes + 8);
+static_assert(MaxStateFragments <= 32 && MaxStateBytes <= 0xffff);
+static_assert(EventWindow <= 33); // the ack bits cover the window after the next expected event
+
+enum Type : std::uint8_t {
+    Announce = 1,
+    Join = 2,
+    Accept = 3,
+    Refuse = 4,
+    Ping = 5,
+    Pong = 6,
+    Leave = 7,
+    State = 8,
+    Reliable = 9,
+};
+
+// Little-endian fields into a fixed buffer. Running out of room makes Ok() false instead of writing past it.
+class Writer {
+public:
+    Writer(std::span<std::uint8_t> out, std::uint8_t type) : out(out) {
+        Bytes(Magic);
+        U8(ProtocolVersion);
+        U8(type);
+    }
+    void U8(std::uint8_t value) { Uint(value, 1); }
+    void U16(std::uint16_t value) { Uint(value, 2); }
+    void U32(std::uint32_t value) { Uint(value, 4); }
+    void U64(std::uint64_t value) { Uint(value, 8); }
+    void Bytes(std::span<const std::uint8_t> bytes) {
+        if (!room(bytes.size()) || bytes.empty()) return;
+        std::memcpy(out.data() + at, bytes.data(), bytes.size());
+        at += bytes.size();
+    }
+    void Text(const Name& name) {
+        U8(name.Size);
+        Bytes({reinterpret_cast<const std::uint8_t*>(name.Bytes.data()), name.Size});
+    }
+    bool Ok() const { return ok; }
+    std::span<const std::uint8_t> Written() const { return {out.data(), at}; }
+
+private:
+    void Uint(std::uint64_t value, std::size_t size) {
+        if (!room(size)) return;
+        for (std::size_t index = 0; index < size; ++index) out[at++] = static_cast<std::uint8_t>(value >> (8 * index));
+    }
+    bool room(std::size_t size) {
+        if (ok && out.size() - at >= size) return true;
+        ok = false;
+        return false;
+    }
+    std::span<std::uint8_t> out;
+    std::size_t at = 0;
+    bool ok = true;
+};
+
+// The other way round: reading past the end makes Ok() false and yields zeros.
+class Reader {
+public:
+    explicit Reader(std::span<const std::uint8_t> in) : in(in) {}
+    std::uint8_t U8() { return static_cast<std::uint8_t>(Uint(1)); }
+    std::uint16_t U16() { return static_cast<std::uint16_t>(Uint(2)); }
+    std::uint32_t U32() { return static_cast<std::uint32_t>(Uint(4)); }
+    std::uint64_t U64() { return Uint(8); }
+    std::span<const std::uint8_t> Bytes(std::size_t size) {
+        if (!room(size)) return {};
+        const auto result = in.subspan(at, size);
+        at += size;
+        return result;
+    }
+    std::span<const std::uint8_t> Rest() { return Bytes(in.size() - at); }
+    bool Text(Name& name) {
+        const auto size = U8();
+        const auto bytes = Bytes(size);
+        if (!ok || size > MaxNameBytes) return false;
+        name.Set({reinterpret_cast<const char*>(bytes.data()), bytes.size()});
+        return true;
+    }
+    bool Ok() const { return ok; }
+
+private:
+    std::uint64_t Uint(std::size_t size) {
+        if (!room(size)) return 0;
+        std::uint64_t value = 0;
+        for (std::size_t index = 0; index < size; ++index) value |= static_cast<std::uint64_t>(in[at++]) << (8 * index);
+        return value;
+    }
+    bool room(std::size_t size) {
+        if (ok && in.size() - at >= size) return true;
+        ok = false;
+        return false;
+    }
+    std::span<const std::uint8_t> in;
+    std::size_t at = 0;
+    bool ok = true;
+};
+
+std::size_t fragmentCount(std::size_t total) { return total == 0 ? 1 : (total + StateFragmentBytes - 1) / StateFragmentBytes; }
+
+}
+
+std::size_t Utf8Prefix(std::string_view text, std::size_t maxBytes) {
+    if (text.size() <= maxBytes) return text.size();
+    std::size_t size = maxBytes;
+    while (size > 0 && (static_cast<unsigned char>(text[size]) & 0xc0) == 0x80) --size;
+    return size;
+}
+
+void Name::Set(std::string_view text) {
+    Size = static_cast<std::uint8_t>(Utf8Prefix(text, MaxNameBytes));
+    std::copy_n(text.data(), Size, Bytes.data());
+}
+
+Session::Session(Transport& transport) : transport(transport) {}
+
+bool Session::Host(const Config& settings) {
+    if (settings.MaxPlayers < 2 || settings.MaxPlayers > MaxPlayers) return false;
+    Leave();
+    config = settings;
+    localName.Set(settings.LocalName);
+    config.LocalName = {};
+    role = Role::Host;
+    localSlot = 0;
+    announced = false;
+    return true;
+}
+
+bool Session::Browse(const Config& settings) {
+    Leave();
+    config = settings;
+    localName.Set(settings.LocalName);
+    config.LocalName = {};
+    role = Role::Browsing;
+    return true;
+}
+
+bool Session::Join(std::uint32_t address, std::uint16_t port) {
+    if (role != Role::Browsing && role != Role::Joining) return false;
+    role = Role::Joining;
+    joinAddress = address;
+    joinPort = port;
+    // Different for every Join, so the host can tell a retried Join from a guest that started over.
+    joinConnection = static_cast<std::uint32_t>(nowMs) ^ (++joinCount * 0x9e3779b9u) ^ static_cast<std::uint32_t>(config.LocalId);
+    if (joinConnection == 0) joinConnection = 1;
+    sendJoin();
+    joinClockPending = true; // the timers start at the next Update, which brings the game's time
+    return true;
+}
+
+void Session::Leave() {
+    for (auto& peer : peers) {
+        if (peer.Connected) sendControl(peer, Type::Leave);
+    }
+    reset();
+    role = Role::Idle;
+    hostCount = 0;
+}
+
+void Session::reset() {
+    for (auto& peer : peers) peer.Connected = false;
+    localSlot = 0;
+}
+
+void Session::Update(std::uint64_t now) {
+    nowMs = std::max(nowMs, now);
+    if (role == Role::Idle) return;
+    for (int count = 0; count < MaxReceivesPerUpdate; ++count) {
+        const auto received = transport.Receive(receiveBuffer);
+        if (!received) break;
+        ++stats.DatagramsReceived;
+        if (received->Size > MaxDatagramBytes) {
+            ++stats.DatagramsDropped;
+            continue;
+        }
+        handle(received->Address, received->Port, {receiveBuffer.data(), received->Size});
+    }
+    if (role == Role::Host) {
+        if (!announced || since(lastAnnounceMs) >= AnnounceIntervalMs) announce();
+    } else {
+        expireHosts();
+    }
+    if (role == Role::Joining && joinClockPending) {
+        joinStartedMs = lastJoinMs = nowMs;
+        joinClockPending = false;
+    }
+    if (role == Role::Joining) {
+        if (since(joinStartedMs) >= JoinTimeoutMs) {
+            addNotice(Notice::Kind::JoinTimedOut, 0);
+            role = Role::Browsing;
+        } else if (since(lastJoinMs) >= JoinRetryMs) {
+            sendJoin();
+        }
+    }
+    for (auto& peer : peers) {
+        if (!peer.Connected) continue;
+        if (since(peer.LastHeardMs) >= PeerTimeoutMs) {
+            drop(peer);
+            continue;
+        }
+        deliverEvents(peer);
+        if (since(peer.LastPingMs) >= PingIntervalMs) sendPing(peer);
+        flushEvents(peer);
+    }
+}
+
+void Session::handle(std::uint32_t address, std::uint16_t port, std::span<const std::uint8_t> packet) {
+    if (packet.size() < HeaderBytes || !std::equal(Magic.begin(), Magic.end(), packet.begin())) {
+        ++stats.DatagramsDropped;
+        return;
+    }
+    const auto version = packet[4];
+    const auto type = packet[5];
+    const auto body = packet.subspan(HeaderBytes);
+    if (version != ProtocolVersion) {
+        // A Join from another protocol version still gets a clear answer; its body cannot be trusted.
+        if (role == Role::Host && type == Type::Join) sendRefuse(address, port, 0, 0, Refusal::Version);
+        ++stats.DatagramsDropped;
+        return;
+    }
+    switch (type) {
+        case Type::Announce: return handleAnnounce(address, port, body);
+        case Type::Join: return handleJoin(address, port, body);
+        case Type::Accept: return handleAccept(address, port, body);
+        case Type::Refuse: return handleRefuse(address, port, body);
+        default: break;
+    }
+    Remote* peer = findPeer(address, port);
+    if (!peer) {
+        ++stats.DatagramsDropped;
+        return;
+    }
+    peer->LastHeardMs = nowMs;
+    switch (type) {
+        case Type::Ping: {
+            Reader reader(body);
+            const auto time = reader.U32();
+            if (!reader.Ok()) break;
+            Writer writer(sendBuffer, Type::Pong);
+            writer.U32(time);
+            send(peer->Address, peer->Port, writer.Written());
+            return;
+        }
+        case Type::Pong: return handlePong(*peer, body);
+        case Type::Leave: return drop(*peer);
+        case Type::State: return handleState(*peer, body);
+        case Type::Reliable: return handleReliable(*peer, body);
+        default: break;
+    }
+    ++stats.DatagramsDropped;
+}
+
+void Session::handleAnnounce(std::uint32_t address, std::uint16_t port, std::span<const std::uint8_t> body) {
+    if (role != Role::Browsing && role != Role::Joining && role != Role::Guest) return;
+    Reader reader(body);
+    const auto gameId = reader.U32();
+    const auto build = reader.U32();
+    const auto players = reader.U8();
+    const auto maxPlayers = reader.U8();
+    Name name;
+    if (!reader.Text(name) || gameId != config.GameId || build != config.GameBuild) {
+        ++stats.DatagramsDropped;
+        return;
+    }
+    HostEntry* entry = nullptr;
+    for (std::size_t index = 0; index < hostCount; ++index) {
+        if (hosts[index].Address == address && hosts[index].Port == port) entry = &hosts[index];
+    }
+    if (!entry && hostCount < hosts.size()) entry = &hosts[hostCount++];
+    if (!entry) entry = &*std::min_element(hosts.begin(), hosts.end(), [](const HostEntry& a, const HostEntry& b) { return a.LastSeenMs < b.LastSeenMs; });
+    entry->Address = address;
+    entry->Port = port;
+    entry->HostName = name;
+    entry->Players = players;
+    entry->MaxPlayers = maxPlayers;
+    entry->LastSeenMs = nowMs;
+}
+
+void Session::expireHosts() {
+    std::size_t kept = 0;
+    for (std::size_t index = 0; index < hostCount; ++index) {
+        if (since(hosts[index].LastSeenMs) <= HostLifetimeMs) hosts[kept++] = hosts[index];
+    }
+    hostCount = kept;
+}
+
+void Session::handleJoin(std::uint32_t address, std::uint16_t port, std::span<const std::uint8_t> body) {
+    if (role != Role::Host) return;
+    Reader reader(body);
+    const auto gameId = reader.U32();
+    const auto build = reader.U32();
+    const auto guestId = reader.U64();
+    const auto connection = reader.U32();
+    Name name;
+    if (!reader.Text(name)) {
+        ++stats.DatagramsDropped;
+        return;
+    }
+    if (gameId != config.GameId || build != config.GameBuild) return sendRefuse(address, port, guestId, connection, Refusal::Version);
+    for (auto& peer : peers) {
+        if (!peer.Connected || peer.Id != guestId) continue;
+        if (peer.Connection == connection && peer.Address == address && peer.Port == port) return sendAccept(peer); // our Accept was lost
+        // The same guest started over: a fresh connection in the same slot.
+        const int slot = peer.Slot;
+        drop(peer);
+        connect(peer, slot, address, port, guestId, connection);
+        peer.PeerName = name;
+        addNotice(Notice::Kind::Joined, slot);
+        sendAccept(peer);
+        sendPing(peer);
+        return;
+    }
+    const int guests = std::min<int>(config.MaxPlayers - 1, MaxGuests);
+    for (int index = 0; index < guests; ++index) {
+        auto& peer = peers[static_cast<std::size_t>(index)];
+        if (peer.Connected) continue;
+        connect(peer, index + 1, address, port, guestId, connection);
+        peer.PeerName = name;
+        addNotice(Notice::Kind::Joined, peer.Slot);
+        sendAccept(peer);
+        sendPing(peer);
+        return;
+    }
+    sendRefuse(address, port, guestId, connection, Refusal::Full);
+}
+
+void Session::handleAccept(std::uint32_t address, std::uint16_t port, std::span<const std::uint8_t> body) {
+    if (role != Role::Joining || address != joinAddress || port != joinPort) return;
+    Reader reader(body);
+    const auto guestId = reader.U64();
+    const auto connection = reader.U32();
+    const auto slot = reader.U8();
+    reader.U8(); // the host's player limit
+    Name hostName;
+    if (!reader.Text(hostName) || guestId != config.LocalId || connection != joinConnection || slot < 1 || slot > MaxGuests) {
+        ++stats.DatagramsDropped;
+        return;
+    }
+    role = Role::Guest;
+    localSlot = slot;
+    auto& host = peers[0];
+    connect(host, 0, address, port, 0, connection);
+    host.PeerName = hostName;
+    addNotice(Notice::Kind::Joined, slot);
+    sendPing(host);
+}
+
+void Session::handleRefuse(std::uint32_t address, std::uint16_t port, std::span<const std::uint8_t> body) {
+    if (role != Role::Joining || address != joinAddress || port != joinPort) return;
+    Reader reader(body);
+    const auto guestId = reader.U64();
+    const auto connection = reader.U32();
+    const auto reason = reader.U8();
+    if (!reader.Ok() || (guestId != 0 && guestId != config.LocalId) || (connection != 0 && connection != joinConnection)) return;
+    if (auto* notice = addNotice(Notice::Kind::Refused, 0)) notice->Reason = reason == static_cast<std::uint8_t>(Refusal::Full) ? Refusal::Full : Refusal::Version;
+    role = Role::Browsing;
+}
+
+void Session::handlePong(Remote& peer, std::span<const std::uint8_t> body) {
+    Reader reader(body);
+    const auto sent = reader.U32();
+    if (!reader.Ok()) return;
+    const auto sample = static_cast<std::uint32_t>(nowMs) - sent;
+    if (sample > PeerTimeoutMs) return; // an answer to nothing we sent recently
+    peer.LastRttMs = sample;
+    peer.RttMs = peer.RttMs == 0 ? std::max<std::uint32_t>(sample, 1) : std::max<std::uint32_t>((peer.RttMs * 7 + sample) / 8, 1);
+}
+
+void Session::handleState(Remote& peer, std::span<const std::uint8_t> body) {
+    Reader reader(body);
+    const auto sequence = reader.U32();
+    const auto index = reader.U8();
+    const auto count = reader.U8();
+    const auto total = reader.U16();
+    const auto payload = reader.Rest();
+    if (!reader.Ok() || sequence == 0 || index >= count || total > MaxStateBytes || count != fragmentCount(total) ||
+        payload.size() != (index + 1u < count ? StateFragmentBytes : total - (count - 1u) * StateFragmentBytes)) {
+        ++stats.DatagramsDropped;
+        return;
+    }
+    if (sequence <= peer.LatestSequence) {
+        ++stats.StaleStateFragments;
+        return;
+    }
+    // Several states are put together at once, so neighbours whose fragments cross on the way can all
+    // finish. A new one takes an empty slot, else a dead one (no fragment for StateStaleMs: what it
+    // misses was lost), else the oldest, and a state older than every one in progress gets none. So a
+    // state can only be pushed out by a newer one, and the newest state sent always finishes unless
+    // one of its own fragments is lost.
+    Assembly* assembly = nullptr;
+    for (auto& candidate : peer.Assemblies) {
+        if (candidate.Sequence == sequence) assembly = &candidate;
+    }
+    if (!assembly) {
+        Assembly* empty = nullptr;
+        Assembly* dead = nullptr;
+        Assembly* oldest = nullptr;
+        for (auto& candidate : peer.Assemblies) {
+            if (candidate.Sequence == 0) {
+                empty = &candidate;
+                break;
+            }
+            if (since(candidate.LastFragmentMs) >= StateStaleMs && (!dead || candidate.Sequence < dead->Sequence)) dead = &candidate;
+            if (!oldest || candidate.Sequence < oldest->Sequence) oldest = &candidate;
+        }
+        if (!empty && !dead && sequence < oldest->Sequence) {
+            ++stats.StaleStateFragments;
+            return;
+        }
+        assembly = empty ? empty : dead ? dead : oldest;
+        assembly->Sequence = sequence;
+        assembly->Count = count;
+        assembly->Total = total;
+        assembly->Mask = 0;
+    }
+    if (assembly->Count != count || assembly->Total != total) {
+        ++stats.DatagramsDropped;
+        return;
+    }
+    if (!payload.empty()) std::memcpy(assembly->Data.data() + index * StateFragmentBytes, payload.data(), payload.size());
+    assembly->Mask |= 1u << index;
+    assembly->LastFragmentMs = nowMs;
+    if (std::popcount(assembly->Mask) != count) return;
+    std::copy_n(assembly->Data.data(), total, peer.Latest.data());
+    peer.LatestSequence = sequence;
+    peer.LatestSize = total;
+    peer.LatestFresh = true;
+    ++stats.StatesCompleted;
+    for (auto& other : peer.Assemblies) {
+        if (other.Sequence <= sequence) other.Sequence = 0;
+    }
+}
+
+void Session::handleReliable(Remote& peer, std::span<const std::uint8_t> body) {
+    Reader reader(body);
+    const auto ackNext = reader.U32();
+    const auto ackBits = reader.U32();
+    const auto count = reader.U8();
+    if (!reader.Ok()) {
+        ++stats.DatagramsDropped;
+        return;
+    }
+    // Acknowledgements for what we sent: everything before ackNext, and the bits for the ones after it.
+    if (ackNext <= peer.OutNext) {
+        for (std::uint32_t sequence = peer.OutBase; sequence < ackNext; ++sequence) peer.Out[sequence % EventWindow].Acked = true;
+        for (std::uint32_t bit = 0; bit < 32; ++bit) {
+            const auto sequence = ackNext + 1 + bit;
+            if ((ackBits >> bit & 1u) != 0 && sequence >= peer.OutBase && sequence < peer.OutNext) peer.Out[sequence % EventWindow].Acked = true;
+        }
+        while (peer.OutBase < peer.OutNext && peer.Out[peer.OutBase % EventWindow].Acked) ++peer.OutBase;
+    }
+    for (std::uint8_t record = 0; record < count; ++record) {
+        const auto sequence = reader.U32();
+        const auto size = reader.U16();
+        const auto data = reader.Bytes(size);
+        if (!reader.Ok() || size > MaxEventBytes) {
+            ++stats.DatagramsDropped;
+            break;
+        }
+        peer.AckDue = true;
+        if (sequence < peer.InNext || sequence - peer.InNext >= EventWindow) continue; // a duplicate, or too far ahead
+        auto& slot = peer.In[sequence % EventWindow];
+        if (slot.Present) continue;
+        slot.Present = true;
+        slot.Size = size;
+        if (size) std::memcpy(slot.Data.data(), data.data(), size);
+    }
+    deliverEvents(peer);
+}
+
+void Session::deliverEvents(Remote& peer) {
+    for (;;) {
+        auto& slot = peer.In[peer.InNext % EventWindow];
+        if (!slot.Present) return;
+        if (noticeCount >= NoticeCapacity - ControlNoticeReserve) return; // kept until the game polls
+        Notice* notice = addNotice(Notice::Kind::Event, peer.Slot);
+        notice->Size = slot.Size;
+        std::copy_n(slot.Data.data(), slot.Size, notice->Data.data());
+        slot.Present = false;
+        ++peer.InNext;
+    }
+}
+
+void Session::flushEvents(Remote& peer) {
+    const std::uint32_t resendMs = peer.RttMs == 0 ? DefaultResendMs : std::clamp<std::uint32_t>(peer.RttMs * 2 + 20, 60, 1000);
+    std::uint32_t ackBits = 0;
+    for (std::uint32_t bit = 0; bit + 1 < EventWindow; ++bit) {
+        if (peer.In[(peer.InNext + 1 + bit) % EventWindow].Present) ackBits |= 1u << bit;
+    }
+    std::uint32_t sequence = peer.OutBase;
+    bool sentAny = false;
+    while (sequence < peer.OutNext || (peer.AckDue && !sentAny)) {
+        Writer writer(sendBuffer, Type::Reliable);
+        writer.U32(peer.InNext);
+        writer.U32(ackBits);
+        writer.U8(0); // count, written below
+        std::uint8_t count = 0;
+        std::size_t used = ReliableHeaderBytes;
+        for (; sequence < peer.OutNext; ++sequence) {
+            auto& event = peer.Out[sequence % EventWindow];
+            if (event.Acked || (event.Sent && since(event.SentMs) < resendMs)) continue;
+            if (used + EventRecordBytes + event.Size > MaxDatagramBytes) break;
+            writer.U32(event.Sequence);
+            writer.U16(event.Size);
+            writer.Bytes({event.Data.data(), event.Size});
+            used += EventRecordBytes + event.Size;
+            if (event.Sent) ++stats.EventResends;
+            event.Sent = true;
+            event.SentMs = nowMs;
+            ++count;
+        }
+        if (count == 0 && (sentAny || !peer.AckDue)) break;
+        sendBuffer[ReliableHeaderBytes - 1] = count;
+        send(peer.Address, peer.Port, writer.Written());
+        sentAny = true;
+        peer.AckDue = false;
+    }
+}
+
+bool Session::enqueueEvent(Remote& peer, std::span<const std::uint8_t> bytes) {
+    auto& event = peer.Out[peer.OutNext % EventWindow];
+    event.Sequence = peer.OutNext++;
+    event.Size = static_cast<std::uint16_t>(bytes.size());
+    event.Sent = false;
+    event.Acked = false;
+    if (!bytes.empty()) std::memcpy(event.Data.data(), bytes.data(), bytes.size());
+    return true;
+}
+
+bool Session::SendEvent(std::span<const std::uint8_t> bytes) {
+    if (bytes.size() > MaxEventBytes || PeerCount() == 0) return false;
+    for (const auto& peer : peers) {
+        if (peer.Connected && peer.OutNext - peer.OutBase >= EventWindow) return false;
+    }
+    for (auto& peer : peers) {
+        if (peer.Connected) enqueueEvent(peer, bytes);
+    }
+    return true;
+}
+
+bool Session::SendEventTo(int slot, std::span<const std::uint8_t> bytes) {
+    Remote* peer = peerForSlot(slot);
+    if (!peer || bytes.size() > MaxEventBytes || peer->OutNext - peer->OutBase >= EventWindow) return false;
+    return enqueueEvent(*peer, bytes);
+}
+
+bool Session::sendStateFragments(const Remote& peer, std::uint32_t sequence, std::span<const std::uint8_t> bytes) {
+    const auto count = fragmentCount(bytes.size());
+    bool ok = true;
+    for (std::size_t index = 0; index < count; ++index) {
+        const auto offset = index * StateFragmentBytes;
+        Writer writer(sendBuffer, Type::State);
+        writer.U32(sequence);
+        writer.U8(static_cast<std::uint8_t>(index));
+        writer.U8(static_cast<std::uint8_t>(count));
+        writer.U16(static_cast<std::uint16_t>(bytes.size()));
+        writer.Bytes(bytes.subspan(offset, std::min(StateFragmentBytes, bytes.size() - offset)));
+        ok = send(peer.Address, peer.Port, writer.Written()) && ok;
+    }
+    return ok;
+}
+
+bool Session::SendState(std::span<const std::uint8_t> bytes) {
+    if (bytes.size() > MaxStateBytes || PeerCount() == 0) return false;
+    const auto sequence = ++stateSequence;
+    bool ok = true;
+    for (const auto& peer : peers) {
+        if (peer.Connected) ok = sendStateFragments(peer, sequence, bytes) && ok;
+    }
+    return ok;
+}
+
+bool Session::SendStateTo(int slot, std::span<const std::uint8_t> bytes) {
+    const Remote* peer = peerForSlot(slot);
+    if (!peer || bytes.size() > MaxStateBytes) return false;
+    return sendStateFragments(*peer, ++stateSequence, bytes);
+}
+
+std::optional<Session::StateView> Session::TakeState(int slot) {
+    Remote* peer = peerForSlot(slot);
+    if (!peer || !peer->LatestFresh) return std::nullopt;
+    peer->LatestFresh = false;
+    return StateView{peer->LatestSequence, {peer->Latest.data(), peer->LatestSize}};
+}
+
+const Notice* Session::PollNotice() {
+    if (noticeCount == 0) return nullptr;
+    const Notice* notice = &notices[noticeHead];
+    noticeHead = (noticeHead + 1) % NoticeCapacity;
+    --noticeCount;
+    return notice;
+}
+
+Notice* Session::addNotice(Notice::Kind type, int slot) {
+    if (noticeCount >= NoticeCapacity) {
+        ++stats.NoticesDropped;
+        return nullptr;
+    }
+    Notice& notice = notices[(noticeHead + noticeCount++) % NoticeCapacity];
+    notice.Type = type;
+    notice.Slot = slot;
+    notice.Reason = Refusal::Full;
+    notice.Size = 0;
+    return &notice;
+}
+
+int Session::PeerCount() const {
+    return static_cast<int>(std::count_if(peers.begin(), peers.end(), [](const Remote& peer) { return peer.Connected; }));
+}
+
+std::optional<PeerView> Session::Peer(int slot) const {
+    const Remote* peer = peerForSlot(slot);
+    if (!peer) return std::nullopt;
+    return PeerView{peer->Slot, peer->Address, peer->Port, peer->Id, peer->PeerName, peer->RttMs, peer->LastRttMs, peer->OutNext - peer->OutBase};
+}
+
+Session::Remote* Session::findPeer(std::uint32_t address, std::uint16_t port) {
+    for (auto& peer : peers) {
+        if (peer.Connected && peer.Address == address && peer.Port == port) return &peer;
+    }
+    return nullptr;
+}
+
+Session::Remote* Session::peerForSlot(int slot) {
+    return const_cast<Remote*>(static_cast<const Session*>(this)->peerForSlot(slot));
+}
+
+const Session::Remote* Session::peerForSlot(int slot) const {
+    const Remote* peer = nullptr;
+    if (role == Role::Host && slot >= 1 && slot <= MaxGuests) peer = &peers[static_cast<std::size_t>(slot - 1)];
+    if (role == Role::Guest && slot == 0) peer = &peers[0];
+    return peer && peer->Connected ? peer : nullptr;
+}
+
+// Starts a peer over without building a temporary: a Remote is tens of kilobytes.
+void Session::connect(Remote& peer, int slot, std::uint32_t address, std::uint16_t port, std::uint64_t id, std::uint32_t connection) {
+    peer.Connected = true;
+    peer.Slot = slot;
+    peer.Address = address;
+    peer.Port = port;
+    peer.Id = id;
+    peer.Connection = connection;
+    peer.PeerName = Name{};
+    peer.LastHeardMs = nowMs;
+    peer.LastPingMs = nowMs;
+    peer.RttMs = 0;
+    peer.LastRttMs = 0;
+    for (auto& event : peer.Out) event.Acked = true;
+    peer.OutBase = peer.OutNext = 1;
+    for (auto& event : peer.In) event.Present = false;
+    peer.InNext = 1;
+    peer.AckDue = false;
+    for (auto& assembly : peer.Assemblies) assembly.Sequence = 0;
+    peer.LatestSequence = 0;
+    peer.LatestSize = 0;
+    peer.LatestFresh = false;
+}
+
+void Session::drop(Remote& peer) {
+    if (!peer.Connected) return;
+    peer.Connected = false;
+    addNotice(Notice::Kind::Left, peer.Slot);
+    if (role == Role::Guest) {
+        role = Role::Browsing;
+        localSlot = 0;
+    }
+}
+
+void Session::announce() {
+    Writer writer(sendBuffer, Type::Announce);
+    writer.U32(config.GameId);
+    writer.U32(config.GameBuild);
+    writer.U8(static_cast<std::uint8_t>(1 + PeerCount()));
+    writer.U8(config.MaxPlayers);
+    writer.Text(localName);
+    if (transport.Broadcast(config.DiscoveryPort, writer.Written())) {
+        ++stats.DatagramsSent;
+    } else {
+        ++stats.SendFailures;
+    }
+    if (config.ExtraAnnounceAddress != 0) send(config.ExtraAnnounceAddress, config.DiscoveryPort, writer.Written());
+    announced = true;
+    lastAnnounceMs = nowMs;
+}
+
+void Session::sendJoin() {
+    Writer writer(sendBuffer, Type::Join);
+    writer.U32(config.GameId);
+    writer.U32(config.GameBuild);
+    writer.U64(config.LocalId);
+    writer.U32(joinConnection);
+    writer.Text(localName);
+    send(joinAddress, joinPort, writer.Written());
+    lastJoinMs = nowMs;
+}
+
+void Session::sendAccept(const Remote& peer) {
+    Writer writer(sendBuffer, Type::Accept);
+    writer.U64(peer.Id);
+    writer.U32(peer.Connection);
+    writer.U8(static_cast<std::uint8_t>(peer.Slot));
+    writer.U8(config.MaxPlayers);
+    writer.Text(localName);
+    send(peer.Address, peer.Port, writer.Written());
+}
+
+void Session::sendRefuse(std::uint32_t address, std::uint16_t port, std::uint64_t guestId, std::uint32_t connection, Refusal reason) {
+    Writer writer(sendBuffer, Type::Refuse);
+    writer.U64(guestId);
+    writer.U32(connection);
+    writer.U8(static_cast<std::uint8_t>(reason));
+    send(address, port, writer.Written());
+}
+
+void Session::sendPing(Remote& peer) {
+    Writer writer(sendBuffer, Type::Ping);
+    writer.U32(static_cast<std::uint32_t>(nowMs));
+    send(peer.Address, peer.Port, writer.Written());
+    peer.LastPingMs = nowMs;
+}
+
+void Session::sendControl(const Remote& peer, std::uint8_t type) {
+    Writer writer(sendBuffer, type);
+    send(peer.Address, peer.Port, writer.Written());
+}
+
+bool Session::send(std::uint32_t address, std::uint16_t port, std::span<const std::uint8_t> bytes) {
+    if (transport.SendTo(address, port, bytes)) {
+        ++stats.DatagramsSent;
+        return true;
+    }
+    ++stats.SendFailures;
+    return false;
+}
+
+}

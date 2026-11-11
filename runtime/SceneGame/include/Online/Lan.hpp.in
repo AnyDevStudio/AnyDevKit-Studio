@@ -1,0 +1,63 @@
+#ifndef Lan_Lan_hpp
+#define Lan_Lan_hpp
+#include <cstddef>
+#include <cstdint>
+#include <optional>
+#include <span>
+
+// One non-blocking UDP socket on the local network: bound to 0.0.0.0 on a port, allowed to broadcast,
+// and never waiting. Two files implement it and a build compiles exactly one: src/Online/LanPs5.cpp with the
+// console's sceNet functions (also what runs under AnyPS5), and tests/support/LanPosix.cpp in Studio's source
+// with BSD sockets, for tests on a computer. This header must stay free of platform headers.
+//
+// Addresses are IPv4 numbers in host order, so 192.168.0.1 is 0xC0A80001 (see Ipv4). Nothing here
+// allocates or throws; Receive copies into the caller's buffer.
+namespace Lan {
+
+constexpr std::uint32_t Ipv4(std::uint8_t a, std::uint8_t b, std::uint8_t c, std::uint8_t d) {
+    return (static_cast<std::uint32_t>(a) << 24) | (static_cast<std::uint32_t>(b) << 16) | (static_cast<std::uint32_t>(c) << 8) | d;
+}
+
+// 255.255.255.255. Under AnyPS5's Play Together this, and 198.19.255.255, reach every other player.
+inline constexpr std::uint32_t LimitedBroadcast = 0xFFFFFFFFu;
+inline constexpr std::uint32_t Loopback = Ipv4(127, 0, 0, 1);
+
+struct Received {
+    std::uint32_t Address = 0; // sender, host order
+    std::uint16_t Port = 0;    // sender's port
+    std::size_t Size = 0;      // bytes copied; a datagram larger than the buffer is cut to the buffer's size
+};
+
+class Endpoint final {
+public:
+    Endpoint() = default;
+    ~Endpoint();
+    Endpoint(const Endpoint&) = delete;
+    Endpoint& operator=(const Endpoint&) = delete;
+
+    // Binds 0.0.0.0:port (0 lets the system pick) with broadcast on and non-blocking mode. Closes a socket
+    // already open first. False when any step fails; LastError says why.
+    bool Open(std::uint16_t port);
+    void Close();
+    bool IsOpen() const { return handle >= 0; }
+    std::uint16_t LocalPort() const { return localPort; }
+
+    // False when the datagram was not handed to the network whole (no route, buffer full, closed).
+    bool SendTo(std::uint32_t address, std::uint16_t port, std::span<const std::uint8_t> bytes);
+    bool Broadcast(std::uint16_t port, std::span<const std::uint8_t> bytes) { return SendTo(LimitedBroadcast, port, bytes); }
+
+    // One waiting datagram, or nothing when none is waiting (or on an error, which LastError keeps).
+    std::optional<Received> Receive(std::span<std::uint8_t> buffer);
+
+    // The last failure's errno number (BSD numbering on both backends: 35 is EAGAIN on the console and
+    // on macOS), or 0. A Receive that only found nothing waiting does not change it.
+    int LastError() const { return lastError; }
+
+private:
+    int handle = -1;
+    std::uint16_t localPort = 0;
+    int lastError = 0;
+};
+
+}
+#endif

@@ -44,6 +44,18 @@ function(studio_add_sanitized_test name)
 endfunction()
 studio_add_sanitized_test(tst_audio_mixer tst_audio_mixer.cpp)
 studio_add_sanitized_test(tst_save_format tst_save_format.cpp)
+# Playing online: the session protocol on an in-memory network, and the socket it uses on this computer's own
+# UDP. The runtime's files include each other without ".in", so they are copied here under those names.
+if(NOT WIN32)
+    set(online_stage "${CMAKE_CURRENT_BINARY_DIR}/online_stage")
+    foreach(online_file include/Online/Lan.hpp include/Online/Session.hpp src/Online/Session.cpp)
+        configure_file("${PROJECT_SOURCE_DIR}/runtime/SceneGame/${online_file}.in" "${online_stage}/${online_file}" COPYONLY)
+    endforeach()
+    studio_add_sanitized_test(tst_lan_session tst_lan_session.cpp "${online_stage}/src/Online/Session.cpp")
+    target_include_directories(tst_lan_session PRIVATE "${online_stage}/include" "${CMAKE_CURRENT_SOURCE_DIR}")
+    studio_add_sanitized_test(tst_lan_endpoint tst_lan_endpoint.cpp support/LanPosix.cpp)
+    target_include_directories(tst_lan_endpoint PRIVATE "${online_stage}/include")
+endif()
 # The 2D platformer physics from the game runtime, always under sanitizers, with a long soak of random worlds.
 studio_add_sanitized_test(tst_physics2d tst_physics2d.cpp)
 if(NOT MSVC)

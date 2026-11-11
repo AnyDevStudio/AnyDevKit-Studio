@@ -88,6 +88,10 @@ enum class BlockType {
     Flee,                  // runs from the other item at `value` units per second
     AlertNearby,           // sets a copy variable to `value` for every live copy of the template within `radius` of @self
     SetLook,               // shows look number `formula` of a sprite sheet that holds several looks, counted from 0
+    // Playing online: friends on the same network, each on their own screen.
+    HostOnline,        // lets friends find and join this game
+    JoinOnline,        // looks for a friend's game and joins the first one found
+    StopOnline,        // stops hosting, looking or playing in a friend's game
 };
 
 // Item choices a block can make besides a scene item: the copy a block runs for, the current player's

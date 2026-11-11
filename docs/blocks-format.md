@@ -160,7 +160,10 @@ dividing by 0, a comparison gives 1 or 0, and no step can overflow. Besides the 
 `player` (the current player, 1 to 4), `players` (how many are in the scene), and these, in world units:
 `selfX` and `selfY` (the middle of `@self`), `playerX` and `playerY` (the middle of the current player's
 character), `dist` (between those two), `nearestDist` (from `@self` to the nearest player's character), and
-`selfVX` and `selfVY` (how fast `@self`, a moving body, is going). For example `hp - max(1, atk * 2 - def)` or
+`selfVX` and `selfVY` (how fast `@self`, a moving body, is going). `seat` is the current player's place on their
+own screen, 1 or 2, and `online` is 0 when not playing online, 1 while friends can join this game, 2 while looking
+for a friend's game and 3 while playing in one. `guest` is 1 when the current player is a friend on their own
+screen, and 0 for a player on this console. For example `hp - max(1, atk * 2 - def)` or
 `mstate = 0 and nearestDist < 400`.
 
 ### Players, templates and copies
@@ -185,11 +188,12 @@ there does nothing.
 | `name`    | letters, digits and `_`, 1 to 24 characters, no digit first | what blocks and text call it |
 | `initial` | whole number from -1000000000 to 1000000000                 | its value when the game starts |
 
-| `scope`   | `game` (left out), `player` or `copy`                       | how many values it has       |
+| `scope`   | `game` (left out), `screen`, `player` or `copy`             | how many values it has       |
 
-A game variable has one value. A player variable has one for each player, and blocks use the current player's.
+A game variable has one value. A screen variable has one for each screen, and blocks use the value of the current
+player's screen; on one console there is one screen, so it is a game variable there (see [Playing online](#playing-online)). A player variable has one for each player, and blocks use the current player's.
 A copy variable has one for each copy of a template, and is only used inside blocks for a copy. A name is unique
-regardless of case, and cannot be `player`, `players` or one of a formula's place names. At most 512 variables. A text item shows one by writing `{name}` in
+regardless of case, and cannot be `player`, `players`, `seat`, `online`, `guest` or one of a formula's place names. At most 512 variables. A text item shows one by writing `{name}` in
 its `text`, as described in [scene-format.md](scene-format.md). A program with no variables and text with
 no `{name}` behave exactly as before.
 
@@ -213,7 +217,8 @@ the same as a deleted variable.
 
 ### Rules
 
-- `schemaVersion` is `5`, the version Studio saves. Version `5` adds formulas, players, templates and copies,
+- `schemaVersion` is `6`, the version Studio saves. Version `6` adds the online blocks and screen variables; a file
+  saved with `5` loads as it was. Version `5` adds formulas, players, templates and copies,
   behaviors, `setLook`, and player and copy variables; a file saved with `4` loads as it was. A file saved with `2` still loads and simply has no
   sounds. A file saved with `1` still loads too: it has no `variables` list, and its `addScore`,
   `setScore` and `ifScore` blocks become `changeVariable`, `setVariable` and `ifVariable` on a variable named
@@ -246,9 +251,40 @@ Problems are reported with the block's title and id, for example:
 `The "Move item" block (block-2) uses the item "item-9", which is not in the scene. Choose an item
 that exists, or delete this block.`
 
+### Playing online
+
+Friends on the same network can play one game together, each on their own console and screen. One console hosts:
+the whole game runs there. A friend's console only sends its controller and shows the screen the host makes for it.
+
+| Type | Label | Does |
+| --- | --- | --- |
+| `hostOnline` | Let friends join online | announces this game on the local network, so a friend's console can find and join it |
+| `joinOnline` | Join a friend's game online | looks for a game on the local network and joins the first one found. From then on this console shows the friend's game |
+| `stopOnline` | Stop playing online | stops hosting (friends are sent back to their own game's first scene), looking, or playing in a friend's game |
+
+A friend who joins is a new player, on a screen of their own. Their screen starts in the scene the host's screen
+shows, and `whenPlayerJoins` runs for them there. Each screen has:
+
+- its own scene. `goToScene` moves the current player's screen (with everyone playing on it) and no one else.
+  A scene runs while any screen shows it. A screen entering an empty scene starts it afresh and runs its
+  `whenGameStarts` blocks; entering a scene someone is already in leaves the world as it is and runs
+  `whenPlayerJoins` for the arriving players instead. When a screen leaves a scene others stay in, its players'
+  characters are hidden there.
+- its own camera. A camera told to follow a player's character follows the characters of its own screen.
+- its own screen-fixed items: each screen shows, hides, moves and animates its own. Blocks inside a player event
+  or `forEachPlayer` change the current player's screen; other blocks change the screen of the first player in
+  the scene. So blocks that draw a menu or a HUD belong inside `forEachPlayer`, for the player with `seat = 1`.
+- its own value of every screen variable, and its own music and volume. A sound played inside a player event or
+  `forEachPlayer` is heard on that player's screen; any other sound on every screen in the scene.
+
+In the scene whose blocks run, `forEachPlayer`, the player events, `players` and `@nearestPlayer` count only the
+players whose screen shows that scene. On a screen-fixed text, `{name@2}` is the second player of the screen that
+shows it. `pauseGame` stops the world only while a single screen is playing. Saving keeps the host's screen
+variables and all four players' variables, so a friend's character is in the host's save.
+
 ## How a program runs
 
-Only the scene showing runs. Its `whenGameStarts` blocks run when it starts: at the beginning of the game for
+Only the scene showing runs (online, every scene that some screen shows: see [Playing online](#playing-online)). Its `whenGameStarts` blocks run when it starts: at the beginning of the game for
 the start scene, and whenever Go to scene or Restart scene enters it. Each frame the runtime first applies
 `controllable` movement, then steps the physics (see [Physics](scene-format.md#physics)), then runs every event
 except `whenGameStarts`, from the first event in the file to the last. Everything an earlier block changed is
@@ -410,6 +446,7 @@ namespace GeneratedVariables {
 inline constexpr std::size_t VariableCount = 2;
 inline constexpr std::array<std::int32_t, 2> InitialValues{{0, 3}}; // score, lives
 inline constexpr std::array<std::uint32_t, 2> NameHashes{{3526332565u, 1526042452u}}; // how a saved value finds its variable
+inline constexpr std::array<bool, 2> ScreenScoped{{false, false}}; // true for a screen variable, which has a value for each screen
 // Each player has their own value of these, and each copy of a template its own value of the copy variables.
 inline constexpr std::size_t PlayerSlots = 4;
 inline constexpr std::size_t PlayerVariableCount = 0;

@@ -45,6 +45,9 @@ const QHash<QString, const char*>& placeNames() {
         {"nearestDist", "world.NearestPlayerDistance()"},
         {"selfVX", "world.SelfVelocityX()"},
         {"selfVY", "world.SelfVelocityY()"},
+        {"seat", "world.Seat()"},
+        {"online", "world.OnlineState()"},
+        {"guest", "world.OnFriendScreen()"},
     };
     return table;
 }

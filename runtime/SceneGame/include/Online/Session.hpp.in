@@ -1,0 +1,296 @@
+#ifndef Lan_Session_hpp
+#define Lan_Session_hpp
+#include "Online/Lan.hpp"
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <optional>
+#include <span>
+#include <string_view>
+
+// A small host and guest protocol for one game on one local network, on top of a Transport: a
+// Lan::Endpoint on the console or a computer, a fake network in tests. Nothing here knows sockets or
+// clocks. The game calls Update once a frame with its own milliseconds; Update reads every waiting
+// datagram, answers it, and sends what the timers ask for. No call allocates or throws. Every buffer is
+// a member, so a Session is large (see sizeof) and belongs in static storage or a long-lived heap
+// object, never on a stack.
+//
+// One player hosts (slot 0) and up to three join (slots 1 to 3). The host broadcasts who it is every
+// second; a guest lists the hosts it heard in the last three seconds and joins one. Both sides ping
+// every 250 ms, and a peer not heard for 5 s is gone. Two channels carry the game's bytes:
+//   state   unreliable, newest wins: up to MaxStateBytes, cut into fragments that fit one datagram and
+//           put back together; anything older than the newest complete state is dropped.
+//   events  reliable and in order: each up to MaxEventBytes, at most EventWindow unacknowledged per
+//           peer; SendEvent says false when the window is full, and the game tries again later.
+// The wire format is in README.md.
+namespace Lan {
+
+inline constexpr std::uint8_t ProtocolVersion = 1;
+inline constexpr std::uint16_t DefaultDiscoveryPort = 47610;
+inline constexpr std::uint16_t DefaultGamePort = 47611;
+inline constexpr std::size_t MaxDatagramBytes = 1200;
+inline constexpr std::size_t MaxNameBytes = 16;
+inline constexpr int MaxGuests = 3;
+inline constexpr int MaxPlayers = MaxGuests + 1;
+inline constexpr std::size_t MaxEventBytes = 512;
+inline constexpr std::uint32_t EventWindow = 32;
+inline constexpr std::size_t StateHeaderBytes = 14;
+inline constexpr std::size_t StateFragmentBytes = MaxDatagramBytes - StateHeaderBytes;
+inline constexpr std::size_t MaxStateBytes = 16384;
+inline constexpr std::size_t MaxStateFragments = (MaxStateBytes + StateFragmentBytes - 1) / StateFragmentBytes;
+inline constexpr std::size_t StateAssemblies = 4; // states being put together at once, per peer
+inline constexpr std::size_t MaxHosts = 16;
+inline constexpr std::size_t NoticeCapacity = 64;
+
+inline constexpr std::uint64_t AnnounceIntervalMs = 1000;
+inline constexpr std::uint64_t HostLifetimeMs = 3000;
+inline constexpr std::uint64_t PingIntervalMs = 250;
+inline constexpr std::uint64_t PeerTimeoutMs = 5000;
+inline constexpr std::uint64_t JoinRetryMs = 250;
+inline constexpr std::uint64_t JoinTimeoutMs = 5000;
+inline constexpr std::uint64_t StateStaleMs = 100; // a partly received state with no fragment for this long is given up
+
+// Where datagrams come from and go. Lan::Endpoint does it for real (EndpointTransport); tests fake it.
+class Transport {
+public:
+    virtual ~Transport() = default;
+    virtual bool SendTo(std::uint32_t address, std::uint16_t port, std::span<const std::uint8_t> bytes) = 0;
+    virtual bool Broadcast(std::uint16_t port, std::span<const std::uint8_t> bytes) = 0;
+    virtual std::optional<Received> Receive(std::span<std::uint8_t> buffer) = 0;
+};
+
+class EndpointTransport final : public Transport {
+public:
+    explicit EndpointTransport(Endpoint& endpoint) : endpoint(endpoint) {}
+    bool SendTo(std::uint32_t address, std::uint16_t port, std::span<const std::uint8_t> bytes) override { return endpoint.SendTo(address, port, bytes); }
+    bool Broadcast(std::uint16_t port, std::span<const std::uint8_t> bytes) override { return endpoint.Broadcast(port, bytes); }
+    std::optional<Received> Receive(std::span<std::uint8_t> buffer) override { return endpoint.Receive(buffer); }
+
+private:
+    Endpoint& endpoint;
+};
+
+// The longest prefix of `text` of at most `maxBytes` bytes that does not end inside a UTF-8 sequence.
+std::size_t Utf8Prefix(std::string_view text, std::size_t maxBytes);
+
+// A player's or host's name: at most MaxNameBytes bytes of UTF-8, cut at a character boundary.
+struct Name {
+    std::array<char, MaxNameBytes> Bytes{};
+    std::uint8_t Size = 0;
+    void Set(std::string_view text);
+    std::string_view View() const { return {Bytes.data(), Size}; }
+};
+
+struct HostEntry {
+    std::uint32_t Address = 0;
+    std::uint16_t Port = 0; // the host's game port: where to Join
+    Name HostName;
+    std::uint8_t Players = 0;
+    std::uint8_t MaxPlayers = 0;
+    std::uint64_t LastSeenMs = 0;
+};
+
+enum class Refusal : std::uint8_t {
+    Full = 1,
+    Version = 2, // another game, another build of it, or another protocol version
+};
+
+struct Notice {
+    enum class Kind : std::uint8_t {
+        Joined,       // host: a guest took Slot; guest: the host accepted us into Slot
+        Left,         // host: the guest in Slot left or went silent; guest: the host (Slot 0) did
+        Refused,      // guest: the host said no, for Reason
+        JoinTimedOut, // guest: the host never answered
+        Event,        // a reliable event from the peer in Slot: Bytes()
+    };
+    Kind Type = Kind::Event;
+    int Slot = 0;
+    Refusal Reason = Refusal::Full;
+    std::uint16_t Size = 0;
+    std::array<std::uint8_t, MaxEventBytes> Data{};
+    std::span<const std::uint8_t> Bytes() const { return {Data.data(), Size}; }
+};
+
+struct Config {
+    std::uint32_t GameId = 0;    // e.g. a hash of the title's name; other games are ignored
+    std::uint32_t GameBuild = 0; // e.g. a hash of the build; other builds are refused
+    std::string_view LocalName;  // cut to MaxNameBytes
+    std::uint64_t LocalId = 0;   // a guest's identity, stable across its Join retries
+    std::uint8_t MaxPlayers = Lan::MaxPlayers; // host only: 2 to 4, the host included
+    std::uint16_t DiscoveryPort = DefaultDiscoveryPort;
+    // Host only: also announce to this address (0: none), for a guest on the same machine with no
+    // network that broadcasts reach. The limited broadcast is always sent.
+    std::uint32_t ExtraAnnounceAddress = 0;
+};
+
+struct PeerView {
+    int Slot = 0;
+    std::uint32_t Address = 0;
+    std::uint16_t Port = 0;
+    std::uint64_t Id = 0;
+    Name PeerName;
+    std::uint32_t RttMs = 0;     // smoothed round trip, 0 until the first answer to a ping
+    std::uint32_t LastRttMs = 0; // the latest sample
+    std::uint32_t PendingEvents = 0;
+};
+
+struct Stats {
+    std::uint64_t DatagramsSent = 0;
+    std::uint64_t SendFailures = 0;
+    std::uint64_t DatagramsReceived = 0;
+    std::uint64_t DatagramsDropped = 0;   // malformed, from a stranger, or not for our role
+    std::uint64_t EventResends = 0;
+    std::uint64_t StatesCompleted = 0;
+    std::uint64_t StaleStateFragments = 0;
+    std::uint64_t NoticesDropped = 0;     // the game did not poll notices for a long while
+};
+
+class Session final {
+public:
+    enum class Role : std::uint8_t { Idle, Host, Browsing, Joining, Guest };
+
+    // The transport must already be open: on the game port for a host, on the discovery port for a guest.
+    explicit Session(Transport& transport);
+    Session(const Session&) = delete;
+    Session& operator=(const Session&) = delete;
+
+    bool Host(const Config& config);   // false for a MaxPlayers outside 2 to 4
+    bool Browse(const Config& config); // start listening for hosts
+    bool Join(std::uint32_t address, std::uint16_t port); // while browsing; retried until an answer or 5 s
+    void Leave();                      // tells the peers, then Idle
+
+    // Call once a frame with a clock that never goes back.
+    void Update(std::uint64_t nowMs);
+
+    // To every connected peer (the host's guests, or a guest's host), or to one slot. False, and nothing
+    // sent, when a peer's window is full, the bytes are too long, or no such peer is connected.
+    bool SendEvent(std::span<const std::uint8_t> bytes);
+    bool SendEventTo(int slot, std::span<const std::uint8_t> bytes);
+    bool SendState(std::span<const std::uint8_t> bytes);
+    bool SendStateTo(int slot, std::span<const std::uint8_t> bytes);
+
+    // The next notice, or null. It stays valid until the next PollNotice or Update.
+    const Notice* PollNotice();
+
+    // The newest complete state from `slot` if it arrived after the last take. Its bytes stay valid until
+    // the next Update.
+    struct StateView {
+        std::uint32_t Sequence = 0;
+        std::span<const std::uint8_t> Bytes;
+    };
+    std::optional<StateView> TakeState(int slot);
+
+    std::span<const HostEntry> Hosts() const { return {hosts.data(), hostCount}; }
+    Role CurrentRole() const { return role; }
+    int LocalSlot() const { return localSlot; }
+    int PeerCount() const;
+    std::optional<PeerView> Peer(int slot) const;
+    const Stats& Statistics() const { return stats; }
+
+private:
+    struct OutEvent {
+        std::uint32_t Sequence = 0;
+        std::uint16_t Size = 0;
+        bool Sent = false;
+        bool Acked = true;
+        std::uint64_t SentMs = 0;
+        std::array<std::uint8_t, MaxEventBytes> Data{};
+    };
+    struct InEvent {
+        bool Present = false;
+        std::uint16_t Size = 0;
+        std::array<std::uint8_t, MaxEventBytes> Data{};
+    };
+    struct Assembly {
+        std::uint32_t Sequence = 0; // 0: empty
+        std::uint8_t Count = 0;
+        std::uint16_t Total = 0;
+        std::uint32_t Mask = 0;
+        std::uint64_t LastFragmentMs = 0;
+        std::array<std::uint8_t, MaxStateBytes> Data{};
+    };
+    struct Remote {
+        bool Connected = false;
+        int Slot = 0;
+        std::uint32_t Address = 0;
+        std::uint16_t Port = 0;
+        std::uint64_t Id = 0;
+        std::uint32_t Connection = 0;
+        Name PeerName;
+        std::uint64_t LastHeardMs = 0;
+        std::uint64_t LastPingMs = 0;
+        std::uint32_t RttMs = 0;
+        std::uint32_t LastRttMs = 0;
+        std::array<OutEvent, EventWindow> Out{};
+        std::uint32_t OutBase = 1;
+        std::uint32_t OutNext = 1;
+        std::array<InEvent, EventWindow> In{};
+        std::uint32_t InNext = 1;
+        bool AckDue = false;
+        std::array<Assembly, StateAssemblies> Assemblies{};
+        std::uint32_t LatestSequence = 0;
+        std::uint16_t LatestSize = 0;
+        bool LatestFresh = false;
+        std::array<std::uint8_t, MaxStateBytes> Latest{};
+    };
+
+    void handle(std::uint32_t address, std::uint16_t port, std::span<const std::uint8_t> packet);
+    void handleAnnounce(std::uint32_t address, std::uint16_t port, std::span<const std::uint8_t> body);
+    void handleJoin(std::uint32_t address, std::uint16_t port, std::span<const std::uint8_t> body);
+    void handleAccept(std::uint32_t address, std::uint16_t port, std::span<const std::uint8_t> body);
+    void handleRefuse(std::uint32_t address, std::uint16_t port, std::span<const std::uint8_t> body);
+    void handleState(Remote& peer, std::span<const std::uint8_t> body);
+    void handleReliable(Remote& peer, std::span<const std::uint8_t> body);
+    void handlePong(Remote& peer, std::span<const std::uint8_t> body);
+
+    void announce();
+    void sendJoin();
+    void sendAccept(const Remote& peer);
+    void sendRefuse(std::uint32_t address, std::uint16_t port, std::uint64_t guestId, std::uint32_t connection, Refusal reason);
+    void sendPing(Remote& peer);
+    void sendControl(const Remote& peer, std::uint8_t type);
+    void flushEvents(Remote& peer);
+    void deliverEvents(Remote& peer);
+    bool sendStateFragments(const Remote& peer, std::uint32_t sequence, std::span<const std::uint8_t> bytes);
+    bool enqueueEvent(Remote& peer, std::span<const std::uint8_t> bytes);
+    bool send(std::uint32_t address, std::uint16_t port, std::span<const std::uint8_t> bytes);
+
+    Remote* findPeer(std::uint32_t address, std::uint16_t port);
+    Remote* peerForSlot(int slot);
+    const Remote* peerForSlot(int slot) const;
+    void connect(Remote& peer, int slot, std::uint32_t address, std::uint16_t port, std::uint64_t id, std::uint32_t connection);
+    void drop(Remote& peer);
+    void reset();
+    Notice* addNotice(Notice::Kind type, int slot);
+    void expireHosts();
+    std::uint64_t since(std::uint64_t then) const { return nowMs >= then ? nowMs - then : 0; }
+
+    Transport& transport;
+    Role role = Role::Idle;
+    Config config;
+    Name localName;
+    int localSlot = 0;
+    std::uint64_t nowMs = 0;
+    std::uint64_t lastAnnounceMs = 0;
+    bool announced = false;
+    std::uint32_t joinAddress = 0;
+    std::uint16_t joinPort = 0;
+    std::uint32_t joinConnection = 0;
+    std::uint32_t joinCount = 0;
+    std::uint64_t joinStartedMs = 0;
+    std::uint64_t lastJoinMs = 0;
+    bool joinClockPending = false; // Join was called before this frame's Update knew the time
+    std::uint32_t stateSequence = 0;
+    std::array<Remote, MaxGuests> peers{};
+    std::array<HostEntry, MaxHosts> hosts{};
+    std::size_t hostCount = 0;
+    std::array<Notice, NoticeCapacity> notices{};
+    std::size_t noticeHead = 0;
+    std::size_t noticeCount = 0;
+    std::array<std::uint8_t, MaxDatagramBytes + 1> receiveBuffer{};
+    std::array<std::uint8_t, MaxDatagramBytes> sendBuffer{};
+    Stats stats;
+};
+
+}
+#endif

@@ -152,7 +152,7 @@ QString blockCategory(const BlockInfo& info) {
     if (info.isEvent) return "events";
     if (info.type == BlockType::SetVelocity || info.type == BlockType::JumpItem || info.type == BlockType::IfOnGround || info.type == BlockType::ChaseItem) return "physics";
     if (info.type == BlockType::IfItemDistance) return "movement";
-    if (info.usesScene || info.type == BlockType::RestartScene || info.type == BlockType::PauseGame || info.type == BlockType::ResumeGame) return "scenes";
+    if (info.usesScene || info.type == BlockType::RestartScene || info.type == BlockType::PauseGame || info.type == BlockType::ResumeGame || info.type == BlockType::HostOnline || info.type == BlockType::JoinOnline || info.type == BlockType::StopOnline) return "scenes";
     if (info.usesPosition) return "movement";
     if (info.usesVariable) return "variables";
     if (info.usesSound || info.type == BlockType::StopMusic || info.type == BlockType::SetVolume) return "sound";

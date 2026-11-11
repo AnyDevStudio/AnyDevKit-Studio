@@ -1,0 +1,60 @@
+#ifndef Online_OnlinePlay_hpp
+#define Online_OnlinePlay_hpp
+#include "Online/Session.hpp"
+#include "Scene/SceneState.hpp"
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+
+// Plays the game with friends on the local network, for the blocks "Let friends join online", "Join a friend's
+// game online" and "Stop playing online".
+//
+// The console that hosts runs the whole game. Each friend who joins gets a screen there (SceneState::OpenScreen);
+// every frame the host reads the friend's controller from the network and sends back what their screen shows.
+// The friend's console runs nothing of the game: it sends its controller and draws what arrives.
+//
+// Nothing is made until a block first asks, so a game that never goes online pays nothing.
+class OnlinePlay final {
+public:
+    struct Settings {
+        std::uint32_t gameId = 0;   // which game this is; others on the network are ignored
+        std::uint64_t localId = 0;  // this console's identity while it plays as a friend
+        std::uint16_t gamePort = Lan::DefaultGamePort;
+        std::uint16_t discoveryPort = Lan::DefaultDiscoveryPort;
+        std::uint32_t extraAnnounceAddress = 0; // also announce here, for tests on one computer
+    };
+    explicit OnlinePlay(const Settings& settings);
+    ~OnlinePlay();
+    OnlinePlay(const OnlinePlay&) = delete;
+    OnlinePlay& operator=(const OnlinePlay&) = delete;
+
+    // Before the scene's Update: does what the blocks asked, receives, gives a host its friends' controllers and
+    // shows a friend the screen the host sent. `pad` is this console's first controller.
+    void BeforeFrame(SceneState& scene, std::uint64_t nowMs, const SceneState::PlayerInput& pad);
+    // After the scene's Update: a host sends every friend their screen, with its sounds.
+    void AfterFrame(SceneState& scene);
+
+    // A number that differs between games whose scenes differ, so a friend's console never draws a screen
+    // meant for another build.
+    static std::uint32_t BuildNumber();
+
+private:
+    struct Net;
+    void handleRequest(SceneState& scene);
+    void stop(SceneState& scene);
+    void receiveAsHost(SceneState& scene);
+    void receiveAsFriend(SceneState& scene, const SceneState::PlayerInput& pad);
+    Lan::Config config(std::string_view name) const;
+    Settings settings;
+    std::unique_ptr<Net> net;
+    std::array<std::size_t, Lan::MaxPlayers> slotScreen{}; // host: the screen of the friend in each slot
+    std::array<std::uint32_t, Lan::MaxPlayers> seenPress{}; // host: the last press of each friend already used
+    std::array<bool, Lan::MaxPlayers> heardFrom{};
+    // friend: the buttons that went down lately, newest first, so one lost packet does not lose a tap
+    static constexpr std::size_t PressHistory = 8;
+    std::array<std::uint32_t, PressHistory> presses{};
+    std::uint32_t pressCount = 0;
+    std::uint32_t lastButtons = 0;
+};
+#endif

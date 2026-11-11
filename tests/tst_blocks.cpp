@@ -332,6 +332,7 @@ namespace GeneratedVariables {
 inline constexpr std::size_t VariableCount = 0;
 inline constexpr std::array<std::int32_t, 0> InitialValues{};
 inline constexpr std::array<std::uint32_t, 0> NameHashes{};
+inline constexpr std::array<bool, 0> ScreenScoped{};
 // Each player has their own value of these, and each copy of a template its own value of the copy variables.
 inline constexpr std::size_t PlayerSlots = 4;
 inline constexpr std::size_t PlayerVariableCount = 0;
@@ -381,6 +382,7 @@ namespace GeneratedVariables {
 inline constexpr std::size_t VariableCount = 2;
 inline constexpr std::array<std::int32_t, 2> InitialValues{{0, 3}}; // score, lives
 inline constexpr std::array<std::uint32_t, 2> NameHashes{{3526332565u, 1526042452u}}; // how a saved value finds its variable
+inline constexpr std::array<bool, 2> ScreenScoped{{false, false}}; // true for a screen variable, which has a value for each screen
 // Each player has their own value of these, and each copy of a template its own value of the copy variables.
 inline constexpr std::size_t PlayerSlots = 4;
 inline constexpr std::size_t PlayerVariableCount = 0;
@@ -596,7 +598,7 @@ class TstBlocks : public QObject {
 
 private slots:
     void catalogDescribesEveryBlockOnce() {
-        QCOMPARE(blockCatalog().size(), 54);
+        QCOMPARE(blockCatalog().size(), 57);
         QSet<QString> names;
         QSet<QString> titles;
         for (const auto& info : blockCatalog()) {
@@ -606,8 +608,8 @@ private slots:
             titles.insert(info.title);
             QCOMPARE(blockInfo(info.type).jsonName, info.jsonName);
         }
-        QCOMPARE(names.size(), 54);
-        QCOMPARE(titles.size(), 54);
+        QCOMPARE(names.size(), 57);
+        QCOMPARE(titles.size(), 57);
         QCOMPARE(buttonCatalog().size(), 26);
         QCOMPARE(comparisonCatalog().size(), 6);
         QVERIFY(blockInfo(BlockType::EveryFrame).isEvent);
@@ -670,7 +672,7 @@ private slots:
         QString error;
         QVERIFY2(saveLogic(path, everyBlockProgram(), error), qPrintable(error));
         const auto root = QJsonDocument::fromJson(readBytes(path)).object();
-        QCOMPARE(root.value("schemaVersion").toInt(), 5);
+        QCOMPARE(root.value("schemaVersion").toInt(), 6);
         const auto savedVariables = root.value("variables").toArray();
         QCOMPARE(savedVariables.size(), qsizetype(1));
         QCOMPARE(savedVariables.at(0).toObject().value("name").toString(), QString("score"));

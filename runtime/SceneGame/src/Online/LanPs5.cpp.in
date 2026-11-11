@@ -1,0 +1,134 @@
+#include "Online/Lan.hpp"
+#include "prx/libSceNet/libSceNet.hpp"
+#include "prx/libSceSysmodule/libSceSysmodule.hpp"
+#include <cstring>
+
+// The console's backend, on libSceNet. The SDK's Net.hpp declares the functions but none of the
+// constants or the address layout, so they are spelled out here. Every value below is the one AnyPS5's
+// libSceNet accepts (core/libs/prx/libSceNet/Export.cpp); they are the FreeBSD values the console uses.
+namespace {
+
+constexpr std::uint32_t NetModule = 0x8000001c; // AnyPS5 libSceSysmodule/ModuleTable.hpp: "libSceNet"
+constexpr int NetAfInet = 2;
+constexpr int NetSockDgram = 2;
+constexpr int NetSolSocket = 0xffff;
+constexpr int NetSoBroadcast = 0x20;
+constexpr int NetSoNbio = 0x1200; // non-blocking I/O, an int: 1 on, 0 off
+constexpr int NetEagain = 35;     // what sceNetErrnoLoc holds when a non-blocking receive found nothing
+
+// The console's sockaddr_in: a length byte and a one-byte family before the port, as on BSD, and a
+// virtual port where BSD has the start of sin_zero (only P2P sockets read it). Port and address are in
+// network order.
+struct NetSockaddrIn {
+    std::uint8_t length;
+    std::uint8_t family;
+    std::uint8_t port[2];
+    std::uint8_t address[4];
+    std::uint8_t virtualPort[2];
+    std::uint8_t zero[6];
+};
+static_assert(sizeof(NetSockaddrIn) == 16);
+
+NetSockaddrIn socketAddress(std::uint32_t address, std::uint16_t port) {
+    NetSockaddrIn result{};
+    result.length = sizeof(result);
+    result.family = NetAfInet;
+    result.port[0] = static_cast<std::uint8_t>(port >> 8);
+    result.port[1] = static_cast<std::uint8_t>(port);
+    for (int index = 0; index < 4; ++index) result.address[index] = static_cast<std::uint8_t>(address >> (24 - 8 * index));
+    return result;
+}
+
+std::uint16_t portOf(const NetSockaddrIn& address) {
+    return static_cast<std::uint16_t>((address.port[0] << 8) | address.port[1]);
+}
+
+std::uint32_t addressOf(const NetSockaddrIn& address) {
+    std::uint32_t result = 0;
+    for (const auto byte : address.address) result = (result << 8) | byte;
+    return result;
+}
+
+int netErrno() { return *sceNetErrnoLoc(); }
+
+// Loads and starts the network library once. Its result is not checked: a second sceNetInit on a
+// console that already started it may fail, and the socket calls that follow report a network that is
+// really down. Not thread-safe: open endpoints from one thread (the game's), as the runtime does.
+int netState = 0; // 0 not tried yet, 1 ready, -1 the module would not load
+
+bool netReady() {
+    if (netState == 0) {
+        netState = sceSysmoduleLoadModuleInternal(NetModule) < 0 ? -1 : 1;
+        if (netState > 0) sceNetInit_nid_postfix();
+    }
+    return netState > 0;
+}
+
+}
+
+namespace Lan {
+
+Endpoint::~Endpoint() { Close(); }
+
+bool Endpoint::Open(std::uint16_t port) {
+    Close();
+    if (!netReady()) {
+        lastError = -1;
+        return false;
+    }
+    const int socket = sceNetSocket("AdkLan", NetAfInet, NetSockDgram, 0);
+    if (socket < 0) {
+        lastError = netErrno();
+        return false;
+    }
+    const int enabled = 1;
+    auto local = socketAddress(0, port);
+    std::uint32_t length = sizeof(local);
+    if (sceNetSetsockopt(socket, NetSolSocket, NetSoBroadcast, &enabled, sizeof(enabled)) < 0 ||
+        sceNetSetsockopt(socket, NetSolSocket, NetSoNbio, &enabled, sizeof(enabled)) < 0 ||
+        sceNetBind_nid_postfix(socket, &local, sizeof(local)) < 0 ||
+        sceNetGetsockname(socket, &local, &length) < 0) {
+        lastError = netErrno();
+        sceNetSocketClose(socket);
+        return false;
+    }
+    handle = socket;
+    localPort = portOf(local);
+    lastError = 0;
+    return true;
+}
+
+void Endpoint::Close() {
+    if (handle < 0) return;
+    sceNetSocketClose(handle);
+    handle = -1;
+    localPort = 0;
+}
+
+bool Endpoint::SendTo(std::uint32_t address, std::uint16_t port, std::span<const std::uint8_t> bytes) {
+    if (handle < 0) return false;
+    const auto target = socketAddress(address, port);
+    const auto sent = sceNetSendto(handle, bytes.data(), bytes.size(), 0, &target, sizeof(target));
+    if (sent < 0) {
+        lastError = netErrno();
+        return false;
+    }
+    return static_cast<std::size_t>(sent) == bytes.size();
+}
+
+std::optional<Received> Endpoint::Receive(std::span<std::uint8_t> buffer) {
+    if (handle < 0) return std::nullopt;
+    NetSockaddrIn from{};
+    std::uint32_t length = sizeof(from);
+    const auto size = sceNetRecvfrom(handle, buffer.data(), buffer.size(), 0, &from, &length);
+    if (size < 0) {
+        // The call returns SCE_NET_ERROR_EAGAIN (0x80410123) and leaves 35 in sceNetErrnoLoc.
+        const int error = netErrno();
+        if (error != NetEagain) lastError = error;
+        return std::nullopt;
+    }
+    if (length < 8 || from.family != NetAfInet) return std::nullopt;
+    return Received{addressOf(from), portOf(from), static_cast<std::size_t>(size)};
+}
+
+}

@@ -251,7 +251,7 @@ private slots:
         QString error;
         QVERIFY2(saveLogic(path, twoScenePlatformer(), error), qPrintable(error));
         const auto root = QJsonDocument::fromJson(readBytes(path)).object();
-        QCOMPARE(root.value("schemaVersion").toInt(), 5);
+        QCOMPARE(root.value("schemaVersion").toInt(), 6);
         QVERIFY(!root.contains("events"));
         const auto scenes = root.value("scenes").toArray();
         QCOMPARE(scenes.size(), 2);

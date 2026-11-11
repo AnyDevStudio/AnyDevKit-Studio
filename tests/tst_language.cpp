@@ -146,7 +146,7 @@ struct HarnessResult {
 
 // Compiles the real runtime SceneState with the generated headers, under the game's warning flags and
 // sanitizers, and runs `body` inside main with a `scene` object made for it.
-HarnessResult runHarness(const SceneSet& set, const LogicProgram& program, const QByteArray& body, const QList<SceneImageData>& images = {}) {
+HarnessResult runHarness(const SceneSet& set, const LogicProgram& program, const QByteArray& body, const QList<SceneImageData>& images = {}, bool online = false) {
     HarnessResult result;
     const auto sceneHeader = generateSceneHeader(set, images);
     const auto logicHeader = generateLogicHeader(program, set);
@@ -166,8 +166,9 @@ HarnessResult runHarness(const SceneSet& set, const LogicProgram& program, const
     writeBytes(root + "/src/GeneratedLogic.hpp", logicHeader);
     writeBytes(root + "/src/GeneratedVariables.hpp", variablesHeader);
     writeBytes(root + "/src/GeneratedSounds.hpp", generateSoundsHeader(static_cast<int>(program.sounds.size())));
-    QByteArray main = "#include \"Scene/SceneState.hpp\"\n#include \"Input/Buttons.hpp\"\n#include <cstdint>\n#include <cstdio>\n#include <memory>\n"
-                      "using Input = SceneState::PlayerInput;\n"
+    QByteArray main = "#include \"Scene/SceneState.hpp\"\n#include \"Input/Buttons.hpp\"\n#include <cstdint>\n#include <cstdio>\n#include <memory>\n";
+    if (online) main += "#include \"Online/OnlinePlay.hpp\"\n#include <string>\n";
+    main +=           "using Input = SceneState::PlayerInput;\n"
                       "[[maybe_unused]] static Input press(std::uint64_t button) { return Input{{0.0f, 0.0f}, static_cast<std::uint32_t>(button)}; }\n"
                       "[[maybe_unused]] static void step(SceneState& scene, int frames, Input first = {}, Input second = {}) { for (int i = 0; i < frames; ++i) scene.Update(1.0 / 60.0, {first, second}); }\n"
                       "int main() {\n    auto owned = std::make_unique<SceneState>(1920, 1080);\n    auto& scene = *owned;\n";
@@ -176,6 +177,14 @@ HarnessResult runHarness(const SceneSet& set, const LogicProgram& program, const
     writeBytes(root + "/src/main.cpp", main);
 
     QStringList arguments{"-std=c++20", "-Wall", "-Wextra", "-Wpedantic", "-Werror", "-g", "-fsanitize=address,undefined", "-fno-sanitize-recover=all", "-I" + root + "/include", "-I" + root + "/src", root + "/src/main.cpp", root + "/src/Scene/SceneState.cpp", "-o", root + "/harness"};
+    if (online) {
+        // Playing online, with this computer's sockets in place of the console's.
+        for (const auto& relative : {QString("include/Online/Lan.hpp"), QString("include/Online/Session.hpp"), QString("include/Online/OnlinePlay.hpp"), QString("src/Online/Session.cpp"), QString("src/Online/OnlinePlay.cpp")}) {
+            writeBytes(root + '/' + relative, readBytes(runtime + '/' + relative + ".in"));
+            if (relative.endsWith(".cpp")) arguments << root + '/' + relative;
+        }
+        arguments << QString(STUDIO_TEST_SOURCE_DIR) + "/tests/support/LanPosix.cpp";
+    }
     const QString sysroot(STUDIO_TEST_SYSROOT);
     if (!sysroot.isEmpty()) arguments << "-isysroot" << sysroot;
     QProcess compiler;
@@ -262,7 +271,7 @@ private slots:
              pressed("p1", ControllerButton::Cross, {formulaBlock("f1", "hp", "hp - 1")})});
         QString error;
         QVERIFY2(saveLogic(path, program, error), qPrintable(error));
-        QVERIFY(readBytes(path).contains("\"schemaVersion\": 5"));
+        QVERIFY(readBytes(path).contains("\"schemaVersion\": 6"));
         const auto loaded = loadLogic(path);
         QVERIFY2(loaded.program, qPrintable(loaded.error));
         QCOMPARE(loaded.program->variables.at(1).scope, VariableScope::Player);
@@ -517,6 +526,170 @@ private slots:
         QVERIFY2(result.built, qPrintable(result.output));
         // The pup is 64 wide at x 400, so its middle is 432; the hero's middle is at 132, 332; the pup's at 432, 332.
         QCOMPARE(result.lines.at(0), QString("432 300 300 132 9 A0 !"));
+    }
+
+    void screenVariablesAndOnlineBlocksRoundTrip() {
+        QTemporaryDir directory;
+        const auto path = directory.path() + "/logic.json";
+        const auto set = oneScene({hero("hero1", 1, 100, 100)});
+        const auto program = programOf({{"mode", 0, VariableScope::Screen}, {"gold", 5}},
+            {pressed("p1", ControllerButton::Cross, {block("h", BlockType::HostOnline), block("j", BlockType::JoinOnline), block("s", BlockType::StopOnline), formulaBlock("f1", "mode", "seat + online")})});
+        QVERIFY2(problemsOf(program, set).isEmpty(), qPrintable(problemsOf(program, set).join(" | ")));
+        QString error;
+        QVERIFY2(saveLogic(path, program, error), qPrintable(error));
+        const auto saved = readBytes(path);
+        QVERIFY2(saved.contains("\"scope\": \"screen\""), saved.constData());
+        for (const auto* name : {"hostOnline", "joinOnline", "stopOnline"}) QVERIFY2(saved.contains(name), name);
+        const auto loaded = loadLogic(path);
+        QVERIFY2(loaded.program, qPrintable(loaded.error));
+        QCOMPARE(loaded.program->variables[0].scope, VariableScope::Screen);
+        QCOMPARE(loaded.program->events[0].children[1].type, BlockType::JoinOnline);
+
+        // A screen variable is kept and saved with the game variables, and marked.
+        const auto header = generateVariablesHeader(program, set);
+        QVERIFY2(header.contains("VariableCount = 2;"), header.constData());
+        QVERIFY2(header.contains("ScreenScoped{{true, false}}"), header.constData());
+        QVERIFY2(header.contains("SavedCount = 2;"), header.constData());
+        const auto logic = generateLogicHeader(program, set);
+        for (const auto* call : {"world.HostOnline();", "world.JoinOnline();", "world.StopOnline();", "world.Seat()", "world.OnlineState()", "world.RestorePlayer(outerPlayer, outerScoped);"}) QVERIFY2(logic.contains(call), call);
+
+        // Both need the version that brought them.
+        auto older = saved;
+        older.replace("\"schemaVersion\": 6", "\"schemaVersion\": 5");
+        writeBytes(path, older);
+        const auto refused = loadLogic(path);
+        QVERIFY(!refused.program);
+        QVERIFY2(refused.error.contains("schemaVersion 6"), qPrintable(refused.error));
+
+        // seat and online are names formulas use, so a variable cannot take them.
+        const auto taken = programOf({{"seat", 0}}, {});
+        QVERIFY2(problemsOf(taken, set).join(" ").contains("already use"), qPrintable(problemsOf(taken, set).join(" | ")));
+    }
+
+    void aFriendsScreenHasItsOwnSceneCameraItemsAndVariables() {
+        if (!hasPosixCompiler()) QSKIP("This compiles the runtime with a GCC style compiler.");
+        // Two scenes. In the field a HUD square stays on the screen, and Square hides it and sets the screen's mode;
+        // Cross walks through to the cave.
+        auto set = oneScene({hero("hero1", 1, 100, 100), hero("hero4", 4, 3000, 2000), [] { auto hud = rectangle("hud", 20, 20); hud.screenFixed = true; return hud; }()});
+        Scene cave;
+        cave.id = "cave";
+        cave.name = "Cave";
+        cave.worldWidth = 4000;
+        cave.worldHeight = 3000;
+        cave.items = {hero("chero1", 1, 100, 100), hero("chero4", 4, 500, 500)};
+        set.scenes.append(cave);
+
+        auto follow = withItem(block("cf", BlockType::CameraFollow), "@player");
+        auto joined = block("j1", BlockType::WhenPlayerJoins, {formulaBlock("f1", "joins", "joins + 1"), follow, formulaBlock("fs", "seatSeen", "seat")});
+        auto square = pressed("p1", ControllerButton::Square, {formulaBlock("f2", "mode", "player * 10"), withItem(block("hh", BlockType::Hide), "hud")});
+        auto go = block("go", BlockType::GoToScene);
+        go.scene = "cave";
+        auto cross = pressed("p2", ControllerButton::Cross, {go});
+        auto program = programOf({{"mode", 0, VariableScope::Screen}, {"joins", 0}, {"starts", 0}, {"ticks", 0}, {"seatSeen", 0}, {"here", 0}},
+            {joined, square, cross, block("ef", BlockType::EveryFrame, {formulaBlock("fh", "here", "players")})});
+        SceneLogic caveLogic;
+        caveLogic.scene = "cave";
+        caveLogic.events = {block("cs", BlockType::WhenGameStarts, {formulaBlock("f3", "starts", "starts + 1")}), block("ce", BlockType::EveryFrame, {formulaBlock("f4", "ticks", "ticks + 1")}),
+                            block("cj", BlockType::WhenPlayerJoins, {formulaBlock("f5", "joins", "joins + 100")})};
+        program.otherScenes = {caveLogic};
+        QVERIFY2(problemsOf(program, set).isEmpty(), qPrintable(problemsOf(program, set).join(" | ")));
+
+        const auto result = runHarness(set, program,
+            "    auto mirror = std::make_unique<SceneState>(1920, 1080);\n"
+            "    static std::uint8_t bytes[SceneState::ScreenBytes];\n"
+            "    auto send = [&] { const auto size = scene.WriteScreen(1, bytes); return size != 0 && mirror->ShowScreen({bytes, size}); };\n"
+            "    auto modeOf = [&](std::size_t player) { scene.SetCurrentPlayer(player); const auto value = scene.Variable(0); scene.RestorePlayer(0, false); return value; };\n"
+            "    step(scene, 1);\n"
+            "    const auto screen = scene.OpenScreen();\n"
+            "    std::printf(\"%zu %zu %zu\\n\", screen, scene.ScreenPlayer(screen), scene.ScreensOpen());\n"
+            "    step(scene, 1);\n" // the friend joins in the field
+            "    std::printf(\"%d %d %d\\n\", scene.Variable(1), scene.Variable(4), scene.Variable(5));\n"
+            "    scene.SetRemoteInput(screen, press(Buttons::Square), 0);\n"
+            "    step(scene, 1);\n" // the friend hides their HUD and sets their mode
+            "    std::printf(\"%d %d %d %d\\n\", modeOf(0), modeOf(3), scene.CurrentVisibility()[2] ? 1 : 0, send() ? 1 : 0);\n"
+            "    std::printf(\"%d %zu %.0f %.0f\\n\", mirror->CurrentVisibility()[2] ? 1 : 0, mirror->CurrentScene(), mirror->Camera().x, scene.Camera().x);\n"
+            "    scene.SetRemoteInput(screen, press(Buttons::Cross), 0);\n"
+            "    step(scene, 1);\n" // the friend leaves for the cave, which starts
+            "    scene.SetRemoteInput(screen, Input{}, 0);\n"
+            "    step(scene, 3);\n"
+            "    std::printf(\"%zu %zu %d %d %d %d %d\\n\", scene.ScreenScene(0), scene.ScreenScene(screen), scene.Variable(2), scene.Variable(3), scene.Variable(5), scene.CurrentVisibility()[1] ? 1 : 0, send() ? 1 : 0);\n"
+            "    std::printf(\"%zu %d\\n\", mirror->CurrentScene(), mirror->Mirroring() ? 1 : 0);\n"
+            "    step(scene, 1, press(Buttons::Cross));\n" // the host follows: the cave is not started again, the host arrives
+            "    step(scene, 2);\n"
+            "    std::printf(\"%zu %d %d %d\\n\", scene.ScreenScene(0), scene.Variable(2), scene.Variable(1), scene.Variable(5));\n"
+            "    scene.CloseScreen(screen);\n"
+            "    step(scene, 1);\n"
+            "    std::printf(\"%zu %d\\n\", scene.ScreensOpen(), scene.CurrentVisibility()[4] ? 1 : 0);\n");
+        QVERIFY2(result.built, qPrintable(result.output));
+        QCOMPARE(result.lines.at(0), QString("1 3 2"));     // screen 1, for player 4
+        QCOMPARE(result.lines.at(1), QString("2 1 2"));     // both joined; the friend sits in seat 1 of their screen; 2 players here
+        QCOMPARE(result.lines.at(2), QString("0 40 1 1"));  // the mode and the hidden HUD are the friend's alone
+        QCOMPARE(result.lines.at(3), QString("0 0 2072 0")); // their console sees it hidden, and their camera on hero4
+        QCOMPARE(result.lines.at(4), QString("0 1 1 3 1 0 1")); // two scenes run at once; hero4 left the field
+        QCOMPARE(result.lines.at(5), QString("1 1"));
+        QCOMPARE(result.lines.at(6), QString("1 1 102 1")); // the cave did not start again: the host arrived in it. The empty field stands still
+        QCOMPARE(result.lines.at(7), QString("1 0"));       // the friend's character goes with them
+    }
+
+    void twoConsolesPlayOneGameOverTheNetwork() {
+        if (!hasPosixCompiler()) QSKIP("This compiles the runtime with a GCC style compiler.");
+        // One program on two consoles. Triangle hosts, Circle joins. Square adds to the pressing player's own score
+        // and to the gold everyone shares; Cross moves their character. A label on the screen shows the score of
+        // the screen's own player.
+        auto scoreLabel = rectangle("score", 40, 40);
+        scoreLabel.type = "text";
+        scoreLabel.text = "S{score@1}";
+        scoreLabel.scale = 4;
+        scoreLabel.screenFixed = true;
+        const auto set = oneScene({hero("hero1", 1, 100, 100), hero("hero4", 4, 3000, 2000), scoreLabel});
+        auto nudge = withItem(block("m1", BlockType::MoveBy), "@player");
+        nudge.x = 7;
+        auto sendHome = pressed("p5", ControllerButton::Options, {ifFormula("ig", "guest = 1", {block("so", BlockType::StopOnline)})});
+        const auto program = programOf({{"gold", 0}, {"state", 0}, {"score", 0, VariableScope::Player}},
+            {pressed("p1", ControllerButton::Triangle, {block("h", BlockType::HostOnline)}), pressed("p2", ControllerButton::Circle, {block("j", BlockType::JoinOnline)}),
+             pressed("p3", ControllerButton::Square, {formulaBlock("f1", "score", "score + 1"), formulaBlock("f2", "gold", "gold + 10")}), pressed("p4", ControllerButton::Cross, {nudge}), sendHome,
+             block("ef", BlockType::EveryFrame, {formulaBlock("f3", "state", "online")}), block("jn", BlockType::WhenPlayerJoins, {withItem(block("cf", BlockType::CameraFollow), "@player")})});
+        QVERIFY2(problemsOf(program, set).isEmpty(), qPrintable(problemsOf(program, set).join(" | ")));
+
+        const auto result = runHarness(set, program,
+            "    auto other = std::make_unique<SceneState>(1920, 1080);\n"
+            "    auto& guest = *other;\n"
+            "    const std::uint16_t gamePort = 47711, findPort = 47710;\n"
+            "    OnlinePlay hostPlay({77, 1, gamePort, findPort, Lan::Loopback});\n"
+            "    OnlinePlay guestPlay({77, 2, gamePort, findPort, Lan::Loopback});\n"
+            "    std::uint64_t now = 1000;\n"
+            "    auto frame = [&](Input hostPad = {}, Input guestPad = {}) {\n"
+            "        now += 16;\n"
+            "        hostPlay.BeforeFrame(scene, now, hostPad); scene.Update(1.0 / 60.0, {hostPad, Input{}}); hostPlay.AfterFrame(scene);\n"
+            "        guestPlay.BeforeFrame(guest, now, guestPad); guest.Update(1.0 / 60.0, {guest.Mirroring() ? Input{} : guestPad, Input{}});\n"
+            "    };\n"
+            "    auto until = [&](auto done) { for (int tries = 0; tries < 600 && !done(); ++tries) frame(); return done(); };\n"
+            "    frame(press(Buttons::Triangle));\n"
+            "    frame({}, press(Buttons::Circle));\n"
+            "    frame();\n"
+            "    std::printf(\"%d %d\\n\", scene.Variable(1), guest.Variable(1));\n" // hosting, looking
+            "    const bool joined = until([&] { return guest.Mirroring() && scene.ScreensOpen() == 2; });\n"
+            "    std::printf(\"%d %lld %lld %zu\\n\", joined ? 1 : 0, static_cast<long long>(scene.OnlineState()), static_cast<long long>(guest.OnlineState()), scene.ScreenPlayer(1));\n"
+            "    until([&] { return guest.Camera().x > 2000.0f; });\n"
+            "    std::printf(\"%.0f %.0f %.0f\\n\", guest.Camera().x, guest.Current()[1][0], scene.Camera().x);\n" // the friend's camera is on their own character
+            "    frame({}, press(Buttons::Square)); frame(); \n" // one tap on the friend's pad
+            "    until([&] { return guest.CurrentText(2) == \"S1\"; });\n"
+            "    std::printf(\"%d %s %s\\n\", scene.Variable(0), std::string(guest.CurrentText(2)).c_str(), std::string(scene.CurrentText(2)).c_str());\n"
+            "    for (int i = 0; i < 5; ++i) { frame({}, press(Buttons::Cross)); frame(); }\n" // five taps move the friend's character on the host
+            "    until([&] { return guest.Current()[1][0] >= 3035.0f; });\n"
+            "    std::printf(\"%.0f %.0f %.0f\\n\", scene.Current()[1][0], guest.Current()[1][0], scene.Current()[0][0]);\n"
+            "    frame({}, press(Buttons::Options)); \n" // a block sends the friend home
+            "    const bool home = until([&] { return !guest.Mirroring() && scene.ScreensOpen() == 1; });\n"
+            "    frame();\n"
+            "    std::printf(\"%d %lld %lld %d\\n\", home ? 1 : 0, static_cast<long long>(scene.OnlineState()), static_cast<long long>(guest.OnlineState()), scene.CurrentVisibility()[1] ? 1 : 0);\n",
+            {}, true);
+        QVERIFY2(result.built, qPrintable(result.output));
+        QCOMPARE(result.lines.at(0), QString("1 2"));
+        QCOMPARE(result.lines.at(1), QString("1 1 3 3"));       // joined: the host hosts, the friend plays, as player 4
+        QCOMPARE(result.lines.at(2), QString("2072 3000 0"));
+        QCOMPARE(result.lines.at(3), QString("10 S1 S0"));      // the tap reached the host once; each screen shows its own player's score
+        QCOMPARE(result.lines.at(4), QString("3035 3035 100")); // five taps, five moves, seen on both consoles
+        QCOMPARE(result.lines.at(5), QString("1 1 0 0"));       // the friend is back at their own start; the host still hosts
     }
 
     void aSaveKeepsGameVariablesFirstThenEachPlayers() {

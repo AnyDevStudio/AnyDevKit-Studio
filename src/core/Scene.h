@@ -145,7 +145,10 @@ struct SceneSet {
 // text item can show one, and the scene needs nothing else from the logic.
 // Game variables have one value. Player variables have one value for each player, and blocks use the current
 // player's. Copy variables have one value for each copy of a template, and blocks inside a copy's event use that copy's.
-enum class VariableScope { Game, Player, Copy };
+// A screen variable is a game variable with one value for each screen; online, each friend has their own screen.
+enum class VariableScope { Game, Player, Copy, Screen };
+// Screen variables are kept, numbered and saved with the game variables.
+constexpr VariableScope storedScope(VariableScope scope) { return scope == VariableScope::Screen ? VariableScope::Game : scope; }
 
 struct LogicVariable {
     QString name;
