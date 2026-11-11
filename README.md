@@ -7,19 +7,24 @@ AnyDevKit is a command line SDK. It compiles C++ and GLSL and packages the resul
 Studio puts a visual workspace on top of it, so people can open a project, build it and
 eventually create a whole game without living in a terminal.
 
-![A scene designed in Studio](docs/screenshots/editor.png)
+![The Village scene of a game called Greenhollow on the stage in Studio](docs/screenshots/stage.png)
 
-Drag shapes and text onto the stage, press one button, and the same scene runs as a PS5 package.
+Lay out a scene on the stage, snap blocks together for its rules, and build the project with one
+button for PS5, Windows or Linux.
 
-| Build with one button | The same scene running |
+| Logic blocks | Game page and export formats |
 |---|---|
-| ![Studio finishing a PS5 build with a live log](docs/screenshots/build.png) | ![The built package running in AnyPS5 on macOS](docs/screenshots/game.png) |
+| ![The blocks of Greenhollow's Title scene, with the variables and sounds lists on the left](docs/screenshots/blocks.png) | ![The Game page with Greenhollow's icon and background, and Windows chosen as the export format](docs/screenshots/game-page.png) |
+
+These pictures are Studio's own window with a larger project open, drawn offscreen with software
+rendering, so small details can differ from the window on your screen. They are not pictures of
+the game running.
 
 > **Status: alpha.** Download Studio for macOS, Windows or Linux from the
 > [latest release](https://github.com/AnyDevStudio/AnyDevKit-Studio/releases/latest), or build it from
 > source. The full flow has been tested on Apple Silicon macOS,
-> and CI also builds Studio on Windows and Linux. The scene above runs in the AnyPS5 compatibility
-> layer on macOS. Nothing has been run on a real PS5 yet.
+> and CI also builds Studio on Windows and Linux. A scene of shapes and text runs in the AnyPS5
+> compatibility layer on macOS. Nothing has been run on a real PS5 yet.
 
 ## What it does
 

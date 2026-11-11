@@ -43,7 +43,9 @@ int main(int argc, char** argv) {
     const QCommandLineOption runSetupOption("run-setup", "Run the guided PS5 tools setup without waiting for its button, for scripted testing.");
     const QCommandLineOption setupLogOption("setup-log", "Write the guided setup log to this file when Studio exits.", "file");
     const QCommandLineOption windowSizeOption("window-size", "Open the window at this size, for example 980x620.", "size");
-    parser.addOptions({openOption, buildOption, screenshotOption, delayOption, newGameOption, formatOption, logOption, runSetupOption, setupLogOption, windowSizeOption});
+    const QCommandLineOption tabOption("tab", "Open the project on this tab: scene, logic, game or build.", "tab", "scene");
+    const QCommandLineOption sceneOption("scene", "Show this scene of the opened project, counting from 1.", "number");
+    parser.addOptions({openOption, buildOption, screenshotOption, delayOption, newGameOption, formatOption, logOption, runSetupOption, setupLogOption, windowSizeOption, tabOption, sceneOption});
     parser.process(application);
 
     if (parser.isSet(formatOption) && !Studio::exportFormatFromId(parser.value(formatOption))) {
@@ -52,7 +54,8 @@ int main(int argc, char** argv) {
     }
 
     Studio::StudioController studio;
-    if (parser.isSet(openOption)) studio.openPath(parser.value(openOption));
+    if (parser.isSet(openOption)) studio.openPath(parser.value(openOption), parser.value(tabOption));
+    if (parser.isSet(sceneOption)) studio.scene()->selectScene(parser.value(sceneOption).toInt() - 1);
     if (parser.isSet(formatOption)) studio.setExportFormat(parser.value(formatOption));
 
     QQmlApplicationEngine engine;
